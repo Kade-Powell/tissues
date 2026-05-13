@@ -1,5 +1,5 @@
 use crate::{
-    domain::{IssueDetail, IssueSummary},
+    domain::{IssueDetail, IssueSummary, Label},
     repo::Repository,
 };
 
@@ -60,6 +60,13 @@ pub enum UiMode {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NewIssueField {
+    Title,
+    Body,
+    Labels,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PendingAction {
     Refresh,
     CreateIssue,
@@ -85,6 +92,10 @@ pub struct App {
     pub status: String,
     pub input: String,
     pub body_input: String,
+    pub label_input: String,
+    pub new_issue_field: NewIssueField,
+    pub new_issue_labels: Vec<String>,
+    pub repo_labels: Vec<Label>,
     pub selected_detail: Option<IssueDetail>,
     pub comments_expanded: bool,
     pub pending_action: Option<PendingAction>,
@@ -103,6 +114,10 @@ impl App {
             status: "Ready".to_string(),
             input: String::new(),
             body_input: String::new(),
+            label_input: String::new(),
+            new_issue_field: NewIssueField::Title,
+            new_issue_labels: Vec::new(),
+            repo_labels: Vec::new(),
             selected_detail: None,
             comments_expanded: true,
             pending_action: None,
@@ -167,6 +182,75 @@ impl App {
 
     pub fn toggle_comments(&mut self) {
         self.comments_expanded = !self.comments_expanded;
+    }
+
+    pub fn start_new_issue(&mut self) {
+        self.input.clear();
+        self.body_input.clear();
+        self.label_input.clear();
+        self.new_issue_labels.clear();
+        self.new_issue_field = NewIssueField::Title;
+        self.mode = UiMode::NewIssue;
+    }
+
+    pub fn set_repo_labels(&mut self, labels: Vec<Label>) {
+        self.repo_labels = labels;
+    }
+
+    pub fn next_new_issue_field(&mut self) {
+        self.new_issue_field = match self.new_issue_field {
+            NewIssueField::Title => NewIssueField::Body,
+            NewIssueField::Body => NewIssueField::Labels,
+            NewIssueField::Labels => NewIssueField::Title,
+        };
+    }
+
+    pub fn previous_new_issue_field(&mut self) {
+        self.new_issue_field = match self.new_issue_field {
+            NewIssueField::Title => NewIssueField::Labels,
+            NewIssueField::Body => NewIssueField::Title,
+            NewIssueField::Labels => NewIssueField::Body,
+        };
+    }
+
+    pub fn add_new_issue_label(&mut self, label: impl Into<String>) {
+        let label = label.into();
+        if label.trim().is_empty() || self.new_issue_labels.iter().any(|item| item == &label) {
+            return;
+        }
+
+        self.new_issue_labels.push(label);
+        self.label_input.clear();
+    }
+
+    pub fn pop_new_issue_label(&mut self) {
+        self.new_issue_labels.pop();
+    }
+
+    pub fn label_suggestions(&self) -> Vec<String> {
+        let query = self.label_input.trim().to_lowercase();
+        self.repo_labels
+            .iter()
+            .map(|label| label.name.as_str())
+            .filter(|name| {
+                !self
+                    .new_issue_labels
+                    .iter()
+                    .any(|selected| selected == name)
+            })
+            .filter(|name| query.is_empty() || name.to_lowercase().contains(&query))
+            .take(5)
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    pub fn accept_first_label_suggestion(&mut self) -> bool {
+        if let Some(label) = self.label_suggestions().into_iter().next() {
+            self.add_new_issue_label(label);
+            true
+        } else {
+            false
+        }
     }
 
     fn clamp_selection(&mut self) {
@@ -268,5 +352,46 @@ mod tests {
         assert!(!app.comments_expanded);
         app.toggle_comments();
         assert!(app.comments_expanded);
+    }
+
+    #[test]
+    fn starts_new_issue_form_with_separate_empty_fields() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.input = "old title".to_string();
+        app.body_input = "old body".to_string();
+        app.label_input = "bug".to_string();
+        app.new_issue_labels = vec!["bug".to_string()];
+
+        app.start_new_issue();
+
+        assert_eq!(app.mode, UiMode::NewIssue);
+        assert_eq!(app.new_issue_field, NewIssueField::Title);
+        assert!(app.input.is_empty());
+        assert!(app.body_input.is_empty());
+        assert!(app.label_input.is_empty());
+        assert!(app.new_issue_labels.is_empty());
+    }
+
+    #[test]
+    fn suggests_unselected_repo_labels_from_label_input() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_repo_labels(vec![
+            Label {
+                name: "bug".to_string(),
+            },
+            Label {
+                name: "docs".to_string(),
+            },
+            Label {
+                name: "good first issue".to_string(),
+            },
+        ]);
+        app.new_issue_labels = vec!["bug".to_string()];
+        app.label_input = "do".to_string();
+
+        assert_eq!(app.label_suggestions(), vec!["docs".to_string()]);
+        assert!(app.accept_first_label_suggestion());
+        assert_eq!(app.new_issue_labels, vec!["bug", "docs"]);
+        assert!(app.label_input.is_empty());
     }
 }

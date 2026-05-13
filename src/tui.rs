@@ -5,7 +5,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::DefaultTerminal;
 
 use crate::{
-    app::{App, FlashKind, IssueStateFilter, UiMode},
+    app::{App, FlashKind, IssueStateFilter, NewIssueField, UiMode},
     domain::IssueState,
     github::IssueBackend,
     ui::{self, WorktrackEffects},
@@ -89,11 +89,7 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
             app.mode = UiMode::CommentComposer;
             app.set_status("Write a comment, Enter submits, Esc cancels");
         }
-        KeyCode::Char('n') => {
-            app.input.clear();
-            app.mode = UiMode::NewIssue;
-            app.set_status("New issue: title | optional body");
-        }
+        KeyCode::Char('n') => open_new_issue(app, backend).await,
         KeyCode::Char('x') if app.selected_issue().is_some() => {
             app.mode = UiMode::ConfirmClose;
         }
@@ -141,16 +137,34 @@ async fn handle_new_issue_key<B: IssueBackend>(app: &mut App, backend: &B, key: 
         KeyCode::Esc => {
             app.mode = UiMode::Browsing;
             app.input.clear();
+            app.body_input.clear();
+            app.label_input.clear();
+            app.new_issue_labels.clear();
         }
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push('\n'),
+        KeyCode::Tab => app.next_new_issue_field(),
+        KeyCode::BackTab => app.previous_new_issue_field(),
+        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            submit_new_issue(app, backend).await
+        }
+        KeyCode::Enter
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && app.new_issue_field == NewIssueField::Body =>
+        {
+            app.body_input.push('\n');
+        }
         KeyCode::Enter => submit_new_issue(app, backend).await,
         KeyCode::Backspace => {
-            app.input.pop();
+            backspace_new_issue_field(app);
         }
-        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.input.push('\n');
+        KeyCode::Char('j')
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && app.new_issue_field == NewIssueField::Body =>
+        {
+            app.body_input.push('\n');
         }
-        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push(c),
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            push_new_issue_char(app, c);
+        }
         _ => {}
     }
 }
@@ -260,12 +274,16 @@ async fn submit_comment<B: IssueBackend>(app: &mut App, backend: &B) {
 }
 
 async fn submit_new_issue<B: IssueBackend>(app: &mut App, backend: &B) {
-    let raw = app.input.trim().to_string();
-    let (title, body) = raw
-        .split_once('|')
-        .map_or((raw.as_str(), ""), |(title, body)| {
-            (title.trim(), body.trim())
-        });
+    if app.new_issue_field == NewIssueField::Labels && !app.label_input.trim().is_empty() {
+        if !app.accept_first_label_suggestion() {
+            app.add_new_issue_label(app.label_input.trim().to_string());
+        }
+        return;
+    }
+
+    let title = app.input.trim().to_string();
+    let body = app.body_input.trim().to_string();
+    let labels = app.new_issue_labels.clone();
 
     if title.is_empty() {
         app.set_status("Issue title cannot be empty");
@@ -273,10 +291,16 @@ async fn submit_new_issue<B: IssueBackend>(app: &mut App, backend: &B) {
         return;
     }
 
-    match backend.create_issue(&app.repo, title, body, &[]).await {
+    match backend
+        .create_issue(&app.repo, &title, &body, &labels)
+        .await
+    {
         Ok(issue) => {
             let number = issue.number;
             app.input.clear();
+            app.body_input.clear();
+            app.label_input.clear();
+            app.new_issue_labels.clear();
             refresh_after_action(
                 app,
                 backend,
@@ -288,6 +312,48 @@ async fn submit_new_issue<B: IssueBackend>(app: &mut App, backend: &B) {
         Err(err) => {
             app.flash = Some(FlashKind::Error);
             app.set_status(format!("Create failed: {err:#}"));
+        }
+    }
+}
+
+async fn open_new_issue<B: IssueBackend>(app: &mut App, backend: &B) {
+    app.start_new_issue();
+    app.set_status("Loading repository labels");
+    match backend.list_labels(&app.repo).await {
+        Ok(labels) => {
+            app.set_repo_labels(labels);
+            app.set_status("New issue: Tab fields, Enter creates, Ctrl+S creates");
+        }
+        Err(err) => {
+            app.set_repo_labels(Vec::new());
+            app.flash = Some(FlashKind::Error);
+            app.set_status(format!("Labels unavailable: {err:#}; creating still works"));
+        }
+    }
+}
+
+fn push_new_issue_char(app: &mut App, c: char) {
+    match app.new_issue_field {
+        NewIssueField::Title => app.input.push(c),
+        NewIssueField::Body => app.body_input.push(c),
+        NewIssueField::Labels => app.label_input.push(c),
+    }
+}
+
+fn backspace_new_issue_field(app: &mut App) {
+    match app.new_issue_field {
+        NewIssueField::Title => {
+            app.input.pop();
+        }
+        NewIssueField::Body => {
+            app.body_input.pop();
+        }
+        NewIssueField::Labels => {
+            if app.label_input.is_empty() {
+                app.pop_new_issue_label();
+            } else {
+                app.label_input.pop();
+            }
         }
     }
 }
@@ -348,7 +414,7 @@ mod tests {
 
     use crate::{
         app::IssueFilters,
-        domain::{IssueComment, IssueDetail, IssueSummary},
+        domain::{IssueComment, IssueDetail, IssueSummary, Label},
         repo::Repository,
     };
 
@@ -357,8 +423,10 @@ mod tests {
         list_calls: Mutex<usize>,
         detail_calls: Mutex<usize>,
         created_body: Mutex<Option<String>>,
+        created_labels: Mutex<Vec<String>>,
         commented_body: Mutex<Option<String>>,
         issues: Mutex<Vec<IssueSummary>>,
+        labels: Mutex<Vec<Label>>,
     }
 
     fn issue(number: u64, title: &str, state: IssueState, comment_count: u64) -> IssueSummary {
@@ -379,8 +447,17 @@ mod tests {
             list_calls: Mutex::new(0),
             detail_calls: Mutex::new(0),
             created_body: Mutex::new(None),
+            created_labels: Mutex::new(Vec::new()),
             commented_body: Mutex::new(None),
             issues: Mutex::new(issues),
+            labels: Mutex::new(vec![
+                Label {
+                    name: "bug".to_string(),
+                },
+                Label {
+                    name: "docs".to_string(),
+                },
+            ]),
         }
     }
 
@@ -424,14 +501,19 @@ mod tests {
             unreachable!("not used by these tests")
         }
 
+        async fn list_labels(&self, _repo: &Repository) -> Result<Vec<Label>> {
+            Ok(self.labels.lock().unwrap().clone())
+        }
+
         async fn create_issue(
             &self,
             _repo: &Repository,
             _title: &str,
             body: &str,
-            _labels: &[String],
+            labels: &[String],
         ) -> Result<IssueSummary> {
             *self.created_body.lock().unwrap() = Some(body.to_string());
+            *self.created_labels.lock().unwrap() = labels.to_vec();
             let created = issue(2, "New task", IssueState::Open, 0);
             *self.issues.lock().unwrap() =
                 vec![issue(1, "Fix redraw", IssueState::Open, 1), created.clone()];
@@ -488,8 +570,10 @@ mod tests {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/skunkwork".parse().unwrap());
         refresh(&mut app, &backend).await;
-        app.input = "New task | add docs".to_string();
-        app.mode = UiMode::NewIssue;
+        app.start_new_issue();
+        app.input = "New task".to_string();
+        app.body_input = "add docs".to_string();
+        app.new_issue_labels = vec!["docs".to_string()];
 
         submit_new_issue(&mut app, &backend).await;
 
@@ -498,6 +582,7 @@ mod tests {
             backend.created_body.lock().unwrap().as_deref(),
             Some("add docs")
         );
+        assert_eq!(*backend.created_labels.lock().unwrap(), vec!["docs"]);
         assert_eq!(app.selected_issue().unwrap().number, 2);
         assert_eq!(app.status, "Created issue #2");
         assert_eq!(app.flash, Some(FlashKind::Success));
@@ -574,5 +659,78 @@ mod tests {
 
         assert_eq!(app.input, "**first**\n");
         assert_eq!(app.mode, UiMode::CommentComposer);
+    }
+
+    #[tokio::test]
+    async fn opening_new_issue_loads_repo_labels() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+
+        open_new_issue(&mut app, &backend).await;
+
+        assert_eq!(app.mode, UiMode::NewIssue);
+        assert_eq!(
+            app.repo_labels
+                .iter()
+                .map(|label| label.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["bug", "docs"]
+        );
+    }
+
+    #[tokio::test]
+    async fn new_issue_form_keeps_title_body_and_label_fields_separate() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        open_new_issue(&mut app, &backend).await;
+
+        handle_new_issue_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE),
+        )
+        .await;
+        handle_new_issue_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        )
+        .await;
+        handle_new_issue_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('*'), KeyModifiers::NONE),
+        )
+        .await;
+        handle_new_issue_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+        )
+        .await;
+        handle_new_issue_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
+        )
+        .await;
+        handle_new_issue_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        )
+        .await;
+        app.label_input = "do".to_string();
+
+        handle_new_issue_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.input, "A");
+        assert_eq!(app.body_input, "*\nb");
+        assert_eq!(app.new_issue_labels, vec!["docs"]);
     }
 }

@@ -55,8 +55,11 @@ cargo run
 - `/`: edit search text.
 - `f`: cycle state filter: open, closed, all.
 - `c`: comment on the selected issue.
-- `n`: create a new issue. Use `title | body` to include an optional Markdown body.
+- `n`: create a new issue with separate title, Markdown body, and labels fields.
 - `x`: close or reopen the selected issue after confirmation.
+- `Tab` / `Shift+Tab`: move between new issue fields.
+- `Enter`: create the issue, or add the current label when the labels field has text.
+- `Ctrl+S`: create the issue from any new issue field.
 - `Ctrl+Enter` or `Ctrl+J`: insert a newline while writing an issue body or comment.
 - `Esc`: cancel the current input or modal.
 - `q`: quit when not editing text.

@@ -2,7 +2,7 @@ use std::time::Duration as StdDuration;
 
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
@@ -15,7 +15,7 @@ use tachyonfx::{EffectManager, Interpolation, fx};
 use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::{
-    app::{App, FlashKind, IssueStateFilter, UiMode},
+    app::{App, FlashKind, IssueStateFilter, NewIssueField, UiMode},
     domain::{IssueComment, IssueDetail, IssueState, IssueSummary},
 };
 
@@ -313,9 +313,10 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
     };
 
     if let Some(title) = title {
-        let popup = centered_rect(64, 35, area);
+        let popup = centered_rect(72, 55, area);
         Clear.render(popup, buffer);
         match app.mode {
+            UiMode::NewIssue => render_new_issue_editor(app, popup, buffer),
             UiMode::ConfirmClose => Paragraph::new("Press y to confirm, Esc to cancel")
                 .block(Block::bordered().title(title))
                 .wrap(Wrap { trim: false })
@@ -352,6 +353,89 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
     textarea.set_cursor_style(Style::new().fg(Color::Black).bg(Color::Cyan));
     textarea.set_style(Style::new().fg(Color::White));
     (&textarea).render(area, buffer);
+}
+
+fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
+    let block = Block::bordered().title("New Issue");
+    let inner = block.inner(area);
+    block.render(area, buffer);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(6),
+            Constraint::Length(6),
+        ])
+        .split(inner.inner(Margin {
+            horizontal: 1,
+            vertical: 0,
+        }));
+
+    Paragraph::new(if app.input.is_empty() {
+        " "
+    } else {
+        app.input.as_str()
+    })
+    .block(Block::bordered().title("Title"))
+    .style(field_style(
+        &app.new_issue_field,
+        &NewIssueField::Title,
+        Color::White,
+    ))
+    .render(rows[0], buffer);
+
+    let body_lines = if app.body_input.is_empty() {
+        vec![String::new()]
+    } else {
+        app.body_input.lines().map(ToOwned::to_owned).collect()
+    };
+    let mut body = TextArea::new(body_lines);
+    body.set_block(Block::bordered().title("Body (Markdown)"));
+    body.set_placeholder_text("Write the issue body");
+    body.set_style(field_style(
+        &app.new_issue_field,
+        &NewIssueField::Body,
+        Color::White,
+    ));
+    body.set_cursor_line_style(Style::new().bg(Color::DarkGray));
+    body.set_cursor_style(Style::new().fg(Color::Black).bg(Color::Cyan));
+    (&body).render(rows[1], buffer);
+
+    let selected = if app.new_issue_labels.is_empty() {
+        "none".to_string()
+    } else {
+        app.new_issue_labels.join(", ")
+    };
+    let suggestions = app.label_suggestions();
+    let suggestions = if suggestions.is_empty() {
+        "none".to_string()
+    } else {
+        suggestions.join(", ")
+    };
+    Paragraph::new(format!(
+        "selected: {selected}\ninput: {}\nsuggestions: {suggestions}",
+        app.label_input
+    ))
+    .block(Block::bordered().title("Labels"))
+    .style(field_style(
+        &app.new_issue_field,
+        &NewIssueField::Labels,
+        Color::Magenta,
+    ))
+    .wrap(Wrap { trim: false })
+    .render(rows[2], buffer);
+}
+
+fn field_style(active: &NewIssueField, field: &NewIssueField, color: Color) -> Style {
+    if active == field {
+        Style::new()
+            .fg(color)
+            .add_modifier(Modifier::BOLD)
+            .bg(Color::DarkGray)
+    } else {
+        Style::new().fg(color)
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -458,6 +542,38 @@ mod tests {
 
         assert!(rendered.contains("Comment Body"));
         assert!(rendered.contains("Looks good"));
+    }
+
+    #[test]
+    fn renders_new_issue_as_separate_title_body_and_label_fields() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.start_new_issue();
+        app.input = "Add label picker".to_string();
+        app.body_input = "## Details\n\nUse markdown".to_string();
+        app.new_issue_labels = vec!["bug".to_string()];
+        app.label_input = "do".to_string();
+        app.set_repo_labels(vec![
+            Label {
+                name: "bug".to_string(),
+            },
+            Label {
+                name: "docs".to_string(),
+            },
+        ]);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 110, 32));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("New Issue"));
+        assert!(rendered.contains("Title"));
+        assert!(rendered.contains("Add label picker"));
+        assert!(rendered.contains("Body (Markdown)"));
+        assert!(rendered.contains("Use markdown"));
+        assert!(rendered.contains("Labels"));
+        assert!(rendered.contains("selected: bug"));
+        assert!(rendered.contains("input: do"));
+        assert!(rendered.contains("suggestions: docs"));
     }
 
     #[test]

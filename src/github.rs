@@ -19,6 +19,7 @@ pub trait IssueBackend {
     ) -> Result<Vec<IssueSummary>>;
     async fn get_issue(&self, repo: &Repository, number: u64) -> Result<IssueDetail>;
     async fn list_comments(&self, repo: &Repository, number: u64) -> Result<Vec<IssueComment>>;
+    async fn list_labels(&self, repo: &Repository) -> Result<Vec<Label>>;
     async fn create_issue(
         &self,
         repo: &Repository,
@@ -148,6 +149,28 @@ impl IssueBackend for GitHubClient {
             .wrap_err("failed to load all comment pages")?;
 
         Ok(comments.into_iter().map(comment_from_octocrab).collect())
+    }
+
+    async fn list_labels(&self, repo: &Repository) -> Result<Vec<Label>> {
+        let page = self
+            .crab
+            .issues(&repo.owner, &repo.name)
+            .list_labels_for_repo()
+            .per_page(100)
+            .send()
+            .await
+            .wrap_err("failed to list repository labels")?;
+        let mut labels = self
+            .crab
+            .all_pages(page)
+            .await
+            .wrap_err("failed to load all repository labels")?
+            .into_iter()
+            .map(|label| Label { name: label.name })
+            .collect::<Vec<_>>();
+        labels.sort_by(|left, right| left.name.cmp(&right.name));
+
+        Ok(labels)
     }
 
     async fn create_issue(
