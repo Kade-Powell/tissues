@@ -442,10 +442,10 @@ fn footer_shortcuts(app: &App) -> &'static str {
             "q quit | r refresh | / search | f filter | Enter fold | c comment | n new issue | x close/reopen"
         }
         UiMode::Search => "Enter search | Esc cancel | Backspace delete",
-        UiMode::CommentComposer => "Ctrl+D/S submit | Enter newline | Ctrl+J newline | Esc cancel",
-        UiMode::CloseComment => "Ctrl+D/S close | Enter newline | Ctrl+J newline | Esc cancel",
+        UiMode::CommentComposer => "Ctrl+S submit | Enter newline | Ctrl+J newline | Esc cancel",
+        UiMode::CloseComment => "Ctrl+S close | Enter newline | Ctrl+J newline | Esc cancel",
         UiMode::NewIssue => {
-            "Tab/Shift+Tab fields | Ctrl+D/S create | Enter edit/add label | Ctrl+J newline | Esc cancel"
+            "Tab/Shift+Tab fields | Ctrl+S create | Enter edit/add label | Ctrl+J newline | Esc cancel"
         }
         UiMode::ConfirmClose => "y/Enter reopen | Esc cancel",
         UiMode::Success => "Any key continue",
@@ -648,7 +648,7 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
 fn render_action_buttons(primary: &'static str, area: Rect, buffer: &mut Buffer) {
     let buttons = Line::from(vec![
         Span::styled(
-            format!(" {primary} Ctrl+D/S "),
+            format!(" {primary} Ctrl+S "),
             Style::new()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
@@ -854,7 +854,7 @@ fn action_mouse_target(area: Rect, primary: &'static str, point: Rect) -> Option
 }
 
 fn primary_button_width(primary: &'static str) -> u16 {
-    format!(" {primary} Ctrl+D/S ").len() as u16
+    format!(" {primary} Ctrl+S ").len() as u16
 }
 
 fn intersects(point: Rect, area: Rect) -> bool {
@@ -935,15 +935,15 @@ mod tests {
         assert!(footer_shortcuts(&app).contains("q quit"));
 
         app.mode = UiMode::NewIssue;
-        assert!(footer_shortcuts(&app).contains("Ctrl+D/S create"));
+        assert!(footer_shortcuts(&app).contains("Ctrl+S create"));
         assert!(!footer_shortcuts(&app).contains("q quit"));
 
         app.mode = UiMode::CommentComposer;
-        assert!(footer_shortcuts(&app).contains("Ctrl+D/S submit"));
+        assert!(footer_shortcuts(&app).contains("Ctrl+S submit"));
         assert!(!footer_shortcuts(&app).contains("n new issue"));
 
         app.mode = UiMode::CloseComment;
-        assert!(footer_shortcuts(&app).contains("Ctrl+D/S close"));
+        assert!(footer_shortcuts(&app).contains("Ctrl+S close"));
 
         app.mode = UiMode::Search;
         assert!(footer_shortcuts(&app).contains("Enter search"));
@@ -1113,7 +1113,7 @@ mod tests {
 
         assert!(rendered.contains("Comment Body"));
         assert!(rendered.contains("Looks good"));
-        assert!(rendered.contains("Submit Ctrl+D/S"));
+        assert!(rendered.contains("Submit Ctrl+S"));
         assert!(rendered.contains("Cancel Esc"));
     }
 
@@ -1129,7 +1129,7 @@ mod tests {
 
         assert!(rendered.contains("Closing Comment"));
         assert!(rendered.contains("Closing after verification"));
-        assert!(rendered.contains("Submit Ctrl+D/S"));
+        assert!(rendered.contains("Submit Ctrl+S"));
         assert!(rendered.contains("Cancel Esc"));
     }
 
@@ -1163,7 +1163,7 @@ mod tests {
         assert!(rendered.contains("selected: bug"));
         assert!(rendered.contains("input: do"));
         assert!(rendered.contains("suggestions: docs"));
-        assert!(rendered.contains("Create Ctrl+D/S"));
+        assert!(rendered.contains("Create Ctrl+S"));
         assert!(rendered.contains("Cancel Esc"));
     }
 
