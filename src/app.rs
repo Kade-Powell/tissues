@@ -166,6 +166,22 @@ impl App {
         }
     }
 
+    pub fn select_issue_index(&mut self, index: usize) {
+        if self.issues.is_empty() {
+            self.selected_index = 0;
+        } else {
+            self.selected_index = index.min(self.issues.len() - 1);
+        }
+    }
+
+    pub fn upsert_issue_at_top(&mut self, issue: IssueSummary) {
+        self.issues.retain(|item| item.number != issue.number);
+        self.issues.insert(0, issue);
+        self.selected_index = 0;
+        self.clear_stale_detail();
+        self.clear_missing_issue_highlights();
+    }
+
     pub fn select_next(&mut self) {
         if self.issues.is_empty() {
             self.selected_index = 0;

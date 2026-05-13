@@ -1,5 +1,10 @@
 use clap::Parser;
 use color_eyre::eyre::Result;
+use crossterm::{
+    event::{DisableMouseCapture, EnableMouseCapture},
+    execute,
+};
+use std::io::stdout;
 use worktrack::{app::App, github::GitHubClient, repo, tui};
 
 #[derive(Debug, Parser)]
@@ -21,7 +26,9 @@ async fn main() -> Result<()> {
     let client = GitHubClient::from_gh_cli()?;
     let mut app = App::new(repository);
     let mut terminal = ratatui::init();
+    execute!(stdout(), EnableMouseCapture)?;
     let result = tui::run(&mut terminal, &mut app, &client).await;
+    let _ = execute!(stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }

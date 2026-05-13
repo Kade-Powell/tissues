@@ -27,6 +27,17 @@ use crate::{
 
 const ISSUE_LIST_PERCENT: u16 = 40;
 const DETAIL_PANEL_PERCENT: u16 = 60;
+const COMMENT_PRIMARY_LABEL: &str = "Submit";
+const NEW_ISSUE_PRIMARY_LABEL: &str = "Create";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MouseTarget {
+    IssueRow(usize),
+    DetailPanel,
+    NewIssueField(NewIssueField),
+    PrimaryAction,
+    CancelAction,
+}
 
 #[derive(Default)]
 pub struct WorktrackEffects {
@@ -431,10 +442,10 @@ fn footer_shortcuts(app: &App) -> &'static str {
             "q quit | r refresh | / search | f filter | Enter fold | c comment | n new issue | x close/reopen"
         }
         UiMode::Search => "Enter search | Esc cancel | Backspace delete",
-        UiMode::CommentComposer => "Ctrl+D submit | Enter newline | Ctrl+J newline | Esc cancel",
-        UiMode::CloseComment => "Ctrl+D close | Enter newline | Ctrl+J newline | Esc cancel",
+        UiMode::CommentComposer => "Ctrl+D/S submit | Enter newline | Ctrl+J newline | Esc cancel",
+        UiMode::CloseComment => "Ctrl+D/S close | Enter newline | Ctrl+J newline | Esc cancel",
         UiMode::NewIssue => {
-            "Tab/Shift+Tab fields | Ctrl+D create | Enter edit/add label | Ctrl+J newline | Esc cancel"
+            "Tab/Shift+Tab fields | Ctrl+D/S create | Enter edit/add label | Ctrl+J newline | Esc cancel"
         }
         UiMode::ConfirmClose => "y/Enter reopen | Esc cancel",
         UiMode::Success => "Any key continue",
@@ -544,7 +555,7 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
     (&textarea).render(rows[0], buffer);
 
     if matches!(app.mode, UiMode::CommentComposer | UiMode::CloseComment) {
-        render_action_buttons("Submit", rows[1], buffer);
+        render_action_buttons(COMMENT_PRIMARY_LABEL, rows[1], buffer);
     }
 }
 
@@ -631,13 +642,13 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
     .wrap(Wrap { trim: false })
     .render(rows[2], buffer);
 
-    render_action_buttons("Create", rows[3], buffer);
+    render_action_buttons(NEW_ISSUE_PRIMARY_LABEL, rows[3], buffer);
 }
 
 fn render_action_buttons(primary: &'static str, area: Rect, buffer: &mut Buffer) {
     let buttons = Line::from(vec![
         Span::styled(
-            format!(" {primary} Ctrl+D "),
+            format!(" {primary} Ctrl+D/S "),
             Style::new()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
@@ -714,6 +725,145 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     horizontal[1]
 }
 
+pub fn mouse_target(app: &App, area: Rect, column: u16, row: u16) -> Option<MouseTarget> {
+    let point = Rect::new(column, row, 1, 1);
+
+    match app.mode {
+        UiMode::Browsing => browsing_mouse_target(app, area, point),
+        UiMode::CommentComposer | UiMode::CloseComment => action_mouse_target(
+            comment_editor_action_area(area),
+            COMMENT_PRIMARY_LABEL,
+            point,
+        ),
+        UiMode::NewIssue => new_issue_mouse_target(area, point),
+        UiMode::Success => Some(MouseTarget::CancelAction),
+        _ => None,
+    }
+}
+
+fn browsing_mouse_target(app: &App, area: Rect, point: Rect) -> Option<MouseTarget> {
+    let body = main_rows(area)[2];
+    let columns = body_columns(body);
+    if intersects(point, columns[0]) {
+        let first_issue_row = columns[0].y.saturating_add(3);
+        if point.y >= first_issue_row {
+            let index = usize::from(point.y - first_issue_row);
+            if index < app.issues.len() {
+                return Some(MouseTarget::IssueRow(index));
+            }
+        }
+    }
+
+    if intersects(point, columns[1]) && app.selected_detail.is_some() {
+        return Some(MouseTarget::DetailPanel);
+    }
+
+    None
+}
+
+fn new_issue_mouse_target(area: Rect, point: Rect) -> Option<MouseTarget> {
+    let rows = new_issue_rows(area);
+    if intersects(point, rows[0]) {
+        return Some(MouseTarget::NewIssueField(NewIssueField::Title));
+    }
+    if intersects(point, rows[1]) {
+        return Some(MouseTarget::NewIssueField(NewIssueField::Body));
+    }
+    if intersects(point, rows[2]) {
+        return Some(MouseTarget::NewIssueField(NewIssueField::Labels));
+    }
+
+    action_mouse_target(rows[3], NEW_ISSUE_PRIMARY_LABEL, point)
+}
+
+fn main_rows(area: Rect) -> std::rc::Rc<[Rect]> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Min(8),
+            Constraint::Length(2),
+        ])
+        .split(area)
+}
+
+fn body_columns(area: Rect) -> std::rc::Rc<[Rect]> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(ISSUE_LIST_PERCENT),
+            Constraint::Percentage(DETAIL_PANEL_PERCENT),
+        ])
+        .split(area)
+}
+
+fn new_issue_rows(area: Rect) -> std::rc::Rc<[Rect]> {
+    let popup = centered_rect(72, 70, area);
+    let inner = popup.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let inner = inner.inner(Margin {
+        horizontal: 1,
+        vertical: 0,
+    });
+
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(6),
+            Constraint::Length(6),
+            Constraint::Length(3),
+        ])
+        .split(inner)
+}
+
+fn comment_editor_action_area(area: Rect) -> Rect {
+    let popup = centered_rect(72, 55, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(3)])
+        .split(popup);
+    rows[1]
+}
+
+fn action_mouse_target(area: Rect, primary: &'static str, point: Rect) -> Option<MouseTarget> {
+    if !intersects(point, area) {
+        return None;
+    }
+
+    let line_y = area.y.saturating_add(1);
+    if point.y != line_y {
+        return None;
+    }
+
+    let primary_start = area.x.saturating_add(1);
+    let primary_end = primary_start.saturating_add(primary_button_width(primary));
+    let cancel_start = primary_end.saturating_add(2);
+    let cancel_end = cancel_start.saturating_add(" Cancel Esc ".len() as u16);
+
+    if point.x >= primary_start && point.x < primary_end {
+        Some(MouseTarget::PrimaryAction)
+    } else if point.x >= cancel_start && point.x < cancel_end {
+        Some(MouseTarget::CancelAction)
+    } else {
+        None
+    }
+}
+
+fn primary_button_width(primary: &'static str) -> u16 {
+    format!(" {primary} Ctrl+D/S ").len() as u16
+}
+
+fn intersects(point: Rect, area: Rect) -> bool {
+    point.x >= area.x
+        && point.x < area.x.saturating_add(area.width)
+        && point.y >= area.y
+        && point.y < area.y.saturating_add(area.height)
+}
+
 pub fn buffer_to_string(buffer: &Buffer) -> String {
     buffer
         .content
@@ -785,15 +935,15 @@ mod tests {
         assert!(footer_shortcuts(&app).contains("q quit"));
 
         app.mode = UiMode::NewIssue;
-        assert!(footer_shortcuts(&app).contains("Ctrl+D create"));
+        assert!(footer_shortcuts(&app).contains("Ctrl+D/S create"));
         assert!(!footer_shortcuts(&app).contains("q quit"));
 
         app.mode = UiMode::CommentComposer;
-        assert!(footer_shortcuts(&app).contains("Ctrl+D submit"));
+        assert!(footer_shortcuts(&app).contains("Ctrl+D/S submit"));
         assert!(!footer_shortcuts(&app).contains("n new issue"));
 
         app.mode = UiMode::CloseComment;
-        assert!(footer_shortcuts(&app).contains("Ctrl+D close"));
+        assert!(footer_shortcuts(&app).contains("Ctrl+D/S close"));
 
         app.mode = UiMode::Search;
         assert!(footer_shortcuts(&app).contains("Enter search"));
@@ -833,6 +983,64 @@ mod tests {
         assert!(rendered.contains("#130"));
         assert!(rendered.contains("PING"));
         assert!(rendered.contains("Ping"));
+    }
+
+    #[test]
+    fn mouse_targets_issue_rows_and_detail_panel() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_issues(vec![
+            issue(1, "Fix redraw", IssueState::Open, &[]),
+            issue(2, "Add mouse", IssueState::Open, &[]),
+        ]);
+        app.selected_detail = Some(crate::domain::IssueDetail {
+            summary: issue(1, "Fix redraw", IssueState::Open, &[]),
+            body: String::new(),
+            comments: Vec::new(),
+        });
+
+        let area = Rect::new(0, 0, 100, 30);
+
+        assert_eq!(
+            mouse_target(&app, area, 1, 7),
+            Some(MouseTarget::IssueRow(0))
+        );
+        assert_eq!(
+            mouse_target(&app, area, 1, 8),
+            Some(MouseTarget::IssueRow(1))
+        );
+        assert_eq!(
+            mouse_target(&app, area, 45, 7),
+            Some(MouseTarget::DetailPanel)
+        );
+    }
+
+    #[test]
+    fn mouse_targets_new_issue_fields_and_buttons() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::NewIssue;
+        let area = Rect::new(0, 0, 100, 30);
+        let rows = new_issue_rows(area);
+
+        assert_eq!(
+            mouse_target(&app, area, rows[0].x + 1, rows[0].y + 1),
+            Some(MouseTarget::NewIssueField(NewIssueField::Title))
+        );
+        assert_eq!(
+            mouse_target(&app, area, rows[1].x + 1, rows[1].y + 1),
+            Some(MouseTarget::NewIssueField(NewIssueField::Body))
+        );
+        assert_eq!(
+            mouse_target(&app, area, rows[2].x + 1, rows[2].y + 1),
+            Some(MouseTarget::NewIssueField(NewIssueField::Labels))
+        );
+        assert_eq!(
+            mouse_target(&app, area, rows[3].x + 2, rows[3].y + 1),
+            Some(MouseTarget::PrimaryAction)
+        );
+        assert_eq!(
+            mouse_target(&app, area, rows[3].x + 22, rows[3].y + 1),
+            Some(MouseTarget::CancelAction)
+        );
     }
 
     #[test]
@@ -905,7 +1113,7 @@ mod tests {
 
         assert!(rendered.contains("Comment Body"));
         assert!(rendered.contains("Looks good"));
-        assert!(rendered.contains("Submit Ctrl+D"));
+        assert!(rendered.contains("Submit Ctrl+D/S"));
         assert!(rendered.contains("Cancel Esc"));
     }
 
@@ -921,7 +1129,7 @@ mod tests {
 
         assert!(rendered.contains("Closing Comment"));
         assert!(rendered.contains("Closing after verification"));
-        assert!(rendered.contains("Submit Ctrl+D"));
+        assert!(rendered.contains("Submit Ctrl+D/S"));
         assert!(rendered.contains("Cancel Esc"));
     }
 
@@ -955,7 +1163,7 @@ mod tests {
         assert!(rendered.contains("selected: bug"));
         assert!(rendered.contains("input: do"));
         assert!(rendered.contains("suggestions: docs"));
-        assert!(rendered.contains("Create Ctrl+D"));
+        assert!(rendered.contains("Create Ctrl+D/S"));
         assert!(rendered.contains("Cancel Esc"));
     }
 

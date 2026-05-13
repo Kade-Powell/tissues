@@ -7,7 +7,9 @@ use std::{
 };
 
 use color_eyre::eyre::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::DefaultTerminal;
 
 use crate::{
@@ -54,16 +56,22 @@ pub async fn run<B: IssueBackend>(
             next_auto_refresh = Instant::now() + AUTO_REFRESH_INTERVAL;
         }
 
-        if event::poll(Duration::from_millis(33))?
-            && let Event::Key(key) = event::read()?
-        {
-            if let Some((action, status)) = loading_preview(app, key) {
-                let mut preview = app.clone();
-                preview.begin_action(action, status);
-                ui::trigger_flash_effect(&mut preview, &mut effects);
-                draw_app(terminal, &preview, &mut effects, last_frame.elapsed())?;
+        if event::poll(Duration::from_millis(33))? {
+            match event::read()? {
+                Event::Key(key) => {
+                    if let Some((action, status)) = loading_preview(app, key) {
+                        let mut preview = app.clone();
+                        preview.begin_action(action, status);
+                        ui::trigger_flash_effect(&mut preview, &mut effects);
+                        draw_app(terminal, &preview, &mut effects, last_frame.elapsed())?;
+                    }
+                    handle_key(app, backend, key).await;
+                }
+                Event::Mouse(mouse) => {
+                    handle_mouse(app, backend, mouse, terminal.size()?.into()).await;
+                }
+                _ => {}
             }
-            handle_key(app, backend, key).await;
         }
     }
 
@@ -255,24 +263,104 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
             app.cycle_state_filter();
             refresh(app, backend).await;
         }
-        KeyCode::Char('c') if app.selected_issue().is_some() => {
-            app.input.clear();
-            app.mode = UiMode::CommentComposer;
-            app.set_status("Write a comment, Enter adds lines, Ctrl+D submits");
-        }
+        KeyCode::Char('c') if app.selected_issue().is_some() => open_comment_composer(app),
         KeyCode::Char('n') => open_new_issue(app, backend).await,
         KeyCode::Char('x') if app.selected_issue().is_some() => {
             match app.selected_issue().map(|issue| issue.state.clone()) {
-                Some(IssueState::Open) => {
-                    app.input.clear();
-                    app.mode = UiMode::CloseComment;
-                    app.set_status("Closing requires a comment, Enter adds lines, Ctrl+D closes");
-                }
+                Some(IssueState::Open) => open_close_comment(app),
                 Some(IssueState::Closed) => {
                     app.mode = UiMode::ConfirmClose;
                 }
                 None => {}
             }
+        }
+        _ => {}
+    }
+}
+
+async fn handle_mouse<B: IssueBackend>(
+    app: &mut App,
+    backend: &B,
+    mouse: MouseEvent,
+    area: ratatui::layout::Rect,
+) {
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            if let Some(target) = ui::mouse_target(app, area, mouse.column, mouse.row) {
+                handle_mouse_target(app, backend, target).await;
+            }
+        }
+        MouseEventKind::ScrollDown if app.mode == UiMode::Browsing => {
+            let previous = app.selected_issue().map(|issue| issue.number);
+            app.select_next();
+            if app.selected_issue().map(|issue| issue.number) != previous {
+                refresh_selected_detail(app, backend).await;
+            }
+        }
+        MouseEventKind::ScrollUp if app.mode == UiMode::Browsing => {
+            let previous = app.selected_issue().map(|issue| issue.number);
+            app.select_previous();
+            if app.selected_issue().map(|issue| issue.number) != previous {
+                refresh_selected_detail(app, backend).await;
+            }
+        }
+        _ => {}
+    }
+}
+
+async fn handle_mouse_target<B: IssueBackend>(app: &mut App, backend: &B, target: ui::MouseTarget) {
+    match target {
+        ui::MouseTarget::IssueRow(index) if app.mode == UiMode::Browsing => {
+            let previous = app.selected_issue().map(|issue| issue.number);
+            app.select_issue_index(index);
+            if app.selected_issue().map(|issue| issue.number) != previous {
+                refresh_selected_detail(app, backend).await;
+            }
+        }
+        ui::MouseTarget::DetailPanel if app.mode == UiMode::Browsing => app.toggle_comments(),
+        ui::MouseTarget::NewIssueField(field) if app.mode == UiMode::NewIssue => {
+            app.new_issue_field = field;
+        }
+        ui::MouseTarget::PrimaryAction => match app.mode {
+            UiMode::CommentComposer => submit_comment(app, backend).await,
+            UiMode::CloseComment => close_issue_with_comment(app, backend).await,
+            UiMode::NewIssue => submit_new_issue(app, backend, true).await,
+            UiMode::ConfirmClose => toggle_issue_state(app, backend).await,
+            UiMode::Success => app.mode = UiMode::Browsing,
+            _ => {}
+        },
+        ui::MouseTarget::CancelAction => cancel_active_screen(app),
+        _ => {}
+    }
+}
+
+fn open_comment_composer(app: &mut App) {
+    app.input.clear();
+    app.mode = UiMode::CommentComposer;
+    app.set_status("Write a comment, Enter adds lines, Ctrl+D/S submits");
+}
+
+fn open_close_comment(app: &mut App) {
+    app.input.clear();
+    app.mode = UiMode::CloseComment;
+    app.set_status("Closing requires a comment, Enter adds lines, Ctrl+D/S closes");
+}
+
+fn cancel_active_screen(app: &mut App) {
+    match app.mode {
+        UiMode::CommentComposer | UiMode::CloseComment => {
+            app.mode = UiMode::Browsing;
+            app.input.clear();
+        }
+        UiMode::NewIssue => {
+            app.mode = UiMode::Browsing;
+            app.input.clear();
+            app.body_input.clear();
+            app.label_input.clear();
+            app.new_issue_labels.clear();
+        }
+        UiMode::Success | UiMode::Error | UiMode::ConfirmClose => {
+            app.mode = UiMode::Browsing;
         }
         _ => {}
     }
@@ -586,16 +674,29 @@ async fn refresh_after_action<B: IssueBackend>(
     backend: &B,
     selected_issue_number: Option<u64>,
     success_status: String,
+    optimistic_issue: Option<IssueSummary>,
+    optimistic_comment: Option<IssueComment>,
 ) {
     match backend.list_issues(&app.repo, &app.filters).await {
         Ok(issues) => {
             app.set_issues(issues);
+            if let Some(issue) = optimistic_issue
+                && should_keep_optimistic_issue(app, &issue)
+                && !app.issues.iter().any(|item| item.number == issue.number)
+            {
+                app.upsert_issue_at_top(issue);
+            }
             if let Some(number) = selected_issue_number {
                 app.select_issue_number(number);
             }
             app.mode = UiMode::Browsing;
             match load_selected_detail(app, backend).await {
                 Ok(()) => {
+                    if let (Some(number), Some(comment)) =
+                        (selected_issue_number, optimistic_comment)
+                    {
+                        keep_optimistic_comment_visible(app, number, comment);
+                    }
                     app.finish_action();
                     app.mode = UiMode::Success;
                     app.flash = Some(FlashKind::Success);
@@ -614,6 +715,45 @@ async fn refresh_after_action<B: IssueBackend>(
             app.flash = Some(FlashKind::Error);
             app.set_status(format!("{success_status}; refresh failed: {err:#}"));
         }
+    }
+}
+
+fn should_keep_optimistic_issue(app: &App, issue: &IssueSummary) -> bool {
+    let state_matches = match app.filters.state {
+        IssueStateFilter::Open => issue.state == IssueState::Open,
+        IssueStateFilter::Closed => issue.state == IssueState::Closed,
+        IssueStateFilter::All => true,
+    };
+    let labels_match = app.filters.labels.iter().all(|filter_label| {
+        issue
+            .labels
+            .iter()
+            .any(|issue_label| issue_label.name == *filter_label)
+    });
+    let query = app.filters.query.trim().to_lowercase();
+    let query_matches = query.is_empty() || issue.title.to_lowercase().contains(&query);
+
+    state_matches && labels_match && query_matches
+}
+
+fn keep_optimistic_comment_visible(app: &mut App, number: u64, comment: IssueComment) {
+    let Some(detail) = app
+        .selected_detail
+        .as_mut()
+        .filter(|detail| detail.summary.number == number)
+    else {
+        return;
+    };
+
+    if !detail.comments.iter().any(|item| item == &comment) {
+        detail.comments.push(comment);
+    }
+    detail.summary.comment_count = detail
+        .summary
+        .comment_count
+        .max(detail.comments.len() as u64);
+    if let Some(issue) = app.issues.iter_mut().find(|issue| issue.number == number) {
+        issue.comment_count = issue.comment_count.max(detail.summary.comment_count);
     }
 }
 
@@ -636,13 +776,15 @@ async fn submit_comment<B: IssueBackend>(app: &mut App, backend: &B) {
         format!("Adding comment to #{number}"),
     );
     match backend.add_comment(&app.repo, number, &body).await {
-        Ok(_) => {
+        Ok(comment) => {
             app.input.clear();
             refresh_after_action(
                 app,
                 backend,
                 Some(number),
                 format!("Commented on issue #{number}"),
+                None,
+                Some(comment),
             )
             .await;
         }
@@ -685,6 +827,8 @@ async fn close_issue_with_comment<B: IssueBackend>(app: &mut App, backend: &B) {
                     backend,
                     Some(number),
                     format!("Closed issue #{number} with comment"),
+                    None,
+                    None,
                 )
                 .await;
             }
@@ -740,6 +884,8 @@ async fn submit_new_issue<B: IssueBackend>(app: &mut App, backend: &B, force_cre
                 backend,
                 Some(number),
                 format!("Created issue #{number}"),
+                Some(issue),
+                None,
             )
             .await;
         }
@@ -760,7 +906,7 @@ async fn open_new_issue<B: IssueBackend>(app: &mut App, backend: &B) {
             app.finish_action();
             app.mode = UiMode::NewIssue;
             app.set_repo_labels(labels);
-            app.set_status("New issue: Tab fields, Enter edits, Ctrl+D creates");
+            app.set_status("New issue: Tab fields, Enter edits, Ctrl+D/S creates");
         }
         Err(err) => {
             app.finish_action();
@@ -821,6 +967,8 @@ async fn toggle_issue_state<B: IssueBackend>(app: &mut App, backend: &B) {
                 backend,
                 Some(number),
                 format!("Updated issue #{number}"),
+                None,
+                None,
             )
             .await;
         }
@@ -943,7 +1091,7 @@ mod tests {
                 .iter()
                 .find(|issue| issue.number == number)
                 .cloned()
-                .unwrap();
+                .unwrap_or_else(|| issue(number, &format!("Issue {number}"), IssueState::Open, 0));
             Ok(IssueDetail {
                 summary,
                 body: format!("## Body for issue {number}"),
@@ -1076,6 +1224,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn created_issue_is_shown_even_when_immediate_list_is_stale() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        refresh(&mut app, &backend).await;
+
+        refresh_after_action(
+            &mut app,
+            &backend,
+            Some(2),
+            "Created issue #2".to_string(),
+            Some(issue(2, "New task", IssueState::Open, 0)),
+            None,
+        )
+        .await;
+
+        assert_eq!(app.issues[0].number, 2);
+        assert_eq!(app.selected_issue().unwrap().number, 2);
+        assert_eq!(app.status, "Created issue #2");
+        assert_eq!(app.mode, UiMode::Success);
+    }
+
+    #[tokio::test]
     async fn success_confirmation_dismisses_to_browsing() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/skunkwork".parse().unwrap());
@@ -1091,6 +1261,24 @@ mod tests {
 
         assert_eq!(app.mode, UiMode::Browsing);
         assert_eq!(app.status, "Commented on issue #1");
+    }
+
+    #[tokio::test]
+    async fn mouse_click_selects_issue_and_loads_detail() {
+        let backend = backend_with_issues(vec![
+            issue(1, "Fix redraw", IssueState::Open, 1),
+            issue(2, "Add mouse", IssueState::Open, 0),
+        ]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        refresh(&mut app, &backend).await;
+
+        handle_mouse_target(&mut app, &backend, ui::MouseTarget::IssueRow(1)).await;
+
+        assert_eq!(app.selected_issue().unwrap().number, 2);
+        assert_eq!(
+            app.selected_detail.as_ref().unwrap().body,
+            "## Body for issue 2"
+        );
     }
 
     #[test]
@@ -1407,7 +1595,7 @@ mod tests {
         assert_eq!(app.mode, UiMode::CloseComment);
         assert_eq!(
             app.status,
-            "Closing requires a comment, Enter adds lines, Ctrl+D closes"
+            "Closing requires a comment, Enter adds lines, Ctrl+D/S closes"
         );
 
         handle_close_comment_key(
