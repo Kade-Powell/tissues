@@ -176,7 +176,13 @@ fn render_body(app: &App, area: Rect, buffer: &mut Buffer) {
     let header = Row::new(["Number", "State", "Labels", "Title"])
         .style(Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
         .bottom_margin(1);
-    let rows = app.issues.iter().map(issue_row);
+    let rows = app.issues.iter().map(|issue| {
+        issue_row(
+            issue,
+            app.is_new_issue_highlighted(issue.number),
+            app.new_issue_animation_frame,
+        )
+    });
     let table = Table::new(rows, widths)
         .block(Block::bordered().title("Issues"))
         .header(header)
@@ -193,7 +199,7 @@ fn render_body(app: &App, area: Rect, buffer: &mut Buffer) {
     render_detail(app, columns[1], buffer);
 }
 
-fn issue_row(issue: &IssueSummary) -> Row<'_> {
+fn issue_row(issue: &IssueSummary, is_new: bool, animation_frame: u8) -> Row<'_> {
     let state = match issue.state {
         IssueState::Open => "open",
         IssueState::Closed => "closed",
@@ -210,12 +216,39 @@ fn issue_row(issue: &IssueSummary) -> Row<'_> {
             .join(",")
     };
 
-    Row::new([
+    let title = if is_new {
+        Cell::from(Line::from(vec![
+            Span::styled("NEW ", Style::new().fg(Color::Yellow).bold()),
+            Span::raw(issue.title.clone()),
+        ]))
+    } else {
+        Cell::from(issue.title.clone())
+    };
+
+    let row = Row::new([
         Cell::from(format!("#{}", issue.number)).style(Style::new().fg(Color::Cyan)),
         Cell::from(state).style(state_style(issue.state.clone())),
         Cell::from(labels).style(Style::new().fg(Color::Magenta)),
-        Cell::from(issue.title.clone()),
-    ])
+        title,
+    ]);
+
+    if is_new {
+        let pulse_is_high = (animation_frame / 8).is_multiple_of(2);
+        let style = if pulse_is_high {
+            Style::new()
+                .fg(Color::Black)
+                .bg(Color::LightYellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new()
+                .fg(Color::Yellow)
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD)
+        };
+        row.style(style)
+    } else {
+        row
+    }
 }
 
 fn state_style(state: IssueState) -> Style {
@@ -622,6 +655,24 @@ mod tests {
         assert!(rendered.contains("c comment"));
         assert!(rendered.contains("n new issue"));
         assert!(rendered.contains("x close/reopen"));
+    }
+
+    #[test]
+    fn renders_new_issue_highlight_in_issue_list() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_issues(vec![
+            issue(122, "Fix login redraw", IssueState::Open, &["bug"]),
+            issue(130, "Fresh", IssueState::Open, &[]),
+        ]);
+        app.highlight_new_issues(vec![130]);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("#130"));
+        assert!(rendered.contains("NEW"));
+        assert!(rendered.contains("Fresh"));
     }
 
     #[test]

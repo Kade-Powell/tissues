@@ -40,6 +40,7 @@ pub async fn run<B: IssueBackend>(
         ui::trigger_flash_effect(app, &mut effects);
 
         draw_app(terminal, app, &mut effects, elapsed)?;
+        app.advance_new_issue_animation();
 
         if can_auto_refresh(app) && Instant::now() >= next_auto_refresh {
             if auto_refresh(app, backend).await.has_new_issues() {
@@ -429,15 +430,12 @@ async fn auto_refresh<B: IssueBackend>(app: &mut App, backend: &B) -> AutoRefres
             if let Some(number) = selected_issue_number {
                 app.select_issue_number(number);
             }
+            app.highlight_new_issues(new_issue_numbers.clone());
 
             match load_selected_detail(app, backend).await {
                 Ok(()) => {
                     app.finish_action();
-                    app.flash = Some(if new_issue_numbers.is_empty() {
-                        FlashKind::Refresh
-                    } else {
-                        FlashKind::Success
-                    });
+                    app.flash = Some(FlashKind::Refresh);
                     if let Some(status) = new_issue_status {
                         app.set_status(status);
                     } else {
@@ -1064,7 +1062,8 @@ mod tests {
         assert!(outcome.has_new_issues());
         assert_eq!(app.selected_issue().unwrap().number, 1);
         assert_eq!(app.status, "New issue #3: Handle webhook");
-        assert_eq!(app.flash, Some(FlashKind::Success));
+        assert_eq!(app.flash, Some(FlashKind::Refresh));
+        assert!(app.is_new_issue_highlighted(3));
         assert_eq!(app.mode, UiMode::Browsing);
     }
 
