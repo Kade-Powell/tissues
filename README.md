@@ -64,15 +64,8 @@ cargo run
 - `j` / `Down`: move to the next issue.
 - `k` / `Up`: move to the previous issue.
 - `Enter`: collapse or expand comments in the detail tree.
-- `:`: open command mode. Examples: `:refresh`, `:filter state`, `:filter assignee`, `:assign`, `:labels`, `:new`, `:quit`.
-- `r`: refresh issues.
-- `/`: edit search text.
-- `f`: cycle state filter: open, closed, all.
-- `a`: choose an assignee filter: any, me, unassigned, or a collaborator.
-- `A`: assign the selected issue to yourself, nobody, or a collaborator.
+- `:`: open command mode at the bottom of the screen.
 - `Space`: toggle users while assigning, then `Enter` submits all selected assignees.
-- `l`: edit labels on the selected issue.
-- `c`: comment on the selected issue.
 - `n`: create a new issue with separate title, Markdown body, and labels fields.
 - `x`: close the selected open issue with a required comment, or reopen a closed issue after confirmation.
 - `Tab` / `Shift+Tab`: move between new issue fields.
@@ -82,6 +75,19 @@ cargo run
 - `Esc`: cancel the current input or modal.
 - Mouse: click issue rows, detail tree, picker rows, text fields, and action buttons.
 - `q`: quit when not editing text.
+
+Useful commands:
+
+- `:refresh`: reload issues now.
+- `:search <text>`: search issue titles.
+- `:filter state`: cycle state filter: open, closed, all.
+- `:filter assignee`: choose an assignee filter: any, me, unassigned, or a collaborator.
+- `:assign`: assign the selected issue to yourself, nobody, or collaborators.
+- `:labels`: edit labels on the selected issue.
+- `:comment`: comment on the selected issue.
+- `:new`: create a new issue.
+- `:close`: close or reopen the selected issue.
+- `:quit`: quit.
 
 While browsing, Worktrack automatically reloads issues every 5 seconds. If the refreshed list contains issue numbers that were not already visible, or new comments mention your authenticated GitHub username, the footer shows the notification, the terminal bell rings, and macOS plays the system notification sound when available.
 

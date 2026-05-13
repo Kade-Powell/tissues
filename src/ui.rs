@@ -124,20 +124,21 @@ pub fn trigger_flash_effect(app: &mut App, effects: &mut WorktrackEffects) {
 pub fn render(app: &App, area: Rect, buffer: &mut Buffer) {
     Block::new().style(page_style()).render(area, buffer);
 
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(3),
-            Constraint::Min(8),
-            Constraint::Length(2),
-        ])
-        .split(area);
+    if app.mode == UiMode::Command {
+        let rows = command_mode_rows(area);
+        render_header(app, rows[0], buffer);
+        render_filters(app, rows[1], buffer);
+        render_body(app, rows[2], buffer);
+        render_command_bar(app, rows[3], buffer);
+        render_footer(app, rows[4], buffer);
+    } else {
+        let rows = main_rows(area);
+        render_header(app, rows[0], buffer);
+        render_filters(app, rows[1], buffer);
+        render_body(app, rows[2], buffer);
+        render_footer(app, rows[3], buffer);
+    }
 
-    render_header(app, rows[0], buffer);
-    render_filters(app, rows[1], buffer);
-    render_body(app, rows[2], buffer);
-    render_footer(app, rows[3], buffer);
     render_overlay(app, area, buffer);
 }
 
@@ -188,7 +189,6 @@ fn modal_block(title: impl Into<String>, accent: Color) -> Block<'static> {
 pub fn effect_area(app: &App, area: Rect) -> Rect {
     match app.mode {
         UiMode::Search
-        | UiMode::Command
         | UiMode::CommentComposer
         | UiMode::CloseComment
         | UiMode::NewIssue
@@ -199,6 +199,7 @@ pub fn effect_area(app: &App, area: Rect) -> Rect {
         | UiMode::Success
         | UiMode::Loading
         | UiMode::Error => centered_rect(72, 55, area),
+        UiMode::Command => command_bar_area(area),
         UiMode::Browsing | UiMode::FilterEditor => area,
     }
 }
@@ -510,12 +511,8 @@ fn render_footer(app: &App, area: Rect, buffer: &mut Buffer) {
 
 fn footer_shortcuts(app: &App) -> &'static str {
     match app.mode {
-        UiMode::Browsing => {
-            ": cmds | q | r | / search | f filter | A assign | c comment | l labels | n new | x close"
-        }
-        UiMode::Command => {
-            ":refresh | :filter state | :filter assignee | :assign | :labels | :new | :quit"
-        }
+        UiMode::Browsing => ": commands | n new | x close | j/k move | Enter details | q quit",
+        UiMode::Command => "Enter run | Esc cancel | Backspace delete",
         UiMode::Search => "Enter search | Esc cancel | Backspace delete",
         UiMode::CommentComposer => "Ctrl+S submit | Enter newline | Ctrl+J newline | Esc cancel",
         UiMode::CloseComment => "Ctrl+S close | Enter newline | Ctrl+J newline | Esc cancel",
@@ -540,7 +537,6 @@ fn footer_shortcuts(app: &App) -> &'static str {
 fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
     let title = match app.mode {
         UiMode::Search => Some("Search"),
-        UiMode::Command => Some("Command"),
         UiMode::CommentComposer => Some("Comment"),
         UiMode::CloseComment => Some("Close Issue"),
         UiMode::NewIssue => Some("New Issue"),
@@ -586,6 +582,22 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
             _ => render_text_editor(app, title, popup, buffer),
         }
     }
+}
+
+fn render_command_bar(app: &App, area: Rect, buffer: &mut Buffer) {
+    let mut textarea = textarea_at_end(vec![command_prompt_line(&app.input)]);
+    textarea.set_block(modal_block(
+        "Command  :refresh  :search <text>  :filter state  :assign  :labels  :comment  :quit",
+        ACTION_ACCENT,
+    ));
+    textarea.set_style(modal_style());
+    set_visible_cursor(&mut textarea);
+    (&textarea).render(area, buffer);
+}
+
+fn command_prompt_line(input: &str) -> String {
+    let command = input.strip_prefix(':').unwrap_or(input);
+    format!(":{command}")
 }
 
 fn render_loading_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
@@ -1064,6 +1076,23 @@ fn main_rows(area: Rect) -> std::rc::Rc<[Rect]> {
         .split(area)
 }
 
+fn command_mode_rows(area: Rect) -> std::rc::Rc<[Rect]> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Min(8),
+            Constraint::Length(3),
+            Constraint::Length(2),
+        ])
+        .split(area)
+}
+
+fn command_bar_area(area: Rect) -> Rect {
+    command_mode_rows(area)[3]
+}
+
 fn body_columns(area: Rect) -> std::rc::Rc<[Rect]> {
     Layout::default()
         .direction(Direction::Horizontal)
@@ -1216,11 +1245,12 @@ mod tests {
         assert!(rendered.contains("#122"));
         assert!(rendered.contains("open"));
         assert!(rendered.contains("Fix login redraw"));
-        assert!(rendered.contains("c comment"));
+        assert!(rendered.contains(": commands"));
         assert!(rendered.contains("n new"));
-        assert!(rendered.contains("A assign"));
-        assert!(rendered.contains("l labels"));
         assert!(rendered.contains("x close"));
+        assert!(!rendered.contains("A assign"));
+        assert!(!rendered.contains("c comment"));
+        assert!(!rendered.contains("l labels"));
     }
 
     #[test]
@@ -1254,7 +1284,10 @@ mod tests {
     fn footer_shortcuts_follow_active_screen() {
         let mut app = App::new("owner/skunkwork".parse().unwrap());
 
-        assert!(footer_shortcuts(&app).contains("q"));
+        assert!(footer_shortcuts(&app).contains(": commands"));
+        assert!(footer_shortcuts(&app).contains("n new"));
+        assert!(footer_shortcuts(&app).contains("x close"));
+        assert!(!footer_shortcuts(&app).contains("A assign"));
 
         app.mode = UiMode::NewIssue;
         assert!(footer_shortcuts(&app).contains("Ctrl+S create"));
@@ -1271,7 +1304,40 @@ mod tests {
         assert!(footer_shortcuts(&app).contains("Enter search"));
 
         app.mode = UiMode::Command;
-        assert!(footer_shortcuts(&app).contains(":refresh"));
+        assert!(footer_shortcuts(&app).contains("Enter run"));
+        assert!(!footer_shortcuts(&app).contains("n new"));
+    }
+
+    #[test]
+    fn renders_command_prompt_above_footer() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::Command;
+        app.input = "filter state".to_string();
+
+        let area = Rect::new(0, 0, 120, 28);
+        let mut buffer = Buffer::empty(area);
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+        let command_area = command_bar_area(area);
+
+        assert!(rendered.contains("Command"));
+        assert!(rendered.contains(":filter state"));
+        assert!(rendered.contains("Enter run"));
+        assert_eq!(command_area.height, 3);
+        assert!(command_area.y > area.height / 2);
+    }
+
+    #[test]
+    fn command_effect_area_uses_bottom_prompt() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::Command;
+
+        let area = Rect::new(0, 0, 120, 40);
+        let target = effect_area(&app, area);
+
+        assert_eq!(target, command_bar_area(area));
+        assert_eq!(target.height, 3);
+        assert!(target.y > area.height / 2);
     }
 
     #[test]

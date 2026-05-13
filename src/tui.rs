@@ -151,9 +151,6 @@ fn draw_app(
 fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> {
     match app.mode {
         UiMode::Browsing => match key.code {
-            KeyCode::Char('r') | KeyCode::Char('f') => {
-                Some((PendingAction::Refresh, "Refreshing issues".to_string()))
-            }
             KeyCode::Char('n') => Some((
                 PendingAction::LoadLabels,
                 "Loading repository labels".to_string(),
@@ -309,24 +306,7 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
             }
         }
         KeyCode::Enter if app.selected_detail.is_some() => app.toggle_comments(),
-        KeyCode::Char('r') => refresh(app, backend).await,
         KeyCode::Char(':') => open_command_prompt(app),
-        KeyCode::Char('/') => {
-            app.input = app.filters.query.clone();
-            app.mode = UiMode::Search;
-        }
-        KeyCode::Char('a') => open_assignee_filter(app, backend).await,
-        KeyCode::Char('A') if app.selected_issue().is_some() => {
-            open_assignee_editor(app, backend).await;
-        }
-        KeyCode::Char('f') => {
-            app.cycle_state_filter();
-            refresh(app, backend).await;
-        }
-        KeyCode::Char('l') if app.selected_issue().is_some() => {
-            open_issue_label_editor(app, backend).await;
-        }
-        KeyCode::Char('c') if app.selected_issue().is_some() => open_comment_composer(app),
         KeyCode::Char('n') => open_new_issue(app, backend).await,
         KeyCode::Char('x') if app.selected_issue().is_some() => {
             match app.selected_issue().map(|issue| issue.state.clone()) {
@@ -1811,6 +1791,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browsing_shortcuts_do_not_open_command_only_actions() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+
+        for code in [
+            KeyCode::Char('r'),
+            KeyCode::Char('/'),
+            KeyCode::Char('a'),
+            KeyCode::Char('A'),
+            KeyCode::Char('f'),
+            KeyCode::Char('l'),
+            KeyCode::Char('c'),
+        ] {
+            handle_browsing_key(&mut app, &backend, KeyEvent::new(code, KeyModifiers::NONE)).await;
+            assert_eq!(app.mode, UiMode::Browsing);
+        }
+
+        assert_eq!(app.filters.state, IssueStateFilter::Open);
+        assert_eq!(*backend.list_calls.lock().unwrap(), 0);
+        assert!(app.repo_labels.is_empty());
+        assert!(app.repo_collaborators.is_empty());
+    }
+
+    #[tokio::test]
     async fn assignee_editor_assigns_issue_to_collaborator() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/skunkwork".parse().unwrap());
@@ -2023,6 +2028,20 @@ mod tests {
 
         assert_eq!(
             loading_preview(&app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(
+            loading_preview(&app, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+            Some((
+                PendingAction::LoadLabels,
+                "Loading repository labels".to_string()
+            ))
+        );
+
+        app.mode = UiMode::Command;
+        app.input = "refresh".to_string();
+        assert_eq!(
+            loading_preview(&app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             Some((PendingAction::Refresh, "Refreshing issues".to_string()))
         );
 
