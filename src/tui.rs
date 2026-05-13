@@ -119,7 +119,12 @@ fn draw_app(
     terminal.draw(|frame| {
         let area = frame.area();
         ui::render(app, area, frame.buffer_mut());
-        effects.process(elapsed, frame.buffer_mut(), area);
+        let effect_area = if app.status == "Starting Worktrack" {
+            area
+        } else {
+            ui::effect_area(app, area)
+        };
+        effects.process(elapsed, frame.buffer_mut(), effect_area);
     })?;
     Ok(())
 }

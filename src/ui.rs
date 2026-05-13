@@ -11,7 +11,11 @@ use ratatui::{
     },
 };
 use ratatui_textarea::{CursorMove, TextArea};
-use tachyonfx::{EffectManager, Interpolation, Motion, fx, fx::RepeatMode};
+use tachyonfx::{
+    EffectManager, Interpolation, Motion, fx,
+    pattern::WavePattern,
+    wave::{Oscillator, WaveLayer},
+};
 use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::{
@@ -29,31 +33,41 @@ pub struct WorktrackEffects {
 
 impl WorktrackEffects {
     pub fn trigger_startup_loading(&mut self) {
-        self.trigger_loading();
+        self.manager.add_unique_effect(
+            "startup-loading",
+            fx::parallel(&[
+                fx::coalesce_from(
+                    Style::new().fg(Color::DarkGray),
+                    (720, Interpolation::SineOut),
+                ),
+                fx::slide_in(
+                    Motion::UpToDown,
+                    8,
+                    0,
+                    Color::Reset,
+                    (680, Interpolation::SineOut),
+                ),
+                fx::explode(1.6, 0.35, (520, Interpolation::SineOut)).reversed(),
+            ]),
+        );
     }
 
     pub fn trigger_refresh(&mut self) {
-        // Routine refreshes use the compact loading overlay instead of a page-wide effect.
-    }
-
-    fn trigger_loading(&mut self) {
         self.manager.add_unique_effect(
-            "loading",
-            fx::parallel(&[
-                fx::sweep_in(
+            "routine-loading",
+            fx::sequence(&[
+                fx::slide_in(
                     Motion::LeftToRight,
-                    18,
-                    2,
-                    Color::Blue,
-                    (850, Interpolation::SineInOut),
+                    5,
+                    0,
+                    Color::Reset,
+                    (240, Interpolation::SineOut),
                 ),
-                fx::repeat(
-                    fx::ping_pong(fx::hsl_shift_fg(
-                        [24.0, 18.0, 8.0],
-                        (420, Interpolation::SineInOut),
-                    )),
-                    RepeatMode::Times(3),
-                ),
+                fx::coalesce_from(
+                    Style::new().fg(Color::DarkGray),
+                    (360, Interpolation::SineOut),
+                )
+                .with_pattern(subtle_wave_pattern()),
             ]),
         );
     }
@@ -62,8 +76,17 @@ impl WorktrackEffects {
         self.manager.add_unique_effect(
             "success",
             fx::parallel(&[
-                fx::coalesce_from(Style::new().fg(Color::Green), (420, Interpolation::SineOut)),
-                fx::fade_to_fg(Color::Green, (350, Interpolation::SineOut)),
+                fx::slide_in(
+                    Motion::DownToUp,
+                    4,
+                    0,
+                    Color::Reset,
+                    (260, Interpolation::SineOut),
+                ),
+                fx::coalesce_from(
+                    Style::new().fg(Color::DarkGray),
+                    (420, Interpolation::SineOut),
+                ),
             ]),
         );
     }
@@ -85,6 +108,15 @@ impl WorktrackEffects {
     pub fn has_effects(&self) -> bool {
         self.manager.is_running()
     }
+}
+
+fn subtle_wave_pattern() -> WavePattern {
+    WavePattern::new(
+        WaveLayer::new(Oscillator::sin(0.18, 0.0, 2.2))
+            .average(Oscillator::cos(0.0, 0.45, 1.4))
+            .amplitude(0.65),
+    )
+    .with_transition_width(0.2)
 }
 
 pub fn trigger_flash_effect(app: &mut App, effects: &mut WorktrackEffects) {
@@ -112,6 +144,20 @@ pub fn render(app: &App, area: Rect, buffer: &mut Buffer) {
     render_body(app, rows[2], buffer);
     render_footer(app, rows[3], buffer);
     render_overlay(app, area, buffer);
+}
+
+pub fn effect_area(app: &App, area: Rect) -> Rect {
+    match app.mode {
+        UiMode::Search
+        | UiMode::CommentComposer
+        | UiMode::CloseComment
+        | UiMode::NewIssue
+        | UiMode::ConfirmClose
+        | UiMode::Success
+        | UiMode::Loading
+        | UiMode::Error => centered_rect(72, 55, area),
+        UiMode::Browsing | UiMode::FilterEditor => area,
+    }
 }
 
 fn render_header(app: &App, area: Rect, buffer: &mut Buffer) {
@@ -690,12 +736,12 @@ mod tests {
     }
 
     #[test]
-    fn routine_refresh_does_not_start_page_wide_effects() {
+    fn routine_refresh_starts_contained_loading_effects() {
         let mut effects = WorktrackEffects::default();
 
         effects.trigger_refresh();
 
-        assert!(!effects.has_effects());
+        assert!(effects.has_effects());
     }
 
     #[test]
@@ -705,6 +751,18 @@ mod tests {
         effects.trigger_startup_loading();
 
         assert!(effects.has_effects());
+    }
+
+    #[test]
+    fn loading_effects_are_targeted_to_modal_area() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.begin_action(PendingAction::Refresh, "Refreshing issues");
+
+        let area = Rect::new(0, 0, 120, 40);
+        let target = effect_area(&app, area);
+
+        assert!(target.width < area.width);
+        assert!(target.height < area.height);
     }
 
     #[test]
