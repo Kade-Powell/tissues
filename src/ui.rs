@@ -35,25 +35,21 @@ const ASSIGNEE_FILTER_PRIMARY_LABEL: &str = "Apply";
 const ASSIGNEE_EDITOR_PRIMARY_LABEL: &str = "Assign";
 const ISSUE_LABEL_PRIMARY_LABEL: &str = "Save";
 
-const ROSEWATER: Color = Color::from_u32(0xf5e0dc);
-const PINK: Color = Color::from_u32(0xf5c2e7);
-const MAUVE: Color = Color::from_u32(0xcba6f7);
-const RED: Color = Color::from_u32(0xf38ba8);
-const PEACH: Color = Color::from_u32(0xfab387);
-const YELLOW: Color = Color::from_u32(0xf9e2af);
-const GREEN: Color = Color::from_u32(0xa6e3a1);
-const TEAL: Color = Color::from_u32(0x94e2d5);
-const SKY: Color = Color::from_u32(0x89dceb);
-const BLUE: Color = Color::from_u32(0x89b4fa);
-const TEXT: Color = Color::from_u32(0xcdd6f4);
-const SUBTEXT1: Color = Color::from_u32(0xbac2de);
-const SUBTEXT0: Color = Color::from_u32(0xa6adc8);
-const OVERLAY1: Color = Color::from_u32(0x7f849c);
-const SURFACE2: Color = Color::from_u32(0x585b70);
-const SURFACE1: Color = Color::from_u32(0x45475a);
-const SURFACE0: Color = Color::from_u32(0x313244);
-const MANTLE: Color = Color::from_u32(0x181825);
-const CRUST: Color = Color::from_u32(0x11111b);
+const TITLE_ACCENT: Color = Color::Magenta;
+const LABEL_ACCENT: Color = Color::Magenta;
+const ISSUE_ACCENT: Color = Color::Magenta;
+const ERROR_ACCENT: Color = Color::Red;
+const WARNING_ACCENT: Color = Color::Yellow;
+const NOTICE_ACCENT: Color = Color::Yellow;
+const OPEN_ACCENT: Color = Color::Green;
+const PICKER_ACCENT: Color = Color::Cyan;
+const ACTION_ACCENT: Color = Color::Cyan;
+const DETAIL_ACCENT: Color = Color::Blue;
+const DEFAULT_FG: Color = Color::Reset;
+const MUTED_FG: Color = Color::Gray;
+const DIM_FG: Color = Color::DarkGray;
+const CLOSED_FG: Color = Color::DarkGray;
+const ACTION_FRAME_ACCENT: Color = Color::DarkGray;
 
 const EXABIND_FRAME: Set = Set {
     top_left: "▟",
@@ -86,10 +82,7 @@ impl WorktrackEffects {
         self.manager.add_unique_effect(
             "startup-loading",
             fx::parallel(&[
-                fx::coalesce_from(
-                    Style::new().fg(SURFACE1).bg(CRUST),
-                    (720, Interpolation::SineOut),
-                ),
+                fx::coalesce_from(Style::new().fg(DIM_FG), (720, Interpolation::SineOut)),
                 fx::slide_in(
                     Motion::UpToDown,
                     8,
@@ -110,14 +103,11 @@ impl WorktrackEffects {
                     Motion::LeftToRight,
                     5,
                     0,
-                    SURFACE0,
+                    Color::Reset,
                     (240, Interpolation::SineOut),
                 ),
-                fx::coalesce_from(
-                    Style::new().fg(SURFACE1).bg(CRUST),
-                    (360, Interpolation::SineOut),
-                )
-                .with_pattern(subtle_wave_pattern()),
+                fx::coalesce_from(Style::new().fg(DIM_FG), (360, Interpolation::SineOut))
+                    .with_pattern(subtle_wave_pattern()),
             ]),
         );
     }
@@ -130,13 +120,10 @@ impl WorktrackEffects {
                     Motion::DownToUp,
                     4,
                     0,
-                    SURFACE0,
+                    Color::Reset,
                     (260, Interpolation::SineOut),
                 ),
-                fx::coalesce_from(
-                    Style::new().fg(SURFACE1).bg(CRUST),
-                    (420, Interpolation::SineOut),
-                ),
+                fx::coalesce_from(Style::new().fg(DIM_FG), (420, Interpolation::SineOut)),
             ]),
         );
     }
@@ -145,11 +132,8 @@ impl WorktrackEffects {
         self.manager.add_unique_effect(
             "error",
             fx::parallel(&[
-                fx::dissolve_to(
-                    Style::new().fg(RED).bg(MANTLE),
-                    (360, Interpolation::SineOut),
-                ),
-                fx::fade_to_fg(RED, (350, Interpolation::SineOut)),
+                fx::dissolve_to(Style::new().fg(ERROR_ACCENT), (360, Interpolation::SineOut)),
+                fx::fade_to_fg(ERROR_ACCENT, (350, Interpolation::SineOut)),
             ]),
         );
     }
@@ -202,15 +186,15 @@ pub fn render(app: &App, area: Rect, buffer: &mut Buffer) {
 }
 
 fn page_style() -> Style {
-    Style::new().fg(TEXT).bg(CRUST)
+    Style::new().fg(DEFAULT_FG)
 }
 
 fn surface_style() -> Style {
-    Style::new().fg(TEXT).bg(SURFACE0)
+    Style::new().fg(DEFAULT_FG)
 }
 
 fn modal_style() -> Style {
-    Style::new().fg(TEXT).bg(MANTLE)
+    Style::new().fg(DEFAULT_FG)
 }
 
 fn frame_block(title: impl Into<String>, accent: Color) -> Block<'static> {
@@ -218,13 +202,13 @@ fn frame_block(title: impl Into<String>, accent: Color) -> Block<'static> {
 
     Block::bordered()
         .border_set(EXABIND_FRAME)
-        .border_style(Style::new().fg(accent).bg(SURFACE0))
+        .border_style(Style::new().fg(accent))
         .title(Span::styled(
             title,
             Style::new()
-                .fg(CRUST)
-                .bg(accent)
-                .add_modifier(Modifier::BOLD),
+                .fg(accent)
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::REVERSED),
         ))
         .style(surface_style())
 }
@@ -234,13 +218,13 @@ fn modal_block(title: impl Into<String>, accent: Color) -> Block<'static> {
 
     Block::bordered()
         .border_set(EXABIND_FRAME)
-        .border_style(Style::new().fg(accent).bg(MANTLE))
+        .border_style(Style::new().fg(accent))
         .title(Span::styled(
             title,
             Style::new()
-                .fg(CRUST)
-                .bg(accent)
-                .add_modifier(Modifier::BOLD),
+                .fg(accent)
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::REVERSED),
         ))
         .style(modal_style())
 }
@@ -274,13 +258,13 @@ fn render_header(app: &App, area: Rect, buffer: &mut Buffer) {
         .filter(|issue| issue.state == IssueState::Closed)
         .count();
     let header = Line::from(vec![
-        Span::styled(app.repo.to_string(), Style::new().fg(SKY).bg(CRUST).bold()),
+        Span::styled(app.repo.to_string(), Style::new().fg(ACTION_ACCENT).bold()),
         Span::styled(
             format!(
                 "    open: {open}  closed: {closed}  all: {}",
                 app.issues.len()
             ),
-            Style::new().fg(SUBTEXT1).bg(CRUST),
+            Style::new().fg(MUTED_FG),
         ),
     ]);
 
@@ -310,10 +294,10 @@ fn render_filters(app: &App, area: Rect, buffer: &mut Buffer) {
         .block(
             Block::default()
                 .borders(Borders::BOTTOM)
-                .border_style(Style::new().fg(SURFACE1).bg(CRUST))
+                .border_style(Style::new().fg(DIM_FG))
                 .style(page_style()),
         )
-        .style(Style::new().fg(YELLOW).bg(CRUST))
+        .style(Style::new().fg(NOTICE_ACCENT))
         .render(area, buffer);
 }
 
@@ -334,12 +318,7 @@ fn render_body(app: &App, area: Rect, buffer: &mut Buffer) {
         Constraint::Min(6),
     ];
     let header = Row::new(["Number", "State", "Who", "Labels", "Title"])
-        .style(
-            Style::new()
-                .fg(YELLOW)
-                .bg(SURFACE0)
-                .add_modifier(Modifier::BOLD),
-        )
+        .style(Style::new().fg(NOTICE_ACCENT).add_modifier(Modifier::BOLD))
         .bottom_margin(1);
     let rows = app.issues.iter().map(|issue| {
         issue_row(
@@ -349,14 +328,14 @@ fn render_body(app: &App, area: Rect, buffer: &mut Buffer) {
         )
     });
     let table = Table::new(rows, widths)
-        .block(frame_block("Issues", MAUVE))
+        .block(frame_block("Issues", ISSUE_ACCENT))
         .style(surface_style())
         .header(header)
         .row_highlight_style(
             Style::new()
-                .fg(TEXT)
-                .bg(SURFACE1)
-                .add_modifier(Modifier::BOLD),
+                .fg(DEFAULT_FG)
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::REVERSED),
         )
         .highlight_symbol("▸")
         .highlight_spacing(HighlightSpacing::Always);
@@ -404,7 +383,7 @@ fn issue_row(
             IssueHighlightKind::Mention => "PING ",
         };
         Cell::from(Line::from(vec![
-            Span::styled(badge, Style::new().fg(YELLOW).bg(SURFACE0).bold()),
+            Span::styled(badge, Style::new().fg(NOTICE_ACCENT).bold()),
             Span::styled(issue.title.clone(), surface_style()),
         ]))
     } else {
@@ -412,10 +391,10 @@ fn issue_row(
     };
 
     let row = Row::new([
-        Cell::from(format!("#{}", issue.number)).style(Style::new().fg(SKY).bg(SURFACE0)),
+        Cell::from(format!("#{}", issue.number)).style(Style::new().fg(ACTION_ACCENT)),
         Cell::from(state).style(state_style(issue.state.clone())),
-        Cell::from(assignees).style(Style::new().fg(BLUE).bg(SURFACE0)),
-        Cell::from(labels).style(Style::new().fg(PINK).bg(SURFACE0)),
+        Cell::from(assignees).style(Style::new().fg(DETAIL_ACCENT)),
+        Cell::from(labels).style(Style::new().fg(LABEL_ACCENT)),
         title,
     ])
     .style(surface_style());
@@ -424,14 +403,15 @@ fn issue_row(
         let pulse_is_high = (animation_frame / 8).is_multiple_of(2);
         let style = if pulse_is_high {
             match kind {
-                IssueHighlightKind::New => Style::new().fg(CRUST).bg(YELLOW),
-                IssueHighlightKind::Mention => Style::new().fg(CRUST).bg(SKY),
+                IssueHighlightKind::New => Style::new().fg(NOTICE_ACCENT),
+                IssueHighlightKind::Mention => Style::new().fg(ACTION_ACCENT),
             }
+            .add_modifier(Modifier::REVERSED)
             .add_modifier(Modifier::BOLD)
         } else {
             match kind {
-                IssueHighlightKind::New => Style::new().fg(YELLOW).bg(SURFACE1),
-                IssueHighlightKind::Mention => Style::new().fg(SKY).bg(SURFACE1),
+                IssueHighlightKind::New => Style::new().fg(NOTICE_ACCENT),
+                IssueHighlightKind::Mention => Style::new().fg(ACTION_ACCENT),
             }
             .add_modifier(Modifier::BOLD)
         };
@@ -443,8 +423,8 @@ fn issue_row(
 
 fn state_style(state: IssueState) -> Style {
     match state {
-        IssueState::Open => Style::new().fg(GREEN).bg(SURFACE0),
-        IssueState::Closed => Style::new().fg(OVERLAY1).bg(SURFACE0),
+        IssueState::Open => Style::new().fg(OPEN_ACCENT),
+        IssueState::Closed => Style::new().fg(CLOSED_FG),
     }
 }
 
@@ -479,7 +459,7 @@ fn render_detail(app: &App, area: Rect, buffer: &mut Buffer) {
     };
 
     Paragraph::new(detail)
-        .block(frame_block("Detail", BLUE))
+        .block(frame_block("Detail", DETAIL_ACCENT))
         .style(surface_style())
         .wrap(Wrap { trim: true })
         .render(area, buffer);
@@ -491,10 +471,10 @@ fn render_detail_tree(app: &App, detail: &IssueDetail, area: Rect, buffer: &mut 
         .expect("detail tree item identifiers are unique")
         .block(frame_block(
             format!("Detail #{}", detail.summary.number),
-            BLUE,
+            DETAIL_ACCENT,
         ))
         .style(surface_style())
-        .highlight_style(Style::new().bg(SURFACE1).fg(TEXT))
+        .highlight_style(Style::new().fg(DEFAULT_FG).add_modifier(Modifier::REVERSED))
         .node_open_symbol("▾ ")
         .node_closed_symbol("▸ ")
         .node_no_children_symbol("  ");
@@ -567,7 +547,7 @@ fn markdown_leaf(id: String, markdown: &str) -> TreeItem<'_, String> {
 fn render_footer(app: &App, area: Rect, buffer: &mut Buffer) {
     let footer = format!("{}\n{}", footer_shortcuts(app), app.status);
     Paragraph::new(footer)
-        .style(Style::new().fg(SUBTEXT0).bg(CRUST))
+        .style(Style::new().fg(DIM_FG))
         .render(area, buffer);
 }
 
@@ -626,18 +606,18 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
             UiMode::IssueLabelEditor => render_issue_label_editor(app, popup, buffer),
             UiMode::Loading => render_loading_overlay(app, popup, buffer),
             UiMode::ConfirmClose => Paragraph::new("Press y to reopen, Esc to cancel")
-                .block(modal_block(title, PEACH))
+                .block(modal_block(title, WARNING_ACCENT))
                 .style(modal_style())
                 .wrap(Wrap { trim: false })
                 .render(popup, buffer),
             UiMode::Error => Paragraph::new(app.status.clone())
-                .block(modal_block(title, RED))
-                .style(Style::new().fg(RED).bg(MANTLE))
+                .block(modal_block(title, ERROR_ACCENT))
+                .style(Style::new().fg(ERROR_ACCENT))
                 .wrap(Wrap { trim: false })
                 .render(popup, buffer),
             UiMode::Success => Paragraph::new(format!("{}\n\nState reloaded.", app.status))
-                .block(modal_block(title, GREEN))
-                .style(Style::new().fg(GREEN).bg(MANTLE))
+                .block(modal_block(title, OPEN_ACCENT))
+                .style(Style::new().fg(OPEN_ACCENT))
                 .wrap(Wrap { trim: false })
                 .render(popup, buffer),
             _ => render_text_editor(app, title, popup, buffer),
@@ -654,8 +634,8 @@ fn render_loading_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
     let body = format!("[*] {title}\n\n{}", app.status);
 
     Paragraph::new(body)
-        .block(modal_block("Working", SKY))
-        .style(Style::new().fg(SKY).bg(MANTLE).add_modifier(Modifier::BOLD))
+        .block(modal_block("Working", ACTION_ACCENT))
+        .style(Style::new().fg(ACTION_ACCENT).add_modifier(Modifier::BOLD))
         .wrap(Wrap { trim: false })
         .render(area, buffer);
 }
@@ -702,7 +682,7 @@ fn render_assignee_picker(app: &App, title: &'static str, area: Rect, buffer: &m
     }
 
     Paragraph::new(lines)
-        .block(modal_block(title, TEAL))
+        .block(modal_block(title, PICKER_ACCENT))
         .style(modal_style())
         .wrap(Wrap { trim: false })
         .render(rows[0], buffer);
@@ -737,8 +717,8 @@ fn render_issue_label_editor(app: &App, area: Rect, buffer: &mut Buffer) {
     }
 
     Paragraph::new(lines)
-        .block(modal_block("Edit Labels", PINK))
-        .style(Style::new().fg(PINK).bg(MANTLE))
+        .block(modal_block("Edit Labels", LABEL_ACCENT))
+        .style(Style::new().fg(LABEL_ACCENT))
         .wrap(Wrap { trim: false })
         .render(rows[0], buffer);
     render_action_buttons(ISSUE_LABEL_PRIMARY_LABEL, rows[1], buffer);
@@ -822,7 +802,7 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
             UiMode::Search => "Search Issues",
             _ => title,
         },
-        SKY,
+        ACTION_ACCENT,
     ));
     textarea.set_placeholder_text(match app.mode {
         UiMode::CommentComposer => "Write a comment",
@@ -841,7 +821,7 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
 }
 
 fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
-    let block = modal_block("New Issue", MAUVE);
+    let block = modal_block("New Issue", ISSUE_ACCENT);
     let inner = block.inner(area);
     block.render(area, buffer);
 
@@ -860,11 +840,11 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
 
     let title_active = app.new_issue_field == NewIssueField::Title;
     let mut title = textarea_at_end(input_lines(&app.input));
-    title.set_block(modal_block("Title", ROSEWATER));
+    title.set_block(modal_block("Title", TITLE_ACCENT));
     title.set_style(field_style(
         &app.new_issue_field,
         &NewIssueField::Title,
-        TEXT,
+        DEFAULT_FG,
     ));
     if title_active {
         set_visible_cursor(&mut title);
@@ -875,12 +855,12 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
 
     let body_active = app.new_issue_field == NewIssueField::Body;
     let mut body = textarea_at_end(input_lines(&app.body_input));
-    body.set_block(modal_block("Body (Markdown)", SKY));
+    body.set_block(modal_block("Body (Markdown)", ACTION_ACCENT));
     body.set_placeholder_text("Write the issue body");
     body.set_style(field_style(
         &app.new_issue_field,
         &NewIssueField::Body,
-        TEXT,
+        DEFAULT_FG,
     ));
     if body_active {
         set_visible_cursor(&mut body);
@@ -904,7 +884,12 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
         Line::from(vec![
             Span::raw("input: "),
             Span::raw(app.label_input.clone()),
-            Span::styled(" ", Style::new().fg(CRUST).bg(SKY)),
+            Span::styled(
+                " ",
+                Style::new()
+                    .fg(ACTION_ACCENT)
+                    .add_modifier(Modifier::REVERSED),
+            ),
         ])
     } else {
         Line::from(format!("input: {}", app.label_input))
@@ -914,11 +899,11 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
         input_line,
         Line::from(format!("suggestions: {suggestions}")),
     ])
-    .block(modal_block("Labels", PINK))
+    .block(modal_block("Labels", LABEL_ACCENT))
     .style(field_style(
         &app.new_issue_field,
         &NewIssueField::Labels,
-        PINK,
+        LABEL_ACCENT,
     ))
     .wrap(Wrap { trim: false })
     .render(rows[2], buffer);
@@ -930,20 +915,23 @@ fn render_action_buttons(primary: &'static str, area: Rect, buffer: &mut Buffer)
     let buttons = Line::from(vec![
         Span::styled(
             format!(" {primary} Ctrl+S "),
-            Style::new().fg(CRUST).bg(SKY).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(ACTION_ACCENT)
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::REVERSED),
         ),
         Span::raw("  "),
         Span::styled(
             " Cancel Esc ",
             Style::new()
-                .fg(TEXT)
-                .bg(SURFACE1)
-                .add_modifier(Modifier::BOLD),
+                .fg(MUTED_FG)
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::REVERSED),
         ),
     ]);
 
     Paragraph::new(buttons)
-        .block(modal_block("Actions", SURFACE2))
+        .block(modal_block("Actions", ACTION_FRAME_ACCENT))
         .style(modal_style())
         .render(area, buffer);
 }
@@ -961,9 +949,9 @@ fn field_style(active: &NewIssueField, field: &NewIssueField, color: Color) -> S
         Style::new()
             .fg(color)
             .add_modifier(Modifier::BOLD)
-            .bg(SURFACE1)
+            .add_modifier(Modifier::REVERSED)
     } else {
-        Style::new().fg(color).bg(MANTLE)
+        Style::new().fg(color)
     }
 }
 
@@ -983,8 +971,12 @@ fn textarea_at_end(lines: Vec<String>) -> TextArea<'static> {
 }
 
 fn set_visible_cursor(textarea: &mut TextArea<'_>) {
-    textarea.set_cursor_line_style(Style::new().bg(SURFACE1));
-    textarea.set_cursor_style(Style::new().fg(CRUST).bg(SKY));
+    textarea.set_cursor_line_style(Style::new().add_modifier(Modifier::REVERSED));
+    textarea.set_cursor_style(
+        Style::new()
+            .fg(ACTION_ACCENT)
+            .add_modifier(Modifier::REVERSED),
+    );
 }
 
 fn hide_cursor(textarea: &mut TextArea<'_>) {
@@ -1271,6 +1263,33 @@ mod tests {
         assert!(rendered.contains("A assign"));
         assert!(rendered.contains("l labels"));
         assert!(rendered.contains("x close"));
+    }
+
+    #[test]
+    fn main_screen_uses_terminal_default_background() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_issues(vec![
+            issue(122, "Fix login redraw", IssueState::Open, &["bug"]),
+            issue(101, "Clarify setup", IssueState::Closed, &["docs"]),
+        ]);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 120, 24));
+        render(&app, buffer.area, &mut buffer);
+
+        assert!(buffer.content.iter().all(|cell| cell.bg == Color::Reset));
+    }
+
+    #[test]
+    fn modal_screens_use_terminal_default_background() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.start_new_issue();
+        app.input = "Add terminal theme support".to_string();
+        app.body_input = "Keep the user's terminal palette visible.".to_string();
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 120, 32));
+        render(&app, buffer.area, &mut buffer);
+
+        assert!(buffer.content.iter().all(|cell| cell.bg == Color::Reset));
     }
 
     #[test]
