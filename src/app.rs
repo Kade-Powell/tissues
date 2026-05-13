@@ -1,4 +1,7 @@
-use crate::{domain::IssueSummary, repo::Repository};
+use crate::{
+    domain::{IssueDetail, IssueSummary},
+    repo::Repository,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IssueStateFilter {
@@ -82,6 +85,8 @@ pub struct App {
     pub status: String,
     pub input: String,
     pub body_input: String,
+    pub selected_detail: Option<IssueDetail>,
+    pub comments_expanded: bool,
     pub pending_action: Option<PendingAction>,
     pub flash: Option<FlashKind>,
     pub should_quit: bool,
@@ -98,6 +103,8 @@ impl App {
             status: "Ready".to_string(),
             input: String::new(),
             body_input: String::new(),
+            selected_detail: None,
+            comments_expanded: true,
             pending_action: None,
             flash: None,
             should_quit: false,
@@ -107,6 +114,7 @@ impl App {
     pub fn set_issues(&mut self, issues: Vec<IssueSummary>) {
         self.issues = issues;
         self.clamp_selection();
+        self.clear_stale_detail();
     }
 
     pub fn selected_issue(&self) -> Option<&IssueSummary> {
@@ -148,11 +156,36 @@ impl App {
         self.status = status.into();
     }
 
+    pub fn set_selected_detail(&mut self, detail: IssueDetail) {
+        self.selected_detail = Some(detail);
+        self.comments_expanded = true;
+    }
+
+    pub fn clear_selected_detail(&mut self) {
+        self.selected_detail = None;
+    }
+
+    pub fn toggle_comments(&mut self) {
+        self.comments_expanded = !self.comments_expanded;
+    }
+
     fn clamp_selection(&mut self) {
         if self.issues.is_empty() {
             self.selected_index = 0;
         } else {
             self.selected_index = self.selected_index.min(self.issues.len() - 1);
+        }
+    }
+
+    fn clear_stale_detail(&mut self) {
+        let selected_number = self.selected_issue().map(|issue| issue.number);
+        let detail_number = self
+            .selected_detail
+            .as_ref()
+            .map(|detail| detail.summary.number);
+
+        if detail_number.is_some() && detail_number != selected_number {
+            self.selected_detail = None;
         }
     }
 }
@@ -216,5 +249,24 @@ mod tests {
 
         app.set_issues(vec![issue(1, "one")]);
         assert_eq!(app.selected_index, 0);
+    }
+
+    #[test]
+    fn stores_selected_issue_detail_and_toggles_comments() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let detail = crate::domain::IssueDetail {
+            summary: issue(1, "one"),
+            body: "## Description".to_string(),
+            comments: Vec::new(),
+        };
+
+        app.set_selected_detail(detail);
+        assert!(app.comments_expanded);
+        assert_eq!(app.selected_detail.as_ref().unwrap().body, "## Description");
+
+        app.toggle_comments();
+        assert!(!app.comments_expanded);
+        app.toggle_comments();
+        assert!(app.comments_expanded);
     }
 }

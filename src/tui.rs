@@ -60,8 +60,21 @@ async fn handle_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) 
 async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
-        KeyCode::Char('j') | KeyCode::Down => app.select_next(),
-        KeyCode::Char('k') | KeyCode::Up => app.select_previous(),
+        KeyCode::Char('j') | KeyCode::Down => {
+            let previous = app.selected_issue().map(|issue| issue.number);
+            app.select_next();
+            if app.selected_issue().map(|issue| issue.number) != previous {
+                refresh_selected_detail(app, backend).await;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            let previous = app.selected_issue().map(|issue| issue.number);
+            app.select_previous();
+            if app.selected_issue().map(|issue| issue.number) != previous {
+                refresh_selected_detail(app, backend).await;
+            }
+        }
+        KeyCode::Enter if app.selected_detail.is_some() => app.toggle_comments(),
         KeyCode::Char('r') => refresh(app, backend).await,
         KeyCode::Char('/') => {
             app.input = app.filters.query.clone();
@@ -110,9 +123,13 @@ async fn handle_comment_key<B: IssueBackend>(app: &mut App, backend: &B, key: Ke
             app.mode = UiMode::Browsing;
             app.input.clear();
         }
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push('\n'),
         KeyCode::Enter => submit_comment(app, backend).await,
         KeyCode::Backspace => {
             app.input.pop();
+        }
+        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.input.push('\n');
         }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push(c),
         _ => {}
@@ -125,9 +142,13 @@ async fn handle_new_issue_key<B: IssueBackend>(app: &mut App, backend: &B, key: 
             app.mode = UiMode::Browsing;
             app.input.clear();
         }
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push('\n'),
         KeyCode::Enter => submit_new_issue(app, backend).await,
         KeyCode::Backspace => {
             app.input.pop();
+        }
+        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.input.push('\n');
         }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push(c),
         _ => {}
@@ -149,7 +170,7 @@ pub async fn refresh<B: IssueBackend>(app: &mut App, backend: &B) {
         Ok(issues) => {
             app.set_issues(issues);
             app.mode = UiMode::Browsing;
-            app.set_status(format!(
+            let loaded_status = format!(
                 "Loaded {} {} issues",
                 app.issues.len(),
                 match app.filters.state {
@@ -157,7 +178,14 @@ pub async fn refresh<B: IssueBackend>(app: &mut App, backend: &B) {
                     IssueStateFilter::Closed => "closed",
                     IssueStateFilter::All => "total",
                 }
-            ));
+            );
+            match load_selected_detail(app, backend).await {
+                Ok(()) => app.set_status(loaded_status),
+                Err(err) => {
+                    app.flash = Some(FlashKind::Error);
+                    app.set_status(format!("{loaded_status}; detail failed: {err:#}"));
+                }
+            }
         }
         Err(err) => {
             app.mode = UiMode::Browsing;
@@ -180,8 +208,16 @@ async fn refresh_after_action<B: IssueBackend>(
                 app.select_issue_number(number);
             }
             app.mode = UiMode::Browsing;
-            app.flash = Some(FlashKind::Success);
-            app.set_status(success_status);
+            match load_selected_detail(app, backend).await {
+                Ok(()) => {
+                    app.flash = Some(FlashKind::Success);
+                    app.set_status(success_status);
+                }
+                Err(err) => {
+                    app.flash = Some(FlashKind::Error);
+                    app.set_status(format!("{success_status}; detail refresh failed: {err:#}"));
+                }
+            }
         }
         Err(err) => {
             app.mode = UiMode::Browsing;
@@ -285,6 +321,24 @@ async fn toggle_issue_state<B: IssueBackend>(app: &mut App, backend: &B) {
     }
 }
 
+async fn refresh_selected_detail<B: IssueBackend>(app: &mut App, backend: &B) {
+    if let Err(err) = load_selected_detail(app, backend).await {
+        app.flash = Some(FlashKind::Error);
+        app.set_status(format!("Detail refresh failed: {err:#}"));
+    }
+}
+
+async fn load_selected_detail<B: IssueBackend>(app: &mut App, backend: &B) -> Result<()> {
+    let Some(number) = app.selected_issue().map(|issue| issue.number) else {
+        app.clear_selected_detail();
+        return Ok(());
+    };
+
+    let detail = backend.get_issue(&app.repo, number).await?;
+    app.set_selected_detail(detail);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +355,9 @@ mod tests {
     #[derive(Default)]
     struct MockBackend {
         list_calls: Mutex<usize>,
+        detail_calls: Mutex<usize>,
+        created_body: Mutex<Option<String>>,
+        commented_body: Mutex<Option<String>>,
         issues: Mutex<Vec<IssueSummary>>,
     }
 
@@ -317,6 +374,16 @@ mod tests {
         }
     }
 
+    fn backend_with_issues(issues: Vec<IssueSummary>) -> MockBackend {
+        MockBackend {
+            list_calls: Mutex::new(0),
+            detail_calls: Mutex::new(0),
+            created_body: Mutex::new(None),
+            commented_body: Mutex::new(None),
+            issues: Mutex::new(issues),
+        }
+    }
+
     #[async_trait]
     impl IssueBackend for MockBackend {
         async fn list_issues(
@@ -328,8 +395,25 @@ mod tests {
             Ok(self.issues.lock().unwrap().clone())
         }
 
-        async fn get_issue(&self, _repo: &Repository, _number: u64) -> Result<IssueDetail> {
-            unreachable!("not used by these tests")
+        async fn get_issue(&self, _repo: &Repository, number: u64) -> Result<IssueDetail> {
+            *self.detail_calls.lock().unwrap() += 1;
+            let summary = self
+                .issues
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|issue| issue.number == number)
+                .cloned()
+                .unwrap();
+            Ok(IssueDetail {
+                summary,
+                body: format!("## Body for issue {number}"),
+                comments: vec![IssueComment {
+                    author: None,
+                    body: format!("Comment for issue {number}"),
+                    created_at: None,
+                }],
+            })
         }
 
         async fn list_comments(
@@ -344,9 +428,10 @@ mod tests {
             &self,
             _repo: &Repository,
             _title: &str,
-            _body: &str,
+            body: &str,
             _labels: &[String],
         ) -> Result<IssueSummary> {
+            *self.created_body.lock().unwrap() = Some(body.to_string());
             let created = issue(2, "New task", IssueState::Open, 0);
             *self.issues.lock().unwrap() =
                 vec![issue(1, "Fix redraw", IssueState::Open, 1), created.clone()];
@@ -357,8 +442,9 @@ mod tests {
             &self,
             _repo: &Repository,
             _number: u64,
-            _body: &str,
+            body: &str,
         ) -> Result<IssueComment> {
+            *self.commented_body.lock().unwrap() = Some(body.to_string());
             *self.issues.lock().unwrap() = vec![issue(1, "Fix redraw", IssueState::Open, 2)];
             Ok(IssueComment {
                 author: None,
@@ -379,10 +465,7 @@ mod tests {
 
     #[tokio::test]
     async fn submit_comment_refreshes_issue_state_and_preserves_action_status() {
-        let backend = MockBackend {
-            list_calls: Mutex::new(0),
-            issues: Mutex::new(vec![issue(1, "Fix redraw", IssueState::Open, 1)]),
-        };
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/skunkwork".parse().unwrap());
         refresh(&mut app, &backend).await;
         app.input = "done".to_string();
@@ -391,6 +474,10 @@ mod tests {
         submit_comment(&mut app, &backend).await;
 
         assert_eq!(*backend.list_calls.lock().unwrap(), 2);
+        assert_eq!(
+            backend.commented_body.lock().unwrap().as_deref(),
+            Some("done")
+        );
         assert_eq!(app.selected_issue().unwrap().comment_count, 2);
         assert_eq!(app.status, "Commented on issue #1");
         assert_eq!(app.flash, Some(FlashKind::Success));
@@ -398,10 +485,7 @@ mod tests {
 
     #[tokio::test]
     async fn submit_new_issue_refreshes_and_selects_created_issue() {
-        let backend = MockBackend {
-            list_calls: Mutex::new(0),
-            issues: Mutex::new(vec![issue(1, "Fix redraw", IssueState::Open, 1)]),
-        };
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/skunkwork".parse().unwrap());
         refresh(&mut app, &backend).await;
         app.input = "New task | add docs".to_string();
@@ -410,8 +494,85 @@ mod tests {
         submit_new_issue(&mut app, &backend).await;
 
         assert_eq!(*backend.list_calls.lock().unwrap(), 2);
+        assert_eq!(
+            backend.created_body.lock().unwrap().as_deref(),
+            Some("add docs")
+        );
         assert_eq!(app.selected_issue().unwrap().number, 2);
         assert_eq!(app.status, "Created issue #2");
         assert_eq!(app.flash, Some(FlashKind::Success));
+    }
+
+    #[tokio::test]
+    async fn refresh_loads_selected_issue_detail() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+
+        refresh(&mut app, &backend).await;
+
+        assert_eq!(*backend.detail_calls.lock().unwrap(), 1);
+        assert_eq!(
+            app.selected_detail.as_ref().unwrap().body,
+            "## Body for issue 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn navigating_loads_new_selected_issue_detail() {
+        let backend = backend_with_issues(vec![
+            issue(1, "Fix redraw", IssueState::Open, 1),
+            issue(2, "Add tree", IssueState::Open, 0),
+        ]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        refresh(&mut app, &backend).await;
+
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(*backend.detail_calls.lock().unwrap(), 2);
+        assert_eq!(app.selected_detail.as_ref().unwrap().summary.number, 2);
+    }
+
+    #[tokio::test]
+    async fn enter_toggles_comment_tree() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        app.set_selected_detail(IssueDetail {
+            summary: issue(1, "Fix redraw", IssueState::Open, 1),
+            body: "Body".to_string(),
+            comments: Vec::new(),
+        });
+
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert!(!app.comments_expanded);
+    }
+
+    #[tokio::test]
+    async fn composer_ctrl_enter_inserts_markdown_newline() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::CommentComposer;
+        app.input = "**first**".to_string();
+
+        handle_comment_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+        )
+        .await;
+
+        assert_eq!(app.input, "**first**\n");
+        assert_eq!(app.mode, UiMode::CommentComposer);
     }
 }

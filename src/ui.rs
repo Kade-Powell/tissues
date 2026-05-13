@@ -12,10 +12,11 @@ use ratatui::{
 };
 use ratatui_textarea::TextArea;
 use tachyonfx::{EffectManager, Interpolation, fx};
+use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::{
     app::{App, FlashKind, IssueStateFilter, UiMode},
-    domain::{IssueState, IssueSummary},
+    domain::{IssueComment, IssueDetail, IssueState, IssueSummary},
 };
 
 #[derive(Default)]
@@ -190,6 +191,11 @@ fn state_style(state: IssueState) -> Style {
 }
 
 fn render_detail(app: &App, area: Rect, buffer: &mut Buffer) {
+    if let Some(detail) = app.selected_detail.as_ref() {
+        render_detail_tree(app, detail, area, buffer);
+        return;
+    }
+
     let detail = if let Some(issue) = app.selected_issue() {
         let labels = issue
             .labels
@@ -211,9 +217,84 @@ fn render_detail(app: &App, area: Rect, buffer: &mut Buffer) {
         .render(area, buffer);
 }
 
+fn render_detail_tree(app: &App, detail: &IssueDetail, area: Rect, buffer: &mut Buffer) {
+    let items = detail_tree_items(detail);
+    let tree = Tree::new(&items)
+        .expect("detail tree item identifiers are unique")
+        .block(Block::bordered().title(format!("Detail #{}", detail.summary.number)))
+        .highlight_style(Style::new().bg(Color::DarkGray).fg(Color::White))
+        .node_open_symbol("- ")
+        .node_closed_symbol("+ ")
+        .node_no_children_symbol("  ");
+    let mut state = TreeState::<String>::default();
+    state.open(vec!["description".to_string()]);
+    if app.comments_expanded {
+        state.open(vec!["comments".to_string()]);
+        for index in 0..detail.comments.len() {
+            state.open(vec!["comments".to_string(), format!("comment-{index}")]);
+        }
+    }
+
+    ratatui::widgets::StatefulWidget::render(tree, area, buffer, &mut state);
+}
+
+fn detail_tree_items(detail: &IssueDetail) -> Vec<TreeItem<'_, String>> {
+    vec![
+        TreeItem::new(
+            "description".to_string(),
+            "Description",
+            vec![markdown_leaf("description-body".to_string(), &detail.body)],
+        )
+        .expect("description item id is valid"),
+        TreeItem::new(
+            "comments".to_string(),
+            format!("Comments ({})", detail.comments.len()),
+            comment_tree_items(&detail.comments),
+        )
+        .expect("comments item id is valid"),
+    ]
+}
+
+fn comment_tree_items(comments: &[IssueComment]) -> Vec<TreeItem<'_, String>> {
+    if comments.is_empty() {
+        return vec![TreeItem::new_leaf(
+            "no-comments".to_string(),
+            "No comments yet.",
+        )];
+    }
+
+    comments
+        .iter()
+        .enumerate()
+        .map(|(index, comment)| {
+            let author = comment
+                .author
+                .as_ref()
+                .map_or("unknown".to_string(), |author| author.login.clone());
+            TreeItem::new(
+                format!("comment-{index}"),
+                author,
+                vec![markdown_leaf(
+                    format!("comment-{index}-body"),
+                    &comment.body,
+                )],
+            )
+            .expect("comment item id is valid")
+        })
+        .collect()
+}
+
+fn markdown_leaf(id: String, markdown: &str) -> TreeItem<'_, String> {
+    if markdown.trim().is_empty() {
+        TreeItem::new_leaf(id, "No description.")
+    } else {
+        TreeItem::new_leaf(id, tui_markdown::from_str(markdown))
+    }
+}
+
 fn render_footer(app: &App, area: Rect, buffer: &mut Buffer) {
     let footer = format!(
-        "q quit | r refresh | / search | f filters | c comment | n new issue | x close/reopen\n{}",
+        "q quit | r refresh | / search | f filter | Enter fold | c comment | n new issue | x close/reopen\n{}",
         app.status
     );
     Paragraph::new(footer)
@@ -377,5 +458,60 @@ mod tests {
 
         assert!(rendered.contains("Comment Body"));
         assert!(rendered.contains("Looks good"));
+    }
+
+    #[test]
+    fn renders_issue_detail_as_markdown_tree_with_comments() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let summary = issue(122, "Fix login redraw", IssueState::Open, &["bug"]);
+        app.set_issues(vec![summary.clone()]);
+        app.set_selected_detail(crate::domain::IssueDetail {
+            summary,
+            body: "## Description\n\n- redraw the form".to_string(),
+            comments: vec![crate::domain::IssueComment {
+                author: Some(crate::domain::User {
+                    login: "octocat".to_string(),
+                }),
+                body: "**Looks good**\n\nShip it.".to_string(),
+                created_at: None,
+            }],
+        });
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 110, 28));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Description"));
+        assert!(rendered.contains("Comments (1)"));
+        assert!(rendered.contains("redraw the form"));
+        assert!(rendered.contains("octocat"));
+        assert!(rendered.contains("Looks good"));
+        assert!(rendered.contains("Ship it."));
+    }
+
+    #[test]
+    fn collapses_comment_bodies_in_detail_tree() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let summary = issue(122, "Fix login redraw", IssueState::Open, &["bug"]);
+        app.set_issues(vec![summary.clone()]);
+        app.set_selected_detail(crate::domain::IssueDetail {
+            summary,
+            body: "Body".to_string(),
+            comments: vec![crate::domain::IssueComment {
+                author: Some(crate::domain::User {
+                    login: "octocat".to_string(),
+                }),
+                body: "Hidden comment body".to_string(),
+                created_at: None,
+            }],
+        });
+        app.toggle_comments();
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 110, 28));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Comments (1)"));
+        assert!(!rendered.contains("Hidden comment body"));
     }
 }

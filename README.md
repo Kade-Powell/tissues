@@ -6,6 +6,8 @@ Worktrack is a Rust terminal app for working through GitHub issues in one reposi
 
 - Browse open, closed, or all issues for a single repository.
 - Filter by issue state and search text.
+- View the selected issue body and comments in a collapsible tree.
+- Render issue descriptions and comments as Markdown in the detail pane.
 - Create new issues.
 - Add comments to existing issues.
 - Close and reopen issues.
@@ -48,12 +50,14 @@ cargo run
 
 - `j` / `Down`: move to the next issue.
 - `k` / `Up`: move to the previous issue.
+- `Enter`: collapse or expand comments in the detail tree.
 - `r`: refresh issues.
 - `/`: edit search text.
 - `f`: cycle state filter: open, closed, all.
 - `c`: comment on the selected issue.
-- `n`: create a new issue. Use `title | body` to include an optional body.
+- `n`: create a new issue. Use `title | body` to include an optional Markdown body.
 - `x`: close or reopen the selected issue after confirmation.
+- `Ctrl+Enter` or `Ctrl+J`: insert a newline while writing an issue body or comment.
 - `Esc`: cancel the current input or modal.
 - `q`: quit when not editing text.
 
