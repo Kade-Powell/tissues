@@ -73,8 +73,8 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
             Some((PendingAction::Refresh, "Refreshing issues".to_string()))
         }
         UiMode::CommentComposer
-            if key.code == KeyCode::Enter
-                && !key.modifiers.contains(KeyModifiers::CONTROL)
+            if key.code == KeyCode::Char('s')
+                && key.modifiers.contains(KeyModifiers::CONTROL)
                 && !app.input.trim().is_empty() =>
         {
             app.selected_issue().map(|issue| {
@@ -84,14 +84,7 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
                 )
             })
         }
-        UiMode::NewIssue
-            if (key.code == KeyCode::Enter
-                || key.code == KeyCode::Char('s')
-                    && key.modifiers.contains(KeyModifiers::CONTROL))
-                && (app.new_issue_field != NewIssueField::Labels
-                    || app.label_input.trim().is_empty())
-                && !app.input.trim().is_empty() =>
-        {
+        UiMode::NewIssue if should_submit_new_issue(app, key) && !app.input.trim().is_empty() => {
             Some((PendingAction::CreateIssue, "Creating issue".to_string()))
         }
         UiMode::ConfirmClose
@@ -113,6 +106,16 @@ fn pending_state_action(state: IssueState) -> PendingAction {
         IssueState::Open => PendingAction::CloseIssue,
         IssueState::Closed => PendingAction::ReopenIssue,
     }
+}
+
+fn should_submit_new_issue(app: &App, key: KeyEvent) -> bool {
+    if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return true;
+    }
+
+    key.code == KeyCode::Enter
+        && app.new_issue_field == NewIssueField::Labels
+        && app.label_input.trim().is_empty()
 }
 
 async fn handle_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
@@ -164,7 +167,7 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
         KeyCode::Char('c') if app.selected_issue().is_some() => {
             app.input.clear();
             app.mode = UiMode::CommentComposer;
-            app.set_status("Write a comment, Enter submits, Esc cancels");
+            app.set_status("Write a comment, Enter adds lines, Ctrl+S submits");
         }
         KeyCode::Char('n') => open_new_issue(app, backend).await,
         KeyCode::Char('x') if app.selected_issue().is_some() => {
@@ -197,7 +200,10 @@ async fn handle_comment_key<B: IssueBackend>(app: &mut App, backend: &B, key: Ke
             app.input.clear();
         }
         KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push('\n'),
-        KeyCode::Enter => submit_comment(app, backend).await,
+        KeyCode::Enter => app.input.push('\n'),
+        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            submit_comment(app, backend).await;
+        }
         KeyCode::Backspace => {
             app.input.pop();
         }
@@ -221,7 +227,7 @@ async fn handle_new_issue_key<B: IssueBackend>(app: &mut App, backend: &B, key: 
         KeyCode::Tab => app.next_new_issue_field(),
         KeyCode::BackTab => app.previous_new_issue_field(),
         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            submit_new_issue(app, backend).await
+            submit_new_issue(app, backend, true).await
         }
         KeyCode::Enter
             if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -229,7 +235,13 @@ async fn handle_new_issue_key<B: IssueBackend>(app: &mut App, backend: &B, key: 
         {
             app.body_input.push('\n');
         }
-        KeyCode::Enter => submit_new_issue(app, backend).await,
+        KeyCode::Enter if app.new_issue_field == NewIssueField::Title => {
+            app.new_issue_field = NewIssueField::Body;
+        }
+        KeyCode::Enter if app.new_issue_field == NewIssueField::Body => {
+            app.body_input.push('\n');
+        }
+        KeyCode::Enter => submit_new_issue(app, backend, false).await,
         KeyCode::Backspace => {
             backspace_new_issue_field(app);
         }
@@ -364,12 +376,14 @@ async fn submit_comment<B: IssueBackend>(app: &mut App, backend: &B) {
     }
 }
 
-async fn submit_new_issue<B: IssueBackend>(app: &mut App, backend: &B) {
+async fn submit_new_issue<B: IssueBackend>(app: &mut App, backend: &B, force_create: bool) {
     if app.new_issue_field == NewIssueField::Labels && !app.label_input.trim().is_empty() {
         if !app.accept_first_label_suggestion() {
             app.add_new_issue_label(app.label_input.trim().to_string());
         }
-        return;
+        if !force_create {
+            return;
+        }
     }
 
     let title = app.input.trim().to_string();
@@ -418,7 +432,7 @@ async fn open_new_issue<B: IssueBackend>(app: &mut App, backend: &B) {
             app.finish_action();
             app.mode = UiMode::NewIssue;
             app.set_repo_labels(labels);
-            app.set_status("New issue: Tab fields, Enter creates, Ctrl+S creates");
+            app.set_status("New issue: Tab fields, Enter edits, Ctrl+S creates");
         }
         Err(err) => {
             app.finish_action();
@@ -680,7 +694,7 @@ mod tests {
         app.body_input = "add docs".to_string();
         app.new_issue_labels = vec!["docs".to_string()];
 
-        submit_new_issue(&mut app, &backend).await;
+        submit_new_issue(&mut app, &backend, true).await;
 
         assert_eq!(*backend.list_calls.lock().unwrap(), 2);
         assert_eq!(
@@ -726,6 +740,13 @@ mod tests {
         app.input = "done".to_string();
         assert_eq!(
             loading_preview(&app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(
+            loading_preview(
+                &app,
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
+            ),
             Some((
                 PendingAction::AddComment,
                 "Adding comment to #1".to_string()
@@ -739,6 +760,21 @@ mod tests {
         assert_eq!(
             loading_preview(&app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             None
+        );
+
+        app.label_input.clear();
+        app.new_issue_field = NewIssueField::Body;
+        assert_eq!(
+            loading_preview(&app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            None
+        );
+
+        assert_eq!(
+            loading_preview(
+                &app,
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
+            ),
+            Some((PendingAction::CreateIssue, "Creating issue".to_string()))
         );
     }
 
@@ -816,6 +852,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn comment_enter_inserts_newline_and_ctrl_s_submits() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        refresh(&mut app, &backend).await;
+        app.mode = UiMode::CommentComposer;
+        app.input = "line one".to_string();
+
+        handle_comment_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+        handle_comment_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.input, "line one\nl");
+        assert_eq!(backend.commented_body.lock().unwrap().as_deref(), None);
+
+        handle_comment_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        assert_eq!(
+            backend.commented_body.lock().unwrap().as_deref(),
+            Some("line one\nl")
+        );
+        assert_eq!(app.mode, UiMode::Success);
+    }
+
+    #[tokio::test]
     async fn opening_new_issue_loads_repo_labels() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/skunkwork".parse().unwrap());
@@ -859,7 +933,7 @@ mod tests {
         handle_new_issue_key(
             &mut app,
             &backend,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
         )
         .await;
         handle_new_issue_key(
@@ -886,5 +960,64 @@ mod tests {
         assert_eq!(app.input, "A");
         assert_eq!(app.body_input, "*\nb");
         assert_eq!(app.new_issue_labels, vec!["docs"]);
+    }
+
+    #[tokio::test]
+    async fn body_enter_inserts_newline_and_ctrl_s_submits_new_issue() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        open_new_issue(&mut app, &backend).await;
+        app.input = "New task".to_string();
+        app.new_issue_field = NewIssueField::Body;
+        app.body_input = "line one".to_string();
+
+        handle_new_issue_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+        handle_new_issue_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.body_input, "line one\nl");
+        assert_eq!(*backend.list_calls.lock().unwrap(), 0);
+
+        handle_new_issue_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        assert_eq!(
+            backend.created_body.lock().unwrap().as_deref(),
+            Some("line one\nl")
+        );
+        assert_eq!(app.mode, UiMode::Success);
+    }
+
+    #[tokio::test]
+    async fn ctrl_s_accepts_pending_label_text_before_creating_issue() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        open_new_issue(&mut app, &backend).await;
+        app.input = "New task".to_string();
+        app.new_issue_field = NewIssueField::Labels;
+        app.label_input = "do".to_string();
+
+        handle_new_issue_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        assert_eq!(*backend.created_labels.lock().unwrap(), vec!["docs"]);
+        assert_eq!(app.mode, UiMode::Success);
     }
 }

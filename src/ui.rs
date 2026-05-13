@@ -742,6 +742,28 @@ mod tests {
     }
 
     #[test]
+    fn renders_multiline_markdown_issue_description() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let summary = issue(122, "Fix multiline body", IssueState::Open, &["bug"]);
+        app.set_issues(vec![summary.clone()]);
+        app.set_selected_detail(crate::domain::IssueDetail {
+            summary,
+            body: "Line one\n\nLine two\n\n### Notes\n\n- first item\n- second item".to_string(),
+            comments: Vec::new(),
+        });
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 120, 34));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Line one"));
+        assert!(rendered.contains("Line two"));
+        assert!(rendered.contains("Notes"));
+        assert!(rendered.contains("first item"));
+        assert!(rendered.contains("second item"));
+    }
+
+    #[test]
     fn collapses_comment_bodies_in_detail_tree() {
         let mut app = App::new("owner/skunkwork".parse().unwrap());
         let summary = issue(122, "Fix login redraw", IssueState::Open, &["bug"]);
