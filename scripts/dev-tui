@@ -13,7 +13,7 @@ if command -v watchexec >/dev/null 2>&1; then
 fi
 
 cat >&2 <<'EOF'
-watchexec is required for Worktrack TUI reloads.
+watchexec is required for skunkwork TUI reloads.
 
 Install it, then rerun this command:
 

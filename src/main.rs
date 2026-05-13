@@ -4,12 +4,12 @@ use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
 };
+use skunkwork::{app::App, github::GitHubClient, repo, tui};
 use std::io::stdout;
-use worktrack::{app::App, github::GitHubClient, repo, tui};
 
 #[derive(Debug, Parser)]
-#[command(name = "worktrack")]
-#[command(about = "A Ratatui work tracker for one GitHub repository")]
+#[command(name = "skunkwork")]
+#[command(about = "A Ratatui issue tracker for one GitHub repository")]
 struct Args {
     /// Repository to open, formatted as owner/repo. If omitted, gh repo view is used.
     repo: Option<String>,

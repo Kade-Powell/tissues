@@ -1,4 +1,4 @@
-# Worktrack Design
+# skunkwork Design
 
 Date: 2026-05-13
 
@@ -23,8 +23,8 @@ The app will read a token from `gh auth token` and pass it to Octocrab. It will 
 The app supports two launch modes:
 
 ```bash
-worktrack owner/skunkwork
-worktrack
+skunkwork owner/skunkwork
+skunkwork
 ```
 
 When an explicit repository is passed, the app validates and stores it as `{ owner, name }`.

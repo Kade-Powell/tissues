@@ -74,11 +74,11 @@ pub enum MouseTarget {
 }
 
 #[derive(Default)]
-pub struct WorktrackEffects {
+pub struct SkunkworkEffects {
     manager: EffectManager<String>,
 }
 
-impl WorktrackEffects {
+impl SkunkworkEffects {
     pub fn trigger_startup_loading(&mut self) {
         self.manager.add_unique_effect(
             "startup-loading",
@@ -120,7 +120,7 @@ impl WorktrackEffects {
     }
 }
 
-pub fn trigger_flash_effect(app: &mut App, effects: &mut WorktrackEffects) {
+pub fn trigger_flash_effect(app: &mut App, effects: &mut SkunkworkEffects) {
     match app.flash.take() {
         Some(FlashKind::Refresh) => effects.trigger_refresh(),
         Some(FlashKind::Success) => effects.trigger_success(),
@@ -1879,7 +1879,7 @@ mod tests {
 
     #[test]
     fn routine_refresh_starts_contained_loading_effects() {
-        let mut effects = WorktrackEffects::default();
+        let mut effects = SkunkworkEffects::default();
 
         effects.trigger_refresh();
 
@@ -1888,7 +1888,7 @@ mod tests {
 
     #[test]
     fn creates_startup_loading_effects() {
-        let mut effects = WorktrackEffects::default();
+        let mut effects = SkunkworkEffects::default();
 
         effects.trigger_startup_loading();
 

@@ -1,4 +1,4 @@
-# Worktrack Implementation Plan
+# skunkwork Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -19,7 +19,7 @@
 
 - [ ] **Step 1: Initialize package metadata and dependencies**
 
-Create a Rust binary package named `worktrack` with dependencies for async GitHub access, TUI rendering, terminal input, command-line parsing, and tests.
+Create a Rust binary package named `skunkwork` with dependencies for async GitHub access, TUI rendering, terminal input, command-line parsing, and tests.
 
 - [ ] **Step 2: Run baseline build**
 

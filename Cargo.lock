@@ -2699,6 +2699,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
 
 [[package]]
+name = "skunkwork"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "clap",
+ "color-eyre",
+ "crossterm",
+ "insta",
+ "octocrab",
+ "ratatui",
+ "ratatui-textarea",
+ "serde",
+ "serde_json",
+ "tachyonfx",
+ "throbber-widgets-tui",
+ "tokio",
+ "tui-markdown",
+ "tui-scrollview",
+ "tui-tree-widget",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3831,29 +3854,6 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
-]
-
-[[package]]
-name = "worktrack"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "clap",
- "color-eyre",
- "crossterm",
- "insta",
- "octocrab",
- "ratatui",
- "ratatui-textarea",
- "serde",
- "serde_json",
- "tachyonfx",
- "throbber-widgets-tui",
- "tokio",
- "tui-markdown",
- "tui-scrollview",
- "tui-tree-widget",
 ]
 
 [[package]]

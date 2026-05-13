@@ -19,7 +19,7 @@ use crate::{
     },
     domain::{IssueComment, IssueState, IssueSummary},
     github::IssueBackend,
-    ui::{self, WorktrackEffects},
+    ui::{self, SkunkworkEffects},
 };
 
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -31,8 +31,8 @@ pub async fn run<B: IssueBackend>(
     app: &mut App,
     backend: &B,
 ) -> Result<()> {
-    let mut effects = WorktrackEffects::default();
-    app.begin_action(PendingAction::Refresh, "Starting Worktrack");
+    let mut effects = SkunkworkEffects::default();
+    app.begin_action(PendingAction::Refresh, "Starting skunkwork");
     effects.trigger_startup_loading();
     draw_app(terminal, app, &mut effects, Duration::from_millis(120))?;
     if let Ok(login) = backend.current_login().await {
@@ -133,13 +133,13 @@ impl AutoRefreshOutcome {
 fn draw_app(
     terminal: &mut DefaultTerminal,
     app: &App,
-    effects: &mut WorktrackEffects,
+    effects: &mut SkunkworkEffects,
     elapsed: Duration,
 ) -> Result<()> {
     terminal.draw(|frame| {
         let area = frame.area();
         ui::render(app, area, frame.buffer_mut());
-        let effect_area = if app.status == "Starting Worktrack" {
+        let effect_area = if app.status == "Starting skunkwork" {
             area
         } else {
             ui::effect_area(app, area)

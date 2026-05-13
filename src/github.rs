@@ -408,7 +408,7 @@ pub fn load_gh_token() -> Result<String> {
 
     if !output.status.success() {
         return Err(eyre!(
-            "`gh auth token` failed; run `gh auth login` before starting worktrack"
+            "`gh auth token` failed; run `gh auth login` before starting skunkwork"
         ));
     }
 
