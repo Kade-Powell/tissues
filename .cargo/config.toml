@@ -1,0 +1,5 @@
+[registry]
+global-credential-providers = ["cargo:token"]
+
+[registries.artifactory]
+index = "sparse+https://artifactory.comcast.com/artifactory/api/cargo/titan-cargo/index/"

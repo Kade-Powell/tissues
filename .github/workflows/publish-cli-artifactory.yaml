@@ -1,0 +1,170 @@
+name: Publish CLI to Artifactory
+
+on:
+  workflow_call:
+    inputs:
+      version_tag:
+        description: "Release version tag from caller workflow"
+        type: string
+        required: true
+      runner_label:
+        description: "GitHub runner label"
+        type: string
+        required: false
+        default: comcast-ubuntu-latest
+      timeout_minutes:
+        description: "Job timeout in minutes"
+        type: number
+        required: false
+        default: 20
+      allow_existing:
+        description: "Treat already-published version as success"
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      artifactory_token:
+        required: true
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: "Release version tag"
+        type: string
+        required: false
+      runner_label:
+        description: "GitHub runner label"
+        type: string
+        required: false
+        default: comcast-ubuntu-latest
+      timeout_minutes:
+        description: "Job timeout in minutes"
+        type: number
+        required: false
+        default: 20
+      allow_existing:
+        description: "Treat already-published version as success"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ${{ inputs.runner_label || 'comcast-ubuntu-latest' }}
+    timeout-minutes: ${{ inputs.timeout_minutes || 20 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - name: Configure Artifactory credentials
+        env:
+          ARTIFACTORY_TOKEN: ${{ secrets.artifactory_token != '' && secrets.artifactory_token || secrets.ARTIFACTORY_TITAN_CARGO_PASSWORD }}
+        run: |
+          if [[ -z "${ARTIFACTORY_TOKEN}" ]]; then
+            echo "Artifactory token is required. Configure ARTIFACTORY_TITAN_CARGO_PASSWORD or pass artifactory_token."
+            exit 1
+          fi
+
+          mkdir -p ~/.cargo
+          cat > ~/.cargo/credentials.toml << EOF
+          [registries.artifactory]
+          token = "Bearer ${ARTIFACTORY_TOKEN}"
+          EOF
+
+      - name: Sync package version to release tag
+        run: |
+          set -euo pipefail
+
+          VERSION_TAG="${{ inputs.version_tag }}"
+          if [[ -z "$VERSION_TAG" ]]; then
+            VERSION_TAG="${GITHUB_REF_NAME}"
+          fi
+
+          TARGET_VERSION="$(printf '%s\n' "$VERSION_TAG" | sed 's/^[^0-9]*//')"
+          if [[ -z "$TARGET_VERSION" ]]; then
+            echo "Unable to derive semver from version tag: $VERSION_TAG"
+            exit 1
+          fi
+
+          if [[ ! "$TARGET_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Derived version is not valid semver for Cargo: $TARGET_VERSION"
+            exit 1
+          fi
+
+          export TARGET_VERSION
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          target_version = os.environ["TARGET_VERSION"]
+          cargo_toml = Path("Cargo.toml")
+          lines = cargo_toml.read_text().splitlines()
+
+          in_package = False
+          updated = False
+          for idx, line in enumerate(lines):
+              stripped = line.strip()
+              if stripped.startswith("[") and stripped.endswith("]"):
+                  if stripped == "[package]":
+                      in_package = True
+                      continue
+                  if in_package:
+                      break
+
+              if in_package and stripped.startswith("version") and "=" in stripped:
+                  lines[idx] = f'version = "{target_version}"'
+                  updated = True
+                  break
+
+          if not updated:
+              raise SystemExit("version field not found in [package] section")
+
+          cargo_toml.write_text("\n".join(lines) + "\n")
+          PY
+
+      - name: Publish crate to Artifactory cargo registry
+        env:
+          ALLOW_EXISTING: ${{ inputs.allow_existing && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          set +e
+          OUTPUT=$(cargo publish --registry artifactory --allow-dirty 2>&1)
+          STATUS=$?
+          set -e
+
+          if [[ $STATUS -eq 0 ]]; then
+            echo "$OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$ALLOW_EXISTING" == "true" ]] && echo "$OUTPUT" | grep -qi "already exists"; then
+            echo "$OUTPUT"
+            echo "Version already exists in registry; continuing because allow_existing=true"
+            exit 0
+          fi
+
+          echo "$OUTPUT"
+          exit $STATUS
+
+      - name: Show install command
+        run: |
+          VERSION_TAG="${{ inputs.version_tag }}"
+          if [[ -z "$VERSION_TAG" ]]; then
+            VERSION_TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="$(cargo pkgid | sed 's/.*#//')"
+          {
+            echo "Publish request tag: ${VERSION_TAG}"
+            echo "Published skunkwork ${VERSION} to registry 'artifactory'."
+            echo
+            echo "Install with:"
+            echo "cargo install --registry artifactory skunkwork --version \"${VERSION}\" --locked"
+          } >> "$GITHUB_STEP_SUMMARY"

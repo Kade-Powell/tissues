@@ -52,7 +52,34 @@ It does not persist GitHub credentials.
 
 ## Run
 
+Install from the internal Artifactory Cargo registry:
+
+```bash
+export CARGO_REGISTRIES_ARTIFACTORY_INDEX="sparse+https://artifactory.comcast.com/artifactory/api/cargo/titan-cargo/index/"
+export CARGO_REGISTRIES_ARTIFACTORY_CREDENTIAL_PROVIDER="cargo:token"
+export CARGO_REGISTRIES_ARTIFACTORY_TOKEN="Bearer <bearer-token>"
+
+# Latest
+cargo install --registry artifactory skunkwork --locked
+
+# Specific version
+cargo install --registry artifactory skunkwork --version "0.1.0" --locked
+```
+
+Validate:
+
+```bash
+skunkwork --version
+skunkwork --help
+```
+
 Open a specific repository:
+
+```bash
+skunkwork owner/skunkwork
+```
+
+Or run from source:
 
 ```bash
 cargo run -- owner/skunkwork

@@ -1,0 +1,27 @@
+name: CD Stable Release
+
+on:
+  release:
+    types: [released]
+
+permissions:
+  contents: write
+
+jobs:
+  stable-tag:
+    if: ${{ github.event.release.draft == false && github.event.release.prerelease == false && contains(github.event.release.tag_name, '-rc') }}
+    uses: comcast-zorrillo/gha-reusable-workflows/.github/workflows/create-tag-from-tag.yaml@v0.0.1-create-tag-from-tag
+    with:
+      existing_tag: ${{ github.event.release.tag_name }}
+      new_tag: ${{ github.event.release.name }}
+
+  publish-stable-cli-artifactory:
+    needs: stable-tag
+    uses: ./.github/workflows/publish-cli-artifactory.yaml
+    with:
+      version_tag: ${{ needs.stable-tag.outputs.new_tag }}
+      runner_label: comcast-ubuntu-latest
+      timeout_minutes: 20
+      allow_existing: true
+    secrets:
+      artifactory_token: ${{ secrets.ARTIFACTORY_TITAN_CARGO_PASSWORD }}

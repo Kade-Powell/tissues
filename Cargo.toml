@@ -2,6 +2,10 @@
 name = "skunkwork"
 version = "0.1.0"
 edition = "2024"
+description = "A Rust terminal app for working through GitHub issues in one repository at a time"
+repository = "https://github.com/comcast-zorrillo/skunkwork"
+readme = "README.md"
+publish = ["artifactory"]
 
 [dependencies]
 async-trait = "0.1.89"

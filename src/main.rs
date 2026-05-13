@@ -9,6 +9,7 @@ use std::io::stdout;
 
 #[derive(Debug, Parser)]
 #[command(name = "skunkwork")]
+#[command(version)]
 #[command(about = "A Ratatui issue tracker for one GitHub repository")]
 struct Args {
     /// Repository to open, formatted as owner/repo. If omitted, gh repo view is used.
