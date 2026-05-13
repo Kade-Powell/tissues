@@ -1,0 +1,297 @@
+use std::process::Command;
+
+use async_trait::async_trait;
+use color_eyre::eyre::{Result, WrapErr, eyre};
+use octocrab::{Octocrab, models, params};
+
+use crate::{
+    app::{AssigneeFilter, IssueFilters, IssueStateFilter},
+    domain::{IssueComment, IssueDetail, IssueState, IssueSummary, Label, User},
+    repo::Repository,
+};
+
+#[async_trait]
+pub trait IssueBackend {
+    async fn list_issues(
+        &self,
+        repo: &Repository,
+        filters: &IssueFilters,
+    ) -> Result<Vec<IssueSummary>>;
+    async fn get_issue(&self, repo: &Repository, number: u64) -> Result<IssueDetail>;
+    async fn list_comments(&self, repo: &Repository, number: u64) -> Result<Vec<IssueComment>>;
+    async fn create_issue(
+        &self,
+        repo: &Repository,
+        title: &str,
+        body: &str,
+        labels: &[String],
+    ) -> Result<IssueSummary>;
+    async fn add_comment(&self, repo: &Repository, number: u64, body: &str)
+    -> Result<IssueComment>;
+    async fn set_issue_state(
+        &self,
+        repo: &Repository,
+        number: u64,
+        state: IssueState,
+    ) -> Result<IssueSummary>;
+}
+
+pub struct GitHubClient {
+    crab: Octocrab,
+}
+
+impl GitHubClient {
+    pub fn from_gh_cli() -> Result<Self> {
+        Self::from_token(load_gh_token()?)
+    }
+
+    pub fn from_token(token: String) -> Result<Self> {
+        let crab = Octocrab::builder()
+            .personal_token(token)
+            .build()
+            .wrap_err("failed to build GitHub client")?;
+
+        Ok(Self { crab })
+    }
+
+    async fn current_login(&self) -> Result<String> {
+        let user = self
+            .crab
+            .current()
+            .user()
+            .await
+            .wrap_err("failed to load authenticated GitHub user")?;
+        Ok(user.login)
+    }
+}
+
+#[async_trait]
+impl IssueBackend for GitHubClient {
+    async fn list_issues(
+        &self,
+        repo: &Repository,
+        filters: &IssueFilters,
+    ) -> Result<Vec<IssueSummary>> {
+        let labels = filters.labels.clone();
+        let assignee = match &filters.assignee {
+            AssigneeFilter::Any => None,
+            AssigneeFilter::Me => Some(self.current_login().await?),
+            AssigneeFilter::None => Some("none".to_string()),
+            AssigneeFilter::User(user) => Some(user.clone()),
+        };
+
+        let handler = self.crab.issues(&repo.owner, &repo.name);
+        let mut request = handler
+            .list()
+            .state(to_param_state(&filters.state))
+            .sort(params::issues::Sort::Updated)
+            .direction(params::Direction::Descending)
+            .per_page(100);
+
+        if let Some(assignee) = assignee.as_deref() {
+            request = request.assignee(assignee);
+        }
+
+        if !labels.is_empty() {
+            request = request.labels(&labels);
+        }
+
+        let page = request
+            .send()
+            .await
+            .wrap_err("failed to list GitHub issues")?;
+        let issues = self
+            .crab
+            .all_pages(page)
+            .await
+            .wrap_err("failed to load all GitHub issue pages")?;
+        let query = filters.query.trim().to_lowercase();
+
+        Ok(issues
+            .into_iter()
+            .filter(|issue| issue.pull_request.is_none())
+            .filter(|issue| query.is_empty() || issue.title.to_lowercase().contains(&query))
+            .map(issue_summary_from_octocrab)
+            .collect())
+    }
+
+    async fn get_issue(&self, repo: &Repository, number: u64) -> Result<IssueDetail> {
+        let issue = self
+            .crab
+            .issues(&repo.owner, &repo.name)
+            .get(number)
+            .await
+            .wrap_err_with(|| format!("failed to load issue #{number}"))?;
+        let comments = self.list_comments(repo, number).await?;
+        let body = issue.body.clone().unwrap_or_default();
+
+        Ok(IssueDetail {
+            summary: issue_summary_from_octocrab(issue),
+            body,
+            comments,
+        })
+    }
+
+    async fn list_comments(&self, repo: &Repository, number: u64) -> Result<Vec<IssueComment>> {
+        let page = self
+            .crab
+            .issues(&repo.owner, &repo.name)
+            .list_comments(number)
+            .per_page(100)
+            .send()
+            .await
+            .wrap_err_with(|| format!("failed to list comments for issue #{number}"))?;
+        let comments = self
+            .crab
+            .all_pages(page)
+            .await
+            .wrap_err("failed to load all comment pages")?;
+
+        Ok(comments.into_iter().map(comment_from_octocrab).collect())
+    }
+
+    async fn create_issue(
+        &self,
+        repo: &Repository,
+        title: &str,
+        body: &str,
+        labels: &[String],
+    ) -> Result<IssueSummary> {
+        let issue = self
+            .crab
+            .issues(&repo.owner, &repo.name)
+            .create(title)
+            .body(body.to_string())
+            .labels(labels.to_vec())
+            .send()
+            .await
+            .wrap_err("failed to create issue")?;
+
+        Ok(issue_summary_from_octocrab(issue))
+    }
+
+    async fn add_comment(
+        &self,
+        repo: &Repository,
+        number: u64,
+        body: &str,
+    ) -> Result<IssueComment> {
+        let comment = self
+            .crab
+            .issues(&repo.owner, &repo.name)
+            .create_comment(number, body)
+            .await
+            .wrap_err_with(|| format!("failed to add comment to issue #{number}"))?;
+
+        Ok(comment_from_octocrab(comment))
+    }
+
+    async fn set_issue_state(
+        &self,
+        repo: &Repository,
+        number: u64,
+        state: IssueState,
+    ) -> Result<IssueSummary> {
+        let issue = self
+            .crab
+            .issues(&repo.owner, &repo.name)
+            .update(number)
+            .state(match state {
+                IssueState::Open => models::IssueState::Open,
+                IssueState::Closed => models::IssueState::Closed,
+            })
+            .send()
+            .await
+            .wrap_err_with(|| format!("failed to update issue #{number}"))?;
+
+        Ok(issue_summary_from_octocrab(issue))
+    }
+}
+
+pub fn load_gh_token() -> Result<String> {
+    let output = Command::new("gh")
+        .args(["auth", "token"])
+        .output()
+        .wrap_err("failed to run `gh auth token`; install GitHub CLI and run `gh auth login`")?;
+
+    if !output.status.success() {
+        return Err(eyre!(
+            "`gh auth token` failed; run `gh auth login` before starting worktrack"
+        ));
+    }
+
+    parse_gh_token_output(String::from_utf8_lossy(&output.stdout).as_ref())
+}
+
+fn parse_gh_token_output(output: &str) -> Result<String> {
+    let token = output.trim();
+
+    if token.is_empty() {
+        return Err(eyre!("`gh auth token` returned an empty token"));
+    }
+
+    Ok(token.to_string())
+}
+
+fn to_param_state(state: &IssueStateFilter) -> params::State {
+    match state {
+        IssueStateFilter::Open => params::State::Open,
+        IssueStateFilter::Closed => params::State::Closed,
+        IssueStateFilter::All => params::State::All,
+    }
+}
+
+fn issue_summary_from_octocrab(issue: models::issues::Issue) -> IssueSummary {
+    IssueSummary {
+        number: issue.number,
+        title: issue.title,
+        state: match issue.state {
+            models::IssueState::Open => IssueState::Open,
+            models::IssueState::Closed => IssueState::Closed,
+            _ => IssueState::Open,
+        },
+        labels: issue
+            .labels
+            .into_iter()
+            .map(|label| Label { name: label.name })
+            .collect(),
+        assignees: issue
+            .assignees
+            .into_iter()
+            .map(|user| User { login: user.login })
+            .collect(),
+        author: Some(User {
+            login: issue.user.login,
+        }),
+        updated_at: Some(issue.updated_at),
+        comment_count: issue.comments.into(),
+    }
+}
+
+fn comment_from_octocrab(comment: models::issues::Comment) -> IssueComment {
+    IssueComment {
+        author: Some(User {
+            login: comment.user.login,
+        }),
+        body: comment.body.unwrap_or_default(),
+        created_at: Some(comment.created_at),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trims_token_output() {
+        assert_eq!(parse_gh_token_output("ghp_secret\n").unwrap(), "ghp_secret");
+    }
+
+    #[test]
+    fn rejects_empty_token_output_without_echoing_token() {
+        let err = parse_gh_token_output("   \n").unwrap_err();
+
+        assert!(err.to_string().contains("empty token"));
+        assert!(!err.to_string().contains("ghp_"));
+    }
+}
