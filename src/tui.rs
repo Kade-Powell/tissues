@@ -167,6 +167,30 @@ pub async fn refresh<B: IssueBackend>(app: &mut App, backend: &B) {
     }
 }
 
+async fn refresh_after_action<B: IssueBackend>(
+    app: &mut App,
+    backend: &B,
+    selected_issue_number: Option<u64>,
+    success_status: String,
+) {
+    match backend.list_issues(&app.repo, &app.filters).await {
+        Ok(issues) => {
+            app.set_issues(issues);
+            if let Some(number) = selected_issue_number {
+                app.select_issue_number(number);
+            }
+            app.mode = UiMode::Browsing;
+            app.flash = Some(FlashKind::Success);
+            app.set_status(success_status);
+        }
+        Err(err) => {
+            app.mode = UiMode::Browsing;
+            app.flash = Some(FlashKind::Error);
+            app.set_status(format!("{success_status}; refresh failed: {err:#}"));
+        }
+    }
+}
+
 async fn submit_comment<B: IssueBackend>(app: &mut App, backend: &B) {
     let body = app.input.trim().to_string();
     let Some(issue) = app.selected_issue() else {
@@ -184,10 +208,13 @@ async fn submit_comment<B: IssueBackend>(app: &mut App, backend: &B) {
     match backend.add_comment(&app.repo, number, &body).await {
         Ok(_) => {
             app.input.clear();
-            app.mode = UiMode::Browsing;
-            app.flash = Some(FlashKind::Success);
-            app.set_status(format!("Commented on issue #{number}"));
-            refresh(app, backend).await;
+            refresh_after_action(
+                app,
+                backend,
+                Some(number),
+                format!("Commented on issue #{number}"),
+            )
+            .await;
         }
         Err(err) => {
             app.flash = Some(FlashKind::Error);
@@ -212,11 +239,15 @@ async fn submit_new_issue<B: IssueBackend>(app: &mut App, backend: &B) {
 
     match backend.create_issue(&app.repo, title, body, &[]).await {
         Ok(issue) => {
+            let number = issue.number;
             app.input.clear();
-            app.mode = UiMode::Browsing;
-            app.flash = Some(FlashKind::Success);
-            app.set_status(format!("Created issue #{}", issue.number));
-            refresh(app, backend).await;
+            refresh_after_action(
+                app,
+                backend,
+                Some(number),
+                format!("Created issue #{number}"),
+            )
+            .await;
         }
         Err(err) => {
             app.flash = Some(FlashKind::Error);
@@ -238,15 +269,149 @@ async fn toggle_issue_state<B: IssueBackend>(app: &mut App, backend: &B) {
 
     match backend.set_issue_state(&app.repo, number, next_state).await {
         Ok(_) => {
-            app.mode = UiMode::Browsing;
-            app.flash = Some(FlashKind::Success);
-            app.set_status(format!("Updated issue #{number}"));
-            refresh(app, backend).await;
+            refresh_after_action(
+                app,
+                backend,
+                Some(number),
+                format!("Updated issue #{number}"),
+            )
+            .await;
         }
         Err(err) => {
             app.mode = UiMode::Browsing;
             app.flash = Some(FlashKind::Error);
             app.set_status(format!("Update failed: {err:#}"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use color_eyre::eyre::Result;
+    use std::sync::Mutex;
+
+    use crate::{
+        app::IssueFilters,
+        domain::{IssueComment, IssueDetail, IssueSummary},
+        repo::Repository,
+    };
+
+    #[derive(Default)]
+    struct MockBackend {
+        list_calls: Mutex<usize>,
+        issues: Mutex<Vec<IssueSummary>>,
+    }
+
+    fn issue(number: u64, title: &str, state: IssueState, comment_count: u64) -> IssueSummary {
+        IssueSummary {
+            number,
+            title: title.to_string(),
+            state,
+            labels: Vec::new(),
+            assignees: Vec::new(),
+            author: None,
+            updated_at: None,
+            comment_count,
+        }
+    }
+
+    #[async_trait]
+    impl IssueBackend for MockBackend {
+        async fn list_issues(
+            &self,
+            _repo: &Repository,
+            _filters: &IssueFilters,
+        ) -> Result<Vec<IssueSummary>> {
+            *self.list_calls.lock().unwrap() += 1;
+            Ok(self.issues.lock().unwrap().clone())
+        }
+
+        async fn get_issue(&self, _repo: &Repository, _number: u64) -> Result<IssueDetail> {
+            unreachable!("not used by these tests")
+        }
+
+        async fn list_comments(
+            &self,
+            _repo: &Repository,
+            _number: u64,
+        ) -> Result<Vec<IssueComment>> {
+            unreachable!("not used by these tests")
+        }
+
+        async fn create_issue(
+            &self,
+            _repo: &Repository,
+            _title: &str,
+            _body: &str,
+            _labels: &[String],
+        ) -> Result<IssueSummary> {
+            let created = issue(2, "New task", IssueState::Open, 0);
+            *self.issues.lock().unwrap() =
+                vec![issue(1, "Fix redraw", IssueState::Open, 1), created.clone()];
+            Ok(created)
+        }
+
+        async fn add_comment(
+            &self,
+            _repo: &Repository,
+            _number: u64,
+            _body: &str,
+        ) -> Result<IssueComment> {
+            *self.issues.lock().unwrap() = vec![issue(1, "Fix redraw", IssueState::Open, 2)];
+            Ok(IssueComment {
+                author: None,
+                body: "done".to_string(),
+                created_at: None,
+            })
+        }
+
+        async fn set_issue_state(
+            &self,
+            _repo: &Repository,
+            _number: u64,
+            _state: IssueState,
+        ) -> Result<IssueSummary> {
+            unreachable!("not used by these tests")
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_comment_refreshes_issue_state_and_preserves_action_status() {
+        let backend = MockBackend {
+            list_calls: Mutex::new(0),
+            issues: Mutex::new(vec![issue(1, "Fix redraw", IssueState::Open, 1)]),
+        };
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        refresh(&mut app, &backend).await;
+        app.input = "done".to_string();
+        app.mode = UiMode::CommentComposer;
+
+        submit_comment(&mut app, &backend).await;
+
+        assert_eq!(*backend.list_calls.lock().unwrap(), 2);
+        assert_eq!(app.selected_issue().unwrap().comment_count, 2);
+        assert_eq!(app.status, "Commented on issue #1");
+        assert_eq!(app.flash, Some(FlashKind::Success));
+    }
+
+    #[tokio::test]
+    async fn submit_new_issue_refreshes_and_selects_created_issue() {
+        let backend = MockBackend {
+            list_calls: Mutex::new(0),
+            issues: Mutex::new(vec![issue(1, "Fix redraw", IssueState::Open, 1)]),
+        };
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        refresh(&mut app, &backend).await;
+        app.input = "New task | add docs".to_string();
+        app.mode = UiMode::NewIssue;
+
+        submit_new_issue(&mut app, &backend).await;
+
+        assert_eq!(*backend.list_calls.lock().unwrap(), 2);
+        assert_eq!(app.selected_issue().unwrap().number, 2);
+        assert_eq!(app.status, "Created issue #2");
+        assert_eq!(app.flash, Some(FlashKind::Success));
     }
 }

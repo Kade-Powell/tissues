@@ -113,6 +113,12 @@ impl App {
         self.issues.get(self.selected_index)
     }
 
+    pub fn select_issue_number(&mut self, number: u64) {
+        if let Some(index) = self.issues.iter().position(|issue| issue.number == number) {
+            self.selected_index = index;
+        }
+    }
+
     pub fn select_next(&mut self) {
         if self.issues.is_empty() {
             self.selected_index = 0;
