@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+printf '%s\n' \
+  'Interactive TUI runs are disabled inside bacon.' \
+  'Use ./scripts/dev-tui owner/skunkwork in a separate terminal.'

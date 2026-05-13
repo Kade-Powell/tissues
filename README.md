@@ -96,7 +96,21 @@ Run the interactive TUI in a separate terminal:
 cargo run -- owner/skunkwork
 ```
 
-Do not run the full Worktrack TUI as a bacon job. Bacon is also a terminal UI, and nesting Worktrack inside it can leave the terminal alternate screen, mouse capture, or formatting in a bad state. The included `smoke` job intentionally runs only `cargo run -- --help`.
+For restart-on-change development of the actual TUI, install a plain process watcher and run the helper script in a normal terminal:
+
+```bash
+cargo install watchexec-cli
+./scripts/dev-tui owner/skunkwork
+```
+
+The script also works with `cargo-watch` if that is what you have installed:
+
+```bash
+cargo install cargo-watch
+./scripts/dev-tui owner/skunkwork
+```
+
+Do not run the full Worktrack TUI as a bacon job. Bacon is also a terminal UI, and nesting Worktrack inside it can leave the terminal alternate screen, mouse capture, or formatting in a bad state. Bacon's `run` and `run-long` jobs are intentionally overridden to print a reminder instead of launching Worktrack. The included `smoke` job intentionally runs only `cargo run -- --help`.
 
 Run the checks used for this project:
 

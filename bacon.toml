@@ -37,12 +37,12 @@ allow_warnings = false
 # Override bacon's built-in run jobs so project shortcuts never nest the
 # interactive TUI inside bacon's own TUI.
 [jobs.run]
-command = ["cargo", "run", "--", "--help"]
+command = ["./scripts/bacon-run-disabled"]
 need_stdout = true
 allow_warnings = false
 
 [jobs.run-long]
-command = ["cargo", "run", "--", "--help"]
+command = ["./scripts/bacon-run-disabled"]
 need_stdout = true
 allow_warnings = false
 

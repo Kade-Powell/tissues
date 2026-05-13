@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if command -v watchexec >/dev/null 2>&1; then
+  exec watchexec \
+    --restart \
+    --clear \
+    --watch src \
+    --watch Cargo.toml \
+    --watch Cargo.lock \
+    --exts rs,toml,lock \
+    -- cargo run -- "$@"
+fi
+
+if command -v cargo-watch >/dev/null 2>&1; then
+  cargo_args="run --"
+  for arg in "$@"; do
+    cargo_args+=" $(printf '%q' "$arg")"
+  done
+
+  exec cargo watch \
+    --watch src \
+    --watch Cargo.toml \
+    --watch Cargo.lock \
+    --exec "$cargo_args"
+fi
+
+cat >&2 <<'EOF'
+No restart watcher found.
+
+Install one of these, then rerun this command:
+
+  cargo install watchexec-cli
+  # or
+  cargo install cargo-watch
+
+Then start the interactive TUI in this normal terminal:
+
+  ./scripts/dev-tui owner/skunkwork
+
+Keep bacon in a different terminal for checks. Do not run the full TUI inside bacon.
+EOF
+
+exit 1
