@@ -86,8 +86,10 @@ bacon
 This watches the project and runs `cargo check --all-targets` after changes. Inside bacon:
 
 - `t`: run tests.
+- `u`: run library unit tests.
 - `c`: run clippy with the same warning policy used for verification.
 - `f`: run `cargo fmt --check`.
+- `d`: build docs without dependencies.
 - `s`: run the non-interactive help smoke test.
 
 Run the interactive TUI in a separate terminal:
