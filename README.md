@@ -98,17 +98,10 @@ Run the interactive TUI in a separate terminal:
 cargo run -- owner/skunkwork
 ```
 
-For restart-on-change development of the actual TUI, install a plain process watcher and run the helper script in a normal terminal:
+For restart-on-change development of the actual TUI, install `watchexec` and run the helper script in a normal terminal:
 
 ```bash
 cargo install watchexec-cli
-./scripts/dev-tui owner/skunkwork
-```
-
-The script also works with `cargo-watch` if that is what you have installed:
-
-```bash
-cargo install cargo-watch
 ./scripts/dev-tui owner/skunkwork
 ```
 
