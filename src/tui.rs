@@ -159,31 +159,33 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
         },
         UiMode::Command if key.code == KeyCode::Enter => {
             let command = normalized_command(&app.input);
-            match command.as_str() {
-                "r" | "refresh" | "reload" | "f state" | "filter state" | "state" => {
-                    Some((PendingAction::Refresh, "Refreshing issues".to_string()))
-                }
-                "f assignee" | "filter assignee" | "assignee filter" => Some((
+            if is_refresh_command(&command) || is_filter_state_command(&command) {
+                Some((PendingAction::Refresh, "Refreshing issues".to_string()))
+            } else if is_filter_assignee_command(&command) {
+                Some((
                     PendingAction::LoadCollaborators,
                     "Loading collaborators".to_string(),
-                )),
-                "n" | "new" | "new issue" => Some((
-                    PendingAction::LoadLabels,
-                    "Loading repository labels".to_string(),
-                )),
-                "assign" | "assignees" => app.selected_issue().map(|issue| {
-                    (
-                        PendingAction::LoadCollaborators,
-                        format!("Loading collaborators for #{}", issue.number),
-                    )
-                }),
-                "labels" | "label" => app.selected_issue().map(|issue| {
-                    (
+                ))
+            } else {
+                match command.as_str() {
+                    "n" | "new" | "new issue" => Some((
                         PendingAction::LoadLabels,
-                        format!("Loading labels for #{}", issue.number),
-                    )
-                }),
-                _ => None,
+                        "Loading repository labels".to_string(),
+                    )),
+                    "assign" | "assignees" => app.selected_issue().map(|issue| {
+                        (
+                            PendingAction::LoadCollaborators,
+                            format!("Loading collaborators for #{}", issue.number),
+                        )
+                    }),
+                    "labels" | "label" => app.selected_issue().map(|issue| {
+                        (
+                            PendingAction::LoadLabels,
+                            format!("Loading labels for #{}", issue.number),
+                        )
+                    }),
+                    _ => None,
+                }
             }
         }
         UiMode::Search if key.code == KeyCode::Enter => {
@@ -240,6 +242,36 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
 
 fn normalized_command(input: &str) -> String {
     input.trim().trim_start_matches(':').trim().to_lowercase()
+}
+
+fn is_refresh_command(command: &str) -> bool {
+    matches!(command, "r" | "refresh" | "reload")
+}
+
+fn is_filter_state_command(command: &str) -> bool {
+    matches!(
+        command,
+        "f" | "fs" | "f state" | "filter" | "filter state" | "state"
+    )
+}
+
+fn is_filter_assignee_command(command: &str) -> bool {
+    matches!(
+        command,
+        "fa" | "f assignee" | "filter assignee" | "assignee filter"
+    )
+}
+
+fn is_search_prompt_command(command: &str) -> bool {
+    matches!(command, "s" | "search" | "/")
+}
+
+fn search_query_command(command: &str) -> Option<String> {
+    command
+        .strip_prefix("search ")
+        .or_else(|| command.strip_prefix("s "))
+        .map(str::trim)
+        .map(ToOwned::to_owned)
 }
 
 fn pending_state_action(state: IssueState) -> PendingAction {
@@ -468,25 +500,25 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
             app.mode = UiMode::Browsing;
         }
         "q" | "quit" => app.should_quit = true,
-        "r" | "refresh" | "reload" => {
+        command if is_refresh_command(command) => {
             app.mode = UiMode::Browsing;
             refresh(app, backend).await;
         }
-        "f" | "f state" | "filter" | "filter state" | "state" => {
+        command if is_filter_state_command(command) => {
             app.cycle_state_filter();
             app.mode = UiMode::Browsing;
             refresh(app, backend).await;
         }
-        "f assignee" | "fa" | "filter assignee" | "assignee filter" => {
+        command if is_filter_assignee_command(command) => {
             open_assignee_filter(app, backend).await;
         }
-        "search" | "/" => {
+        command if is_search_prompt_command(command) => {
             app.input = app.filters.query.clone();
             app.mode = UiMode::Search;
             app.set_status("Search issue titles");
         }
-        command if command.starts_with("search ") => {
-            let query = command.trim_start_matches("search ").trim().to_string();
+        command if search_query_command(command).is_some() => {
+            let query = search_query_command(command).expect("search query checked");
             app.set_query(query);
             app.mode = UiMode::Browsing;
             refresh(app, backend).await;
@@ -731,6 +763,7 @@ pub async fn refresh<B: IssueBackend>(app: &mut App, backend: &B) {
             match load_selected_detail(app, backend).await {
                 Ok(()) => {
                     app.finish_action();
+                    app.flash = Some(FlashKind::Refresh);
                     app.set_status(loaded_status);
                 }
                 Err(err) => {
@@ -1728,6 +1761,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn colon_command_fs_filters_state_and_animates_list_update() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::Command;
+        app.input = "fs".to_string();
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.filters.state, IssueStateFilter::Closed);
+        assert_eq!(app.mode, UiMode::Browsing);
+        assert_eq!(*backend.list_calls.lock().unwrap(), 1);
+        assert_eq!(app.flash, Some(FlashKind::Refresh));
+    }
+
+    #[tokio::test]
+    async fn colon_command_search_alias_updates_query_and_animates_list() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::Command;
+        app.input = "s redraw".to_string();
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.filters.query, "redraw");
+        assert_eq!(app.mode, UiMode::Browsing);
+        assert_eq!(*backend.list_calls.lock().unwrap(), 1);
+        assert_eq!(app.flash, Some(FlashKind::Refresh));
+    }
+
+    #[tokio::test]
     async fn colon_command_assign_opens_assignee_editor() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/skunkwork".parse().unwrap());
@@ -2040,6 +2113,11 @@ mod tests {
 
         app.mode = UiMode::Command;
         app.input = "refresh".to_string();
+        assert_eq!(
+            loading_preview(&app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some((PendingAction::Refresh, "Refreshing issues".to_string()))
+        );
+        app.input = "fs".to_string();
         assert_eq!(
             loading_preview(&app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             Some((PendingAction::Refresh, "Refreshing issues".to_string()))

@@ -200,7 +200,8 @@ pub fn effect_area(app: &App, area: Rect) -> Rect {
         | UiMode::Loading
         | UiMode::Error => centered_rect(72, 55, area),
         UiMode::Command => command_bar_area(area),
-        UiMode::Browsing | UiMode::FilterEditor => area,
+        UiMode::Browsing => issue_list_area(area),
+        UiMode::FilterEditor => area,
     }
 }
 
@@ -587,7 +588,7 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
 fn render_command_bar(app: &App, area: Rect, buffer: &mut Buffer) {
     let mut textarea = textarea_at_end(vec![command_prompt_line(&app.input)]);
     textarea.set_block(modal_block(
-        "Command  :refresh  :search <text>  :filter state  :assign  :labels  :comment  :quit",
+        "Command  :fs filter state  :fa filter assignee  :s <text> search  :assign  :labels  :comment",
         ACTION_ACCENT,
     ));
     textarea.set_style(modal_style());
@@ -770,7 +771,7 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
         UiMode::CloseComment => "Required comment before closing",
         UiMode::NewIssue => "Title | optional body",
         UiMode::Search => "Search issue titles",
-        UiMode::Command => ":refresh, :filter state, :assign, :labels, :new, :quit",
+        UiMode::Command => ":fs, :fa, :s <text>, :assign, :labels, :new, :quit",
         _ => "",
     });
     textarea.set_style(modal_style());
@@ -997,8 +998,7 @@ pub fn mouse_target(app: &App, area: Rect, column: u16, row: u16) -> Option<Mous
 }
 
 fn browsing_mouse_target(app: &App, area: Rect, point: Rect) -> Option<MouseTarget> {
-    let body = main_rows(area)[2];
-    let columns = body_columns(body);
+    let columns = browsing_columns(area);
     if intersects(point, columns[0]) {
         let first_issue_row = columns[0].y.saturating_add(3);
         if point.y >= first_issue_row {
@@ -1091,6 +1091,14 @@ fn command_mode_rows(area: Rect) -> std::rc::Rc<[Rect]> {
 
 fn command_bar_area(area: Rect) -> Rect {
     command_mode_rows(area)[3]
+}
+
+fn browsing_columns(area: Rect) -> std::rc::Rc<[Rect]> {
+    body_columns(main_rows(area)[2])
+}
+
+fn issue_list_area(area: Rect) -> Rect {
+    browsing_columns(area)[0]
 }
 
 fn body_columns(area: Rect) -> std::rc::Rc<[Rect]> {
@@ -1546,6 +1554,18 @@ mod tests {
         let area = Rect::new(0, 0, 120, 40);
         let target = effect_area(&app, area);
 
+        assert!(target.width < area.width);
+        assert!(target.height < area.height);
+    }
+
+    #[test]
+    fn browsing_refresh_effect_targets_issue_list() {
+        let app = App::new("owner/skunkwork".parse().unwrap());
+        let area = Rect::new(0, 0, 120, 40);
+
+        let target = effect_area(&app, area);
+
+        assert_eq!(target, issue_list_area(area));
         assert!(target.width < area.width);
         assert!(target.height < area.height);
     }

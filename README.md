@@ -79,9 +79,9 @@ cargo run
 Useful commands:
 
 - `:refresh`: reload issues now.
-- `:search <text>`: search issue titles.
-- `:filter state`: cycle state filter: open, closed, all.
-- `:filter assignee`: choose an assignee filter: any, me, unassigned, or a collaborator.
+- `:fs` or `:filter state`: cycle state filter: open, closed, all.
+- `:fa` or `:filter assignee`: choose an assignee filter: any, me, unassigned, or a collaborator.
+- `:s <text>` or `:search <text>`: search issue titles.
 - `:assign`: assign the selected issue to yourself, nobody, or collaborators.
 - `:labels`: edit labels on the selected issue.
 - `:comment`: comment on the selected issue.
