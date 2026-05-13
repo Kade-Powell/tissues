@@ -77,6 +77,27 @@ While browsing, Worktrack automatically reloads issues every 5 seconds. If the r
 
 ## Development
 
+For the fastest edit/check loop, run bacon from the repo root:
+
+```bash
+bacon
+```
+
+This watches the project and runs `cargo check --all-targets` after changes. Inside bacon:
+
+- `t`: run tests.
+- `c`: run clippy with the same warning policy used for verification.
+- `f`: run `cargo fmt --check`.
+- `s`: run the non-interactive help smoke test.
+
+Run the interactive TUI in a separate terminal:
+
+```bash
+cargo run -- owner/skunkwork
+```
+
+Do not run the full Worktrack TUI as a bacon job. Bacon is also a terminal UI, and nesting Worktrack inside it can leave the terminal alternate screen, mouse capture, or formatting in a bad state. The included `smoke` job intentionally runs only `cargo run -- --help`.
+
 Run the checks used for this project:
 
 ```bash
