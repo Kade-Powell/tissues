@@ -64,6 +64,7 @@ cargo run
 - `j` / `Down`: move to the next issue.
 - `k` / `Up`: move to the previous issue.
 - `Enter`: collapse or expand comments in the detail tree.
+- `:`: open command mode. Examples: `:refresh`, `:filter state`, `:filter assignee`, `:assign`, `:labels`, `:new`, `:quit`.
 - `r`: refresh issues.
 - `/`: edit search text.
 - `f`: cycle state filter: open, closed, all.

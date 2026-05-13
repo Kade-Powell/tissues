@@ -61,6 +61,7 @@ impl Default for IssueFilters {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UiMode {
     Browsing,
+    Command,
     FilterEditor,
     Search,
     CommentComposer,

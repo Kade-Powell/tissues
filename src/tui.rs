@@ -160,6 +160,35 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
             )),
             _ => None,
         },
+        UiMode::Command if key.code == KeyCode::Enter => {
+            let command = normalized_command(&app.input);
+            match command.as_str() {
+                "r" | "refresh" | "reload" | "f state" | "filter state" | "state" => {
+                    Some((PendingAction::Refresh, "Refreshing issues".to_string()))
+                }
+                "f assignee" | "filter assignee" | "assignee filter" => Some((
+                    PendingAction::LoadCollaborators,
+                    "Loading collaborators".to_string(),
+                )),
+                "n" | "new" | "new issue" => Some((
+                    PendingAction::LoadLabels,
+                    "Loading repository labels".to_string(),
+                )),
+                "assign" | "assignees" => app.selected_issue().map(|issue| {
+                    (
+                        PendingAction::LoadCollaborators,
+                        format!("Loading collaborators for #{}", issue.number),
+                    )
+                }),
+                "labels" | "label" => app.selected_issue().map(|issue| {
+                    (
+                        PendingAction::LoadLabels,
+                        format!("Loading labels for #{}", issue.number),
+                    )
+                }),
+                _ => None,
+            }
+        }
         UiMode::Search if key.code == KeyCode::Enter => {
             Some((PendingAction::Refresh, "Refreshing issues".to_string()))
         }
@@ -212,6 +241,10 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
     }
 }
 
+fn normalized_command(input: &str) -> String {
+    input.trim().trim_start_matches(':').trim().to_lowercase()
+}
+
 fn pending_state_action(state: IssueState) -> PendingAction {
     match state {
         IssueState::Open => PendingAction::CloseIssue,
@@ -236,6 +269,7 @@ fn is_submit_key(key: KeyEvent) -> bool {
 async fn handle_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
     match app.mode {
         UiMode::Browsing => handle_browsing_key(app, backend, key).await,
+        UiMode::Command => handle_command_key(app, backend, key).await,
         UiMode::Search => handle_search_key(app, backend, key).await,
         UiMode::CommentComposer => handle_comment_key(app, backend, key).await,
         UiMode::CloseComment => handle_close_comment_key(app, backend, key).await,
@@ -276,6 +310,7 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
         }
         KeyCode::Enter if app.selected_detail.is_some() => app.toggle_comments(),
         KeyCode::Char('r') => refresh(app, backend).await,
+        KeyCode::Char(':') => open_command_prompt(app),
         KeyCode::Char('/') => {
             app.input = app.filters.query.clone();
             app.mode = UiMode::Search;
@@ -390,6 +425,12 @@ fn open_comment_composer(app: &mut App) {
     app.set_status("Write a comment, Enter adds lines, Ctrl+S submits");
 }
 
+fn open_command_prompt(app: &mut App) {
+    app.input.clear();
+    app.mode = UiMode::Command;
+    app.set_status("Type a command, for example :refresh or :filter state");
+}
+
 fn open_close_comment(app: &mut App) {
     app.input.clear();
     app.mode = UiMode::CloseComment;
@@ -418,7 +459,80 @@ fn cancel_active_screen(app: &mut App) {
         UiMode::Success | UiMode::Error | UiMode::ConfirmClose => {
             app.mode = UiMode::Browsing;
         }
+        UiMode::Command | UiMode::Search => {
+            app.mode = UiMode::Browsing;
+            app.input.clear();
+        }
         _ => {}
+    }
+}
+
+async fn handle_command_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => cancel_active_screen(app),
+        KeyCode::Enter => run_command(app, backend).await,
+        KeyCode::Backspace => {
+            app.input.pop();
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push(c),
+        _ => {}
+    }
+}
+
+async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
+    let command = normalized_command(&app.input);
+    app.input.clear();
+
+    match command.as_str() {
+        "" => {
+            app.mode = UiMode::Browsing;
+        }
+        "q" | "quit" => app.should_quit = true,
+        "r" | "refresh" | "reload" => {
+            app.mode = UiMode::Browsing;
+            refresh(app, backend).await;
+        }
+        "f" | "f state" | "filter" | "filter state" | "state" => {
+            app.cycle_state_filter();
+            app.mode = UiMode::Browsing;
+            refresh(app, backend).await;
+        }
+        "f assignee" | "fa" | "filter assignee" | "assignee filter" => {
+            open_assignee_filter(app, backend).await;
+        }
+        "search" | "/" => {
+            app.input = app.filters.query.clone();
+            app.mode = UiMode::Search;
+            app.set_status("Search issue titles");
+        }
+        command if command.starts_with("search ") => {
+            let query = command.trim_start_matches("search ").trim().to_string();
+            app.set_query(query);
+            app.mode = UiMode::Browsing;
+            refresh(app, backend).await;
+        }
+        "n" | "new" | "new issue" => open_new_issue(app, backend).await,
+        "c" | "comment" if app.selected_issue().is_some() => open_comment_composer(app),
+        "a" | "assign" | "assignees" if app.selected_issue().is_some() => {
+            open_assignee_editor(app, backend).await;
+        }
+        "l" | "label" | "labels" if app.selected_issue().is_some() => {
+            open_issue_label_editor(app, backend).await;
+        }
+        "x" | "close" if app.selected_issue().is_some() => {
+            match app.selected_issue().map(|issue| issue.state.clone()) {
+                Some(IssueState::Open) => open_close_comment(app),
+                Some(IssueState::Closed) => {
+                    app.mode = UiMode::ConfirmClose;
+                }
+                None => {}
+            }
+        }
+        _ => {
+            app.mode = UiMode::Browsing;
+            app.flash = Some(FlashKind::Error);
+            app.set_status(format!("Unknown command: {command}"));
+        }
     }
 }
 
@@ -1607,6 +1721,93 @@ mod tests {
             AssigneeFilter::User("alice".to_string())
         );
         assert_eq!(app.mode, UiMode::Browsing);
+    }
+
+    #[tokio::test]
+    async fn colon_command_filter_state_cycles_state_filter() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE),
+        )
+        .await;
+        app.input = "filter state".to_string();
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.filters.state, IssueStateFilter::Closed);
+        assert_eq!(app.mode, UiMode::Browsing);
+        assert_eq!(*backend.list_calls.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn colon_command_assign_opens_assignee_editor() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        refresh(&mut app, &backend).await;
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE),
+        )
+        .await;
+        app.input = "assign".to_string();
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.mode, UiMode::AssigneeEditor);
+        assert_eq!(app.status, "Space toggles assignees, Enter saves");
+    }
+
+    #[tokio::test]
+    async fn colon_command_quit_sets_quit_flag() {
+        let backend = backend_with_issues(Vec::new());
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE),
+        )
+        .await;
+        app.input = "quit".to_string();
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn colon_command_accepts_optional_leading_colon() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+
+        app.mode = UiMode::Command;
+        app.input = ":filter state".to_string();
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.filters.state, IssueStateFilter::Closed);
     }
 
     #[tokio::test]

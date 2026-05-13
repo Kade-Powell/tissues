@@ -232,6 +232,7 @@ fn modal_block(title: impl Into<String>, accent: Color) -> Block<'static> {
 pub fn effect_area(app: &App, area: Rect) -> Rect {
     match app.mode {
         UiMode::Search
+        | UiMode::Command
         | UiMode::CommentComposer
         | UiMode::CloseComment
         | UiMode::NewIssue
@@ -554,7 +555,10 @@ fn render_footer(app: &App, area: Rect, buffer: &mut Buffer) {
 fn footer_shortcuts(app: &App) -> &'static str {
     match app.mode {
         UiMode::Browsing => {
-            "q | r | / search | f state | a filter | A assign | l labels | c comment | n new | x close"
+            ": cmds | q | r | / search | f filter | A assign | c comment | l labels | n new | x close"
+        }
+        UiMode::Command => {
+            ":refresh | :filter state | :filter assignee | :assign | :labels | :new | :quit"
         }
         UiMode::Search => "Enter search | Esc cancel | Backspace delete",
         UiMode::CommentComposer => "Ctrl+S submit | Enter newline | Ctrl+J newline | Esc cancel",
@@ -580,6 +584,7 @@ fn footer_shortcuts(app: &App) -> &'static str {
 fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
     let title = match app.mode {
         UiMode::Search => Some("Search"),
+        UiMode::Command => Some("Command"),
         UiMode::CommentComposer => Some("Comment"),
         UiMode::CloseComment => Some("Close Issue"),
         UiMode::NewIssue => Some("New Issue"),
@@ -787,6 +792,7 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
             UiMode::CloseComment => "Closing Comment",
             UiMode::NewIssue => "New Issue: title | body",
             UiMode::Search => "Search Issues",
+            UiMode::Command => "Command",
             _ => title,
         },
         ACTION_ACCENT,
@@ -796,6 +802,7 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
         UiMode::CloseComment => "Required comment before closing",
         UiMode::NewIssue => "Title | optional body",
         UiMode::Search => "Search issue titles",
+        UiMode::Command => ":refresh, :filter state, :assign, :labels, :new, :quit",
         _ => "",
     });
     textarea.set_style(modal_style());
@@ -1306,6 +1313,9 @@ mod tests {
 
         app.mode = UiMode::Search;
         assert!(footer_shortcuts(&app).contains("Enter search"));
+
+        app.mode = UiMode::Command;
+        assert!(footer_shortcuts(&app).contains(":refresh"));
     }
 
     #[test]
