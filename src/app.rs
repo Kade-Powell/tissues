@@ -1,5 +1,5 @@
 use crate::{
-    domain::{IssueDetail, IssueSummary, Label},
+    domain::{IssueDetail, IssueSummary, Label, User},
     repo::Repository,
 };
 
@@ -26,6 +26,17 @@ pub enum AssigneeFilter {
     Me,
     None,
     User(String),
+}
+
+impl AssigneeFilter {
+    pub fn label(&self) -> String {
+        match self {
+            Self::Any => "any".to_string(),
+            Self::Me => "me".to_string(),
+            Self::None => "unassigned".to_string(),
+            Self::User(login) => login.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,6 +66,9 @@ pub enum UiMode {
     CommentComposer,
     CloseComment,
     NewIssue,
+    AssigneeFilter,
+    AssigneeEditor,
+    IssueLabelEditor,
     ConfirmClose,
     Success,
     Loading,
@@ -72,10 +86,32 @@ pub enum NewIssueField {
 pub enum PendingAction {
     Refresh,
     LoadLabels,
+    LoadCollaborators,
     CreateIssue,
     AddComment,
     CloseIssue,
     ReopenIssue,
+    UpdateAssignees,
+    UpdateLabels,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AssigneeChoice {
+    Any,
+    Me,
+    Unassigned,
+    User(String),
+}
+
+impl AssigneeChoice {
+    pub fn label(&self) -> String {
+        match self {
+            Self::Any => "any".to_string(),
+            Self::Me => "me".to_string(),
+            Self::Unassigned => "unassigned".to_string(),
+            Self::User(login) => login.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,6 +149,9 @@ pub struct App {
     pub new_issue_field: NewIssueField,
     pub new_issue_labels: Vec<String>,
     pub repo_labels: Vec<Label>,
+    pub repo_collaborators: Vec<User>,
+    pub picker_index: usize,
+    pub editing_issue_labels: Vec<String>,
     pub selected_detail: Option<IssueDetail>,
     pub comments_expanded: bool,
     pub pending_action: Option<PendingAction>,
@@ -138,6 +177,9 @@ impl App {
             new_issue_field: NewIssueField::Title,
             new_issue_labels: Vec::new(),
             repo_labels: Vec::new(),
+            repo_collaborators: Vec::new(),
+            picker_index: 0,
+            editing_issue_labels: Vec::new(),
             selected_detail: None,
             comments_expanded: true,
             pending_action: None,
@@ -297,6 +339,77 @@ impl App {
         self.repo_labels = labels;
     }
 
+    pub fn set_repo_collaborators(&mut self, mut collaborators: Vec<User>) {
+        collaborators.sort_by(|left, right| left.login.cmp(&right.login));
+        collaborators.dedup_by(|left, right| left.login == right.login);
+        self.repo_collaborators = collaborators;
+        self.clamp_picker();
+    }
+
+    pub fn reset_picker(&mut self) {
+        self.input.clear();
+        self.picker_index = 0;
+    }
+
+    pub fn select_next_picker_item(&mut self, item_count: usize) {
+        if item_count == 0 {
+            self.picker_index = 0;
+        } else {
+            self.picker_index = (self.picker_index + 1).min(item_count - 1);
+        }
+    }
+
+    pub fn select_previous_picker_item(&mut self) {
+        self.picker_index = self.picker_index.saturating_sub(1);
+    }
+
+    pub fn assignee_filter_choices(&self) -> Vec<AssigneeChoice> {
+        self.assignee_choices(true)
+    }
+
+    pub fn assignee_assignment_choices(&self) -> Vec<AssigneeChoice> {
+        self.assignee_choices(false)
+    }
+
+    pub fn begin_issue_label_edit(&mut self) {
+        self.input.clear();
+        self.picker_index = 0;
+        self.editing_issue_labels = self
+            .selected_issue()
+            .map(|issue| {
+                issue
+                    .labels
+                    .iter()
+                    .map(|label| label.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.mode = UiMode::IssueLabelEditor;
+    }
+
+    pub fn issue_label_choices(&self) -> Vec<String> {
+        let query = self.input.trim().to_lowercase();
+        self.repo_labels
+            .iter()
+            .map(|label| label.name.as_str())
+            .filter(|name| query.is_empty() || name.to_lowercase().contains(&query))
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    pub fn toggle_editing_issue_label(&mut self, label: &str) {
+        if let Some(index) = self
+            .editing_issue_labels
+            .iter()
+            .position(|selected| selected == label)
+        {
+            self.editing_issue_labels.remove(index);
+        } else {
+            self.editing_issue_labels.push(label.to_string());
+            self.editing_issue_labels.sort();
+        }
+    }
+
     pub fn next_new_issue_field(&mut self) {
         self.new_issue_field = match self.new_issue_field {
             NewIssueField::Title => NewIssueField::Body,
@@ -381,6 +494,40 @@ impl App {
         });
         if self.issue_highlights.is_empty() {
             self.new_issue_animation_frame = 0;
+        }
+    }
+
+    fn assignee_choices(&self, include_any: bool) -> Vec<AssigneeChoice> {
+        let query = self.input.trim().to_lowercase();
+        let mut choices = Vec::new();
+        if include_any {
+            choices.push(AssigneeChoice::Any);
+        }
+        choices.push(AssigneeChoice::Me);
+        choices.push(AssigneeChoice::Unassigned);
+        choices.extend(
+            self.repo_collaborators
+                .iter()
+                .map(|user| AssigneeChoice::User(user.login.clone())),
+        );
+
+        choices
+            .into_iter()
+            .filter(|choice| query.is_empty() || choice.label().to_lowercase().contains(&query))
+            .collect()
+    }
+
+    fn clamp_picker(&mut self) {
+        let item_count = match self.mode {
+            UiMode::AssigneeFilter => self.assignee_filter_choices().len(),
+            UiMode::AssigneeEditor => self.assignee_assignment_choices().len(),
+            UiMode::IssueLabelEditor => self.issue_label_choices().len(),
+            _ => 0,
+        };
+        if item_count == 0 {
+            self.picker_index = 0;
+        } else {
+            self.picker_index = self.picker_index.min(item_count - 1);
         }
     }
 }
@@ -519,6 +666,35 @@ mod tests {
         assert!(app.accept_first_label_suggestion());
         assert_eq!(app.new_issue_labels, vec!["bug", "docs"]);
         assert!(app.label_input.is_empty());
+    }
+
+    #[test]
+    fn filters_collaborator_choices_from_picker_input() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_repo_collaborators(vec![
+            User {
+                login: "alice".to_string(),
+            },
+            User {
+                login: "bob".to_string(),
+            },
+        ]);
+        app.input = "ali".to_string();
+
+        assert_eq!(
+            app.assignee_filter_choices(),
+            vec![AssigneeChoice::User("alice".to_string())]
+        );
+    }
+
+    #[test]
+    fn toggles_selected_issue_labels_for_editing() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.toggle_editing_issue_label("bug");
+        app.toggle_editing_issue_label("docs");
+        app.toggle_editing_issue_label("bug");
+
+        assert_eq!(app.editing_issue_labels, vec!["docs"]);
     }
 
     #[test]

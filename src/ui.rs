@@ -20,7 +20,8 @@ use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::{
     app::{
-        App, FlashKind, IssueHighlightKind, IssueStateFilter, NewIssueField, PendingAction, UiMode,
+        App, AssigneeChoice, AssigneeFilter, FlashKind, IssueHighlightKind, IssueStateFilter,
+        NewIssueField, PendingAction, UiMode,
     },
     domain::{IssueComment, IssueDetail, IssueState, IssueSummary},
 };
@@ -29,12 +30,16 @@ const ISSUE_LIST_PERCENT: u16 = 40;
 const DETAIL_PANEL_PERCENT: u16 = 60;
 const COMMENT_PRIMARY_LABEL: &str = "Submit";
 const NEW_ISSUE_PRIMARY_LABEL: &str = "Create";
+const ASSIGNEE_FILTER_PRIMARY_LABEL: &str = "Apply";
+const ASSIGNEE_EDITOR_PRIMARY_LABEL: &str = "Assign";
+const ISSUE_LABEL_PRIMARY_LABEL: &str = "Save";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MouseTarget {
     IssueRow(usize),
     DetailPanel,
     NewIssueField(NewIssueField),
+    PickerItem(usize),
     PrimaryAction,
     CancelAction,
 }
@@ -165,6 +170,9 @@ pub fn effect_area(app: &App, area: Rect) -> Rect {
         | UiMode::CommentComposer
         | UiMode::CloseComment
         | UiMode::NewIssue
+        | UiMode::AssigneeFilter
+        | UiMode::AssigneeEditor
+        | UiMode::IssueLabelEditor
         | UiMode::ConfirmClose
         | UiMode::Success
         | UiMode::Loading
@@ -206,8 +214,9 @@ fn render_filters(app: &App, area: Rect, buffer: &mut Buffer) {
     } else {
         app.filters.labels.join(", ")
     };
+    let assignee = app.filters.assignee.label();
     let filters = format!(
-        "[State: {state}] [Labels: {labels}] [Search: {}]",
+        "[State: {state}] [Assignee: {assignee}] [Labels: {labels}] [Search: {}]",
         app.filters.query
     );
 
@@ -228,11 +237,12 @@ fn render_body(app: &App, area: Rect, buffer: &mut Buffer) {
 
     let widths = [
         Constraint::Length(7),
+        Constraint::Length(6),
+        Constraint::Length(9),
         Constraint::Length(7),
-        Constraint::Length(10),
-        Constraint::Min(10),
+        Constraint::Min(6),
     ];
-    let header = Row::new(["Number", "State", "Labels", "Title"])
+    let header = Row::new(["Number", "State", "Who", "Labels", "Title"])
         .style(Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
         .bottom_margin(1);
     let rows = app.issues.iter().map(|issue| {
@@ -278,6 +288,17 @@ fn issue_row(
             .collect::<Vec<_>>()
             .join(",")
     };
+    let assignees = if issue.assignees.is_empty() {
+        "-".to_string()
+    } else {
+        issue
+            .assignees
+            .iter()
+            .take(2)
+            .map(|assignee| assignee.login.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
 
     let title = if let Some(kind) = highlight.as_ref() {
         let badge = match kind {
@@ -295,6 +316,7 @@ fn issue_row(
     let row = Row::new([
         Cell::from(format!("#{}", issue.number)).style(Style::new().fg(Color::Cyan)),
         Cell::from(state).style(state_style(issue.state.clone())),
+        Cell::from(assignees).style(Style::new().fg(Color::Blue)),
         Cell::from(labels).style(Style::new().fg(Color::Magenta)),
         title,
     ]);
@@ -340,9 +362,18 @@ fn render_detail(app: &App, area: Rect, buffer: &mut Buffer) {
             .map(|label| label.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
+        let assignees = issue
+            .assignees
+            .iter()
+            .map(|assignee| assignee.login.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         format!(
-            "{}\n\nlabels: {}\ncomments: {}\n\nPress c to comment, x to close/reopen.",
-            issue.title, labels, issue.comment_count
+            "{}\n\nassignees: {}\nlabels: {}\ncomments: {}\n\nPress c to comment, A to assign, l to label, x to close/reopen.",
+            issue.title,
+            empty_label(&assignees),
+            empty_label(&labels),
+            issue.comment_count
         )
     } else {
         "No issues loaded. Press r to refresh.".to_string()
@@ -439,13 +470,18 @@ fn render_footer(app: &App, area: Rect, buffer: &mut Buffer) {
 fn footer_shortcuts(app: &App) -> &'static str {
     match app.mode {
         UiMode::Browsing => {
-            "q quit | r refresh | / search | f filter | Enter fold | c comment | n new issue | x close/reopen"
+            "q | r | / search | f state | a filter | A assign | l labels | c comment | n new | x close"
         }
         UiMode::Search => "Enter search | Esc cancel | Backspace delete",
         UiMode::CommentComposer => "Ctrl+S submit | Enter newline | Ctrl+J newline | Esc cancel",
         UiMode::CloseComment => "Ctrl+S close | Enter newline | Ctrl+J newline | Esc cancel",
         UiMode::NewIssue => {
             "Tab/Shift+Tab fields | Ctrl+S create | Enter edit/add label | Ctrl+J newline | Esc cancel"
+        }
+        UiMode::AssigneeFilter => "Enter apply filter | type search | j/k move | Esc cancel",
+        UiMode::AssigneeEditor => "Enter assign | type search | j/k move | Esc cancel",
+        UiMode::IssueLabelEditor => {
+            "Enter toggle label | Ctrl+S save | type search | j/k move | Esc cancel"
         }
         UiMode::ConfirmClose => "y/Enter reopen | Esc cancel",
         UiMode::Success => "Any key continue",
@@ -461,6 +497,9 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         UiMode::CommentComposer => Some("Comment"),
         UiMode::CloseComment => Some("Close Issue"),
         UiMode::NewIssue => Some("New Issue"),
+        UiMode::AssigneeFilter => Some("Assignee Filter"),
+        UiMode::AssigneeEditor => Some("Assign Issue"),
+        UiMode::IssueLabelEditor => Some("Edit Labels"),
         UiMode::ConfirmClose => Some("Confirm"),
         UiMode::Success => Some("Done"),
         UiMode::Loading => Some("Working"),
@@ -477,6 +516,10 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         Clear.render(popup, buffer);
         match app.mode {
             UiMode::NewIssue => render_new_issue_editor(app, popup, buffer),
+            UiMode::AssigneeFilter | UiMode::AssigneeEditor => {
+                render_assignee_picker(app, title, popup, buffer)
+            }
+            UiMode::IssueLabelEditor => render_issue_label_editor(app, popup, buffer),
             UiMode::Loading => render_loading_overlay(app, popup, buffer),
             UiMode::ConfirmClose => Paragraph::new("Press y to reopen, Esc to cancel")
                 .block(Block::bordered().title(title))
@@ -511,14 +554,142 @@ fn render_loading_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         .render(area, buffer);
 }
 
+fn render_assignee_picker(app: &App, title: &'static str, area: Rect, buffer: &mut Buffer) {
+    let rows = picker_rows_from_popup(area);
+    let choices = if app.mode == UiMode::AssigneeFilter {
+        app.assignee_filter_choices()
+    } else {
+        app.assignee_assignment_choices()
+    };
+    let current = app
+        .selected_issue()
+        .map(|issue| {
+            issue
+                .assignees
+                .iter()
+                .map(|assignee| assignee.login.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    let mut lines = vec![
+        Line::from(format!("search: {}", app.input)),
+        Line::from(format!(
+            "current: {}",
+            if app.mode == UiMode::AssigneeFilter {
+                app.filters.assignee.label()
+            } else {
+                empty_label(&current).to_string()
+            }
+        )),
+        Line::raw(""),
+    ];
+    if choices.is_empty() {
+        lines.push(Line::from("No matching collaborators."));
+    } else {
+        lines.extend(choices.iter().enumerate().map(|(index, choice)| {
+            let marker = if index == app.picker_index { ">" } else { " " };
+            let active = assignee_choice_is_active(app, choice);
+            let check = if active { "*" } else { " " };
+            Line::from(format!("{marker} [{check}] {}", choice.label()))
+        }));
+    }
+
+    Paragraph::new(lines)
+        .block(Block::bordered().title(title))
+        .wrap(Wrap { trim: false })
+        .render(rows[0], buffer);
+    render_action_buttons(assignee_primary_label(app), rows[1], buffer);
+}
+
+fn render_issue_label_editor(app: &App, area: Rect, buffer: &mut Buffer) {
+    let rows = picker_rows_from_popup(area);
+    let choices = app.issue_label_choices();
+    let selected = if app.editing_issue_labels.is_empty() {
+        "none".to_string()
+    } else {
+        app.editing_issue_labels.join(", ")
+    };
+    let mut lines = vec![
+        Line::from(format!("search: {}", app.input)),
+        Line::from(format!("selected: {selected}")),
+        Line::raw(""),
+    ];
+    if choices.is_empty() {
+        lines.push(Line::from("No matching labels."));
+    } else {
+        lines.extend(choices.iter().enumerate().map(|(index, label)| {
+            let marker = if index == app.picker_index { ">" } else { " " };
+            let check = if app.editing_issue_labels.iter().any(|item| item == label) {
+                "x"
+            } else {
+                " "
+            };
+            Line::from(format!("{marker} [{check}] {label}"))
+        }));
+    }
+
+    Paragraph::new(lines)
+        .block(Block::bordered().title("Edit Labels"))
+        .style(Style::new().fg(Color::Magenta))
+        .wrap(Wrap { trim: false })
+        .render(rows[0], buffer);
+    render_action_buttons(ISSUE_LABEL_PRIMARY_LABEL, rows[1], buffer);
+}
+
+fn assignee_choice_is_active(app: &App, choice: &AssigneeChoice) -> bool {
+    match (app.mode.clone(), choice) {
+        (UiMode::AssigneeFilter, AssigneeChoice::Any) => {
+            app.filters.assignee == AssigneeFilter::Any
+        }
+        (UiMode::AssigneeFilter, AssigneeChoice::Me) => app.filters.assignee == AssigneeFilter::Me,
+        (UiMode::AssigneeFilter, AssigneeChoice::Unassigned) => {
+            app.filters.assignee == AssigneeFilter::None
+        }
+        (UiMode::AssigneeFilter, AssigneeChoice::User(login)) => {
+            app.filters.assignee == AssigneeFilter::User(login.clone())
+        }
+        (UiMode::AssigneeEditor, AssigneeChoice::Unassigned) => app
+            .selected_issue()
+            .is_some_and(|issue| issue.assignees.is_empty()),
+        (UiMode::AssigneeEditor, AssigneeChoice::Me) => {
+            let Some(login) = app.viewer_login.as_ref() else {
+                return false;
+            };
+            app.selected_issue().is_some_and(|issue| {
+                issue
+                    .assignees
+                    .iter()
+                    .any(|assignee| &assignee.login == login)
+            })
+        }
+        (UiMode::AssigneeEditor, AssigneeChoice::User(login)) => {
+            app.selected_issue().is_some_and(|issue| {
+                issue
+                    .assignees
+                    .iter()
+                    .any(|assignee| assignee.login == *login)
+            })
+        }
+        _ => false,
+    }
+}
+
+fn empty_label(value: &str) -> &str {
+    if value.is_empty() { "none" } else { value }
+}
+
 fn pending_action_label(action: &PendingAction) -> &'static str {
     match action {
         PendingAction::Refresh => "Refreshing issues",
         PendingAction::LoadLabels => "Loading labels",
+        PendingAction::LoadCollaborators => "Loading collaborators",
         PendingAction::CreateIssue => "Creating issue",
         PendingAction::AddComment => "Adding comment",
         PendingAction::CloseIssue => "Closing issue",
         PendingAction::ReopenIssue => "Reopening issue",
+        PendingAction::UpdateAssignees => "Updating assignees",
+        PendingAction::UpdateLabels => "Updating labels",
     }
 }
 
@@ -669,6 +840,14 @@ fn render_action_buttons(primary: &'static str, area: Rect, buffer: &mut Buffer)
         .render(area, buffer);
 }
 
+fn assignee_primary_label(app: &App) -> &'static str {
+    if app.mode == UiMode::AssigneeFilter {
+        ASSIGNEE_FILTER_PRIMARY_LABEL
+    } else {
+        ASSIGNEE_EDITOR_PRIMARY_LABEL
+    }
+}
+
 fn field_style(active: &NewIssueField, field: &NewIssueField, color: Color) -> Style {
     if active == field {
         Style::new()
@@ -736,6 +915,20 @@ pub fn mouse_target(app: &App, area: Rect, column: u16, row: u16) -> Option<Mous
             point,
         ),
         UiMode::NewIssue => new_issue_mouse_target(area, point),
+        UiMode::AssigneeFilter | UiMode::AssigneeEditor => {
+            let item_count = if app.mode == UiMode::AssigneeFilter {
+                app.assignee_filter_choices().len()
+            } else {
+                app.assignee_assignment_choices().len()
+            };
+            picker_mouse_target(area, point, item_count, assignee_primary_label(app))
+        }
+        UiMode::IssueLabelEditor => picker_mouse_target(
+            area,
+            point,
+            app.issue_label_choices().len(),
+            ISSUE_LABEL_PRIMARY_LABEL,
+        ),
         UiMode::Success => Some(MouseTarget::CancelAction),
         _ => None,
     }
@@ -774,6 +967,39 @@ fn new_issue_mouse_target(area: Rect, point: Rect) -> Option<MouseTarget> {
     }
 
     action_mouse_target(rows[3], NEW_ISSUE_PRIMARY_LABEL, point)
+}
+
+fn picker_mouse_target(
+    area: Rect,
+    point: Rect,
+    item_count: usize,
+    primary: &'static str,
+) -> Option<MouseTarget> {
+    let popup = centered_rect(72, 55, area);
+    let rows = picker_rows_from_popup(popup);
+    if let Some(target) = action_mouse_target(rows[1], primary, point) {
+        return Some(target);
+    }
+
+    let list_area = rows[0];
+    if !intersects(point, list_area) {
+        return None;
+    }
+
+    let first_item_row = list_area.y.saturating_add(4);
+    let last_visible_row = list_area
+        .y
+        .saturating_add(list_area.height.saturating_sub(1));
+    if point.y < first_item_row || point.y >= last_visible_row {
+        return None;
+    }
+
+    let index = usize::from(point.y - first_item_row);
+    if index < item_count {
+        Some(MouseTarget::PickerItem(index))
+    } else {
+        None
+    }
 }
 
 fn main_rows(area: Rect) -> std::rc::Rc<[Rect]> {
@@ -818,6 +1044,13 @@ fn new_issue_rows(area: Rect) -> std::rc::Rc<[Rect]> {
             Constraint::Length(3),
         ])
         .split(inner)
+}
+
+fn picker_rows_from_popup(area: Rect) -> std::rc::Rc<[Rect]> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(5), Constraint::Length(3)])
+        .split(area)
 }
 
 fn comment_editor_action_area(area: Rect) -> Rect {
@@ -909,30 +1142,34 @@ mod tests {
         ]);
         app.set_query("redraw");
 
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 120, 24));
         render(&app, buffer.area, &mut buffer);
         let rendered = buffer_to_string(&buffer);
 
         assert!(rendered.contains("owner/skunkwork"));
         assert!(rendered.contains("State: open"));
+        assert!(rendered.contains("Assignee: any"));
         assert!(rendered.contains("Search: redraw"));
         assert!(rendered.contains("Number"));
         assert!(rendered.contains("State"));
+        assert!(rendered.contains("Who"));
         assert!(rendered.contains("Labels"));
         assert!(rendered.contains("Title"));
         assert!(rendered.contains("#122"));
         assert!(rendered.contains("open"));
         assert!(rendered.contains("Fix login redraw"));
         assert!(rendered.contains("c comment"));
-        assert!(rendered.contains("n new issue"));
-        assert!(rendered.contains("x close/reopen"));
+        assert!(rendered.contains("n new"));
+        assert!(rendered.contains("A assign"));
+        assert!(rendered.contains("l labels"));
+        assert!(rendered.contains("x close"));
     }
 
     #[test]
     fn footer_shortcuts_follow_active_screen() {
         let mut app = App::new("owner/skunkwork".parse().unwrap());
 
-        assert!(footer_shortcuts(&app).contains("q quit"));
+        assert!(footer_shortcuts(&app).contains("q"));
 
         app.mode = UiMode::NewIssue;
         assert!(footer_shortcuts(&app).contains("Ctrl+S create"));
@@ -940,7 +1177,7 @@ mod tests {
 
         app.mode = UiMode::CommentComposer;
         assert!(footer_shortcuts(&app).contains("Ctrl+S submit"));
-        assert!(!footer_shortcuts(&app).contains("n new issue"));
+        assert!(!footer_shortcuts(&app).contains("n new"));
 
         app.mode = UiMode::CloseComment;
         assert!(footer_shortcuts(&app).contains("Ctrl+S close"));
@@ -958,7 +1195,7 @@ mod tests {
         ]);
         app.highlight_new_issues(vec![130]);
 
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 120, 24));
         render(&app, buffer.area, &mut buffer);
         let rendered = buffer_to_string(&buffer);
 
@@ -976,7 +1213,7 @@ mod tests {
         ]);
         app.highlight_mentioned_issues(vec![130]);
 
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 120, 24));
         render(&app, buffer.area, &mut buffer);
         let rendered = buffer_to_string(&buffer);
 
@@ -1044,6 +1281,36 @@ mod tests {
     }
 
     #[test]
+    fn mouse_targets_picker_rows_and_buttons() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::AssigneeEditor;
+        app.set_repo_collaborators(vec![crate::domain::User {
+            login: "alice".to_string(),
+        }]);
+        let area = Rect::new(0, 0, 100, 30);
+        let popup = centered_rect(72, 55, area);
+        let rows = picker_rows_from_popup(popup);
+
+        assert_eq!(
+            mouse_target(&app, area, rows[0].x + 2, rows[0].y + 4),
+            Some(MouseTarget::PickerItem(0))
+        );
+        assert_eq!(
+            mouse_target(&app, area, rows[1].x + 2, rows[1].y + 1),
+            Some(MouseTarget::PrimaryAction)
+        );
+        assert_eq!(
+            mouse_target(
+                &app,
+                area,
+                rows[1].x + primary_button_width(ASSIGNEE_EDITOR_PRIMARY_LABEL) + 4,
+                rows[1].y + 1
+            ),
+            Some(MouseTarget::CancelAction)
+        );
+    }
+
+    #[test]
     fn detail_panel_is_wider_than_issue_list() {
         let columns = Layout::default()
             .direction(Direction::Horizontal)
@@ -1055,6 +1322,48 @@ mod tests {
 
         assert!(columns[0].width < columns[1].width);
         assert_eq!(columns[0].width + columns[1].width, 100);
+    }
+
+    #[test]
+    fn renders_assignee_picker_with_collaborators() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::AssigneeEditor;
+        app.set_repo_collaborators(vec![crate::domain::User {
+            login: "alice".to_string(),
+        }]);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Assign Issue"));
+        assert!(rendered.contains("unassigned"));
+        assert!(rendered.contains("alice"));
+        assert!(rendered.contains("Assign Ctrl+S"));
+    }
+
+    #[test]
+    fn renders_issue_label_editor_with_selected_labels() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::IssueLabelEditor;
+        app.set_repo_labels(vec![
+            Label {
+                name: "bug".to_string(),
+            },
+            Label {
+                name: "docs".to_string(),
+            },
+        ]);
+        app.editing_issue_labels = vec!["bug".to_string()];
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Edit Labels"));
+        assert!(rendered.contains("[x] bug"));
+        assert!(rendered.contains("[ ] docs"));
+        assert!(rendered.contains("Save Ctrl+S"));
     }
 
     #[test]

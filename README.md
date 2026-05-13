@@ -5,11 +5,14 @@ Worktrack is a Rust terminal app for working through GitHub issues in one reposi
 ## Features
 
 - Browse open, closed, or all issues for a single repository.
-- Filter by issue state and search text.
+- Filter by issue state, assignee, labels, and search text.
 - View the selected issue body and comments in a collapsible tree.
 - Render issue descriptions and comments as Markdown in the detail pane.
 - Create new issues.
 - Add comments to existing issues.
+- Assign issues to yourself, a collaborator, or nobody.
+- Edit labels on existing issues.
+- Use mouse clicks for issue selection, modal fields, picker rows, and action buttons.
 - Close issues with a required closing comment.
 - Reopen issues after confirmation.
 - Refresh issue data without leaving the terminal.
@@ -63,6 +66,9 @@ cargo run
 - `r`: refresh issues.
 - `/`: edit search text.
 - `f`: cycle state filter: open, closed, all.
+- `a`: choose an assignee filter: any, me, unassigned, or a collaborator.
+- `A`: assign the selected issue to yourself, nobody, or a collaborator.
+- `l`: edit labels on the selected issue.
 - `c`: comment on the selected issue.
 - `n`: create a new issue with separate title, Markdown body, and labels fields.
 - `x`: close the selected open issue with a required comment, or reopen a closed issue after confirmation.
@@ -71,6 +77,7 @@ cargo run
 - `Ctrl+S`: submit a comment, close with comment, or create the issue from any new issue field.
 - `Ctrl+Enter` or `Ctrl+J`: insert a newline while writing an issue body or comment.
 - `Esc`: cancel the current input or modal.
+- Mouse: click issue rows, detail tree, picker rows, text fields, and action buttons.
 - `q`: quit when not editing text.
 
 While browsing, Worktrack automatically reloads issues every 5 seconds. If the refreshed list contains issue numbers that were not already visible, or new comments mention your authenticated GitHub username, the footer shows the notification, the terminal bell rings, and macOS plays the system notification sound when available.

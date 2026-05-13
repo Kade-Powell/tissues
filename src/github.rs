@@ -21,6 +21,7 @@ pub trait IssueBackend {
     async fn get_issue(&self, repo: &Repository, number: u64) -> Result<IssueDetail>;
     async fn list_comments(&self, repo: &Repository, number: u64) -> Result<Vec<IssueComment>>;
     async fn list_labels(&self, repo: &Repository) -> Result<Vec<Label>>;
+    async fn list_collaborators(&self, repo: &Repository) -> Result<Vec<User>>;
     async fn create_issue(
         &self,
         repo: &Repository,
@@ -35,6 +36,18 @@ pub trait IssueBackend {
         repo: &Repository,
         number: u64,
         state: IssueState,
+    ) -> Result<IssueSummary>;
+    async fn set_issue_assignees(
+        &self,
+        repo: &Repository,
+        number: u64,
+        assignees: &[String],
+    ) -> Result<IssueSummary>;
+    async fn set_issue_labels(
+        &self,
+        repo: &Repository,
+        number: u64,
+        labels: &[String],
     ) -> Result<IssueSummary>;
 }
 
@@ -178,6 +191,30 @@ impl IssueBackend for GitHubClient {
         Ok(labels)
     }
 
+    async fn list_collaborators(&self, repo: &Repository) -> Result<Vec<User>> {
+        let page = self
+            .crab
+            .repos(&repo.owner, &repo.name)
+            .list_collaborators()
+            .per_page(100)
+            .send()
+            .await
+            .wrap_err("failed to list repository collaborators")?;
+        let mut collaborators = self
+            .crab
+            .all_pages(page)
+            .await
+            .wrap_err("failed to load all repository collaborators")?
+            .into_iter()
+            .map(|collaborator| User {
+                login: collaborator.author.login,
+            })
+            .collect::<Vec<_>>();
+        collaborators.sort_by(|left, right| left.login.cmp(&right.login));
+
+        Ok(collaborators)
+    }
+
     async fn create_issue(
         &self,
         repo: &Repository,
@@ -231,6 +268,42 @@ impl IssueBackend for GitHubClient {
             .send()
             .await
             .wrap_err_with(|| format!("failed to update issue #{number}"))?;
+
+        Ok(issue_summary_from_octocrab(issue))
+    }
+
+    async fn set_issue_assignees(
+        &self,
+        repo: &Repository,
+        number: u64,
+        assignees: &[String],
+    ) -> Result<IssueSummary> {
+        let issue = self
+            .crab
+            .issues(&repo.owner, &repo.name)
+            .update(number)
+            .assignees(assignees)
+            .send()
+            .await
+            .wrap_err_with(|| format!("failed to update assignees for issue #{number}"))?;
+
+        Ok(issue_summary_from_octocrab(issue))
+    }
+
+    async fn set_issue_labels(
+        &self,
+        repo: &Repository,
+        number: u64,
+        labels: &[String],
+    ) -> Result<IssueSummary> {
+        let issue = self
+            .crab
+            .issues(&repo.owner, &repo.name)
+            .update(number)
+            .labels(labels)
+            .send()
+            .await
+            .wrap_err_with(|| format!("failed to update labels for issue #{number}"))?;
 
         Ok(issue_summary_from_octocrab(issue))
     }
