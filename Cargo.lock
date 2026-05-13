@@ -2982,6 +2982,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "throbber-widgets-tui"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1e6941f74491a80911cb8821cb1f55f7e13bca867b28a2b14e5a1daaf691eb3"
+dependencies = [
+ "ratatui",
+]
+
+[[package]]
 name = "time"
 version = "0.3.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3222,6 +3231,17 @@ dependencies = [
  "ratatui-core",
  "rstest",
  "tracing",
+]
+
+[[package]]
+name = "tui-scrollview"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94a94f467c7ac7c291039b0733e3b2d379c77884e34fc27d167921fc1ab4842f"
+dependencies = [
+ "indoc",
+ "ratatui-core",
+ "ratatui-widgets",
 ]
 
 [[package]]
@@ -3829,8 +3849,10 @@ dependencies = [
  "serde",
  "serde_json",
  "tachyonfx",
+ "throbber-widgets-tui",
  "tokio",
  "tui-markdown",
+ "tui-scrollview",
  "tui-tree-widget",
 ]
 

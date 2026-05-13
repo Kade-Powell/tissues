@@ -3,7 +3,7 @@ use std::time::Duration as StdDuration;
 use chrono::Utc;
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Margin, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Position, Rect, Size},
     style::{Color, Modifier, Style},
     symbols::border::Set,
     text::{Line, Span},
@@ -14,6 +14,8 @@ use ratatui::{
 };
 use ratatui_textarea::{CursorMove, TextArea};
 use tachyonfx::{EffectManager, Interpolation, fx};
+use throbber_widgets_tui::{BRAILLE_ONE, Throbber, ThrobberState, WhichUse};
+use tui_scrollview::{ScrollView, ScrollViewState, ScrollbarVisibility};
 use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::{
@@ -486,13 +488,16 @@ fn render_detail(app: &App, area: Rect, buffer: &mut Buffer) {
 }
 
 fn render_detail_tree(app: &App, detail: &IssueDetail, area: Rect, buffer: &mut Buffer) {
+    let block = frame_block(format!("Detail #{}", detail.summary.number), DETAIL_ACCENT);
+    let inner = block.inner(area);
+    block.render(area, buffer);
+    if inner.is_empty() {
+        return;
+    }
+
     let items = detail_tree_items(detail);
     let tree = Tree::new(&items)
         .expect("detail tree item identifiers are unique")
-        .block(frame_block(
-            format!("Detail #{}", detail.summary.number),
-            DETAIL_ACCENT,
-        ))
         .style(surface_style())
         .highlight_style(Style::new().fg(DEFAULT_FG).add_modifier(Modifier::REVERSED))
         .node_open_symbol("▾ ")
@@ -507,7 +512,52 @@ fn render_detail_tree(app: &App, detail: &IssueDetail, area: Rect, buffer: &mut 
         }
     }
 
-    ratatui::widgets::StatefulWidget::render(tree, area, buffer, &mut state);
+    let content_height =
+        detail_tree_content_height(detail, inner.width, app.comments_expanded).max(inner.height);
+    let content_size = Size::new(inner.width.max(1), content_height.max(1));
+    let mut scroll_view = ScrollView::new(content_size)
+        .vertical_scrollbar_visibility(ScrollbarVisibility::Automatic)
+        .horizontal_scrollbar_visibility(ScrollbarVisibility::Never);
+    scroll_view.render_stateful_widget(
+        tree,
+        Rect::new(0, 0, content_size.width, content_size.height),
+        &mut state,
+    );
+    let mut scroll_state = ScrollViewState::with_offset(Position::new(0, app.detail_scroll));
+    ratatui::widgets::StatefulWidget::render(scroll_view, inner, buffer, &mut scroll_state);
+}
+
+fn detail_tree_content_height(detail: &IssueDetail, width: u16, comments_expanded: bool) -> u16 {
+    let content_width = width.saturating_sub(4).max(1);
+    let description_height = markdown_display_height(&detail.body, content_width);
+    let comments_height = if !comments_expanded {
+        0
+    } else if detail.comments.is_empty() {
+        1
+    } else {
+        detail
+            .comments
+            .iter()
+            .map(|comment| 1 + markdown_display_height(&comment.body, content_width))
+            .sum()
+    };
+
+    2 + description_height + comments_height
+}
+
+fn markdown_display_height(markdown: &str, width: u16) -> u16 {
+    let width = usize::from(width.max(1));
+    let trimmed = markdown.trim();
+    if trimmed.is_empty() {
+        return 1;
+    }
+
+    trimmed
+        .lines()
+        .map(|line| line.chars().count().max(1).div_ceil(width))
+        .sum::<usize>()
+        .max(1)
+        .min(usize::from(u16::MAX)) as u16
 }
 
 fn detail_tree_items(detail: &IssueDetail) -> Vec<TreeItem<'_, String>> {
@@ -573,7 +623,9 @@ fn render_footer(app: &App, area: Rect, buffer: &mut Buffer) {
 
 fn footer_shortcuts(app: &App) -> &'static str {
     match app.mode {
-        UiMode::Browsing => ": commands | n new | x close | j/k move | Enter details | q quit",
+        UiMode::Browsing => {
+            ": commands | n new | x close | j/k move | PgUp/PgDn detail | Enter fold | q quit"
+        }
         UiMode::Command => "Enter run | Esc cancel | Backspace delete",
         UiMode::Search => "Enter search | Esc cancel | Backspace delete",
         UiMode::CommentComposer => "Ctrl+S submit | Enter newline | Ctrl+J newline | Esc cancel",
@@ -715,13 +767,43 @@ fn render_loading_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         .as_ref()
         .map(pending_action_label)
         .unwrap_or("Working");
-    let body = format!("[*] {title}\n\n{}", app.status);
+    let block = modal_block("Working", ACTION_ACCENT);
+    let inner = block.inner(area);
+    block.render(area, buffer);
+    if inner.is_empty() {
+        return;
+    }
 
-    Paragraph::new(body)
-        .block(modal_block("Working", ACTION_ACCENT))
-        .style(Style::new().fg(ACTION_ACCENT).add_modifier(Modifier::BOLD))
+    let throbber = Throbber::default()
+        .label(Span::styled(
+            title.to_string(),
+            Style::new().fg(ACTION_ACCENT).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::new().fg(ACTION_ACCENT))
+        .throbber_style(Style::new().fg(ACTION_ACCENT).add_modifier(Modifier::BOLD))
+        .throbber_set(BRAILLE_ONE)
+        .use_type(WhichUse::Spin);
+    let mut throbber_state = ThrobberState::default();
+    throbber_state.calc_step(app.activity_frame as i8);
+    ratatui::widgets::StatefulWidget::render(
+        throbber,
+        Rect::new(inner.x, inner.y, inner.width, 1),
+        buffer,
+        &mut throbber_state,
+    );
+
+    Paragraph::new(app.status.clone())
+        .style(Style::new().fg(ACTION_ACCENT))
         .wrap(Wrap { trim: false })
-        .render(area, buffer);
+        .render(
+            Rect::new(
+                inner.x,
+                inner.y.saturating_add(2),
+                inner.width,
+                inner.height.saturating_sub(2),
+            ),
+            buffer,
+        );
 }
 
 fn render_assignee_picker(app: &App, title: &'static str, area: Rect, buffer: &mut Buffer) {
@@ -1848,7 +1930,45 @@ mod tests {
 
         assert!(rendered.contains("Working"));
         assert!(rendered.contains("Creating issue"));
-        assert!(rendered.contains("[*]"));
+        assert!(!rendered.contains("[*]"));
+    }
+
+    #[test]
+    fn renders_loading_overlay_with_throbber_indicator() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.begin_action(PendingAction::Refresh, "Refreshing issues");
+        app.activity_frame = 2;
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("⠠ Refreshing issues"));
+        assert!(!rendered.contains("[*] Refreshing issues"));
+    }
+
+    #[test]
+    fn detail_tree_scrolls_long_descriptions() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let summary = issue(19, "Long detail", IssueState::Open, &[]);
+        let body = (1..=24)
+            .map(|line| format!("line {line:02}"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        app.set_issues(vec![summary.clone()]);
+        app.set_selected_detail(crate::domain::IssueDetail {
+            summary,
+            body,
+            comments: Vec::new(),
+        });
+        app.detail_scroll = 10;
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 10));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("line 06") || rendered.contains("line 07"));
+        assert!(!rendered.contains("line 01"));
     }
 
     #[test]

@@ -49,6 +49,7 @@ pub async fn run<B: IssueBackend>(
 
         draw_app(terminal, app, &mut effects, elapsed)?;
         app.advance_new_issue_animation();
+        app.advance_activity_indicator();
 
         if can_auto_refresh(app) && Instant::now() >= next_auto_refresh {
             if auto_refresh(app, backend).await.has_notifications() {
@@ -346,6 +347,8 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
                 refresh_selected_detail(app, backend).await;
             }
         }
+        KeyCode::PageDown => app.scroll_detail_page_down(),
+        KeyCode::PageUp => app.scroll_detail_page_up(),
         KeyCode::Enter if app.selected_detail.is_some() => app.toggle_comments(),
         KeyCode::Char(':') => open_command_prompt(app),
         KeyCode::Char('n') => open_new_issue(app, backend).await,
@@ -375,6 +378,12 @@ async fn handle_mouse<B: IssueBackend>(
             }
         }
         MouseEventKind::ScrollDown if app.mode == UiMode::Browsing => {
+            if ui::mouse_target(app, area, mouse.column, mouse.row)
+                == Some(ui::MouseTarget::DetailPanel)
+            {
+                app.scroll_detail_down();
+                return;
+            }
             let previous = app.selected_issue().map(|issue| issue.number);
             app.select_next();
             if app.selected_issue().map(|issue| issue.number) != previous {
@@ -382,6 +391,12 @@ async fn handle_mouse<B: IssueBackend>(
             }
         }
         MouseEventKind::ScrollUp if app.mode == UiMode::Browsing => {
+            if ui::mouse_target(app, area, mouse.column, mouse.row)
+                == Some(ui::MouseTarget::DetailPanel)
+            {
+                app.scroll_detail_up();
+                return;
+            }
             let previous = app.selected_issue().map(|issue| issue.number);
             app.select_previous();
             if app.selected_issue().map(|issue| issue.number) != previous {
@@ -2446,6 +2461,34 @@ mod tests {
             app.selected_detail.as_ref().unwrap().body,
             "## Body for issue 2"
         );
+    }
+
+    #[tokio::test]
+    async fn mouse_wheel_over_detail_scrolls_detail_without_changing_issue() {
+        let backend = backend_with_issues(vec![
+            issue(1, "Fix redraw", IssueState::Open, 1),
+            issue(2, "Add mouse", IssueState::Open, 0),
+        ]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        refresh(&mut app, &backend).await;
+        let detail_calls = *backend.detail_calls.lock().unwrap();
+
+        handle_mouse(
+            &mut app,
+            &backend,
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 96,
+                row: 12,
+                modifiers: KeyModifiers::NONE,
+            },
+            ratatui::layout::Rect::new(0, 0, 120, 32),
+        )
+        .await;
+
+        assert_eq!(app.selected_issue().unwrap().number, 1);
+        assert_eq!(app.detail_scroll, 3);
+        assert_eq!(*backend.detail_calls.lock().unwrap(), detail_calls);
     }
 
     #[test]

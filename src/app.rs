@@ -196,6 +196,8 @@ pub struct App {
     pub viewer_login: Option<String>,
     pub issue_highlights: Vec<IssueHighlight>,
     pub new_issue_animation_frame: u8,
+    pub activity_frame: u8,
+    pub detail_scroll: u16,
     pub should_quit: bool,
 }
 
@@ -228,6 +230,8 @@ impl App {
             viewer_login: None,
             issue_highlights: Vec::new(),
             new_issue_animation_frame: 0,
+            activity_frame: 0,
+            detail_scroll: 0,
             should_quit: false,
         }
     }
@@ -245,38 +249,58 @@ impl App {
     }
 
     pub fn select_issue_number(&mut self, number: u64) {
+        let previous = self.selected_issue().map(|issue| issue.number);
         if let Some(index) = self.issues.iter().position(|issue| issue.number == number) {
             self.selected_index = index;
+        }
+        if self.selected_issue().map(|issue| issue.number) != previous {
+            self.detail_scroll = 0;
         }
     }
 
     pub fn select_issue_index(&mut self, index: usize) {
+        let previous = self.selected_issue().map(|issue| issue.number);
         if self.issues.is_empty() {
             self.selected_index = 0;
         } else {
             self.selected_index = index.min(self.issues.len() - 1);
         }
+        if self.selected_issue().map(|issue| issue.number) != previous {
+            self.detail_scroll = 0;
+        }
     }
 
     pub fn upsert_issue_at_top(&mut self, issue: IssueSummary) {
+        let previous = self.selected_issue().map(|issue| issue.number);
         self.issues.retain(|item| item.number != issue.number);
         self.issues.insert(0, issue);
         self.selected_index = 0;
+        if self.selected_issue().map(|issue| issue.number) != previous {
+            self.detail_scroll = 0;
+        }
         self.clear_stale_detail();
         self.clear_missing_issue_highlights();
     }
 
     pub fn select_next(&mut self) {
+        let previous = self.selected_issue().map(|issue| issue.number);
         if self.issues.is_empty() {
             self.selected_index = 0;
             return;
         }
 
         self.selected_index = (self.selected_index + 1).min(self.issues.len() - 1);
+        if self.selected_issue().map(|issue| issue.number) != previous {
+            self.detail_scroll = 0;
+        }
     }
 
     pub fn select_previous(&mut self) {
+        let previous = self.selected_issue().map(|issue| issue.number);
         self.selected_index = self.selected_index.saturating_sub(1);
+        if self.selected_issue().map(|issue| issue.number) != previous {
+            self.detail_scroll = 0;
+        }
     }
 
     pub fn cycle_state_filter(&mut self) {
@@ -354,6 +378,26 @@ impl App {
         }
     }
 
+    pub fn advance_activity_indicator(&mut self) {
+        self.activity_frame = self.activity_frame.wrapping_add(1);
+    }
+
+    pub fn scroll_detail_down(&mut self) {
+        self.detail_scroll = self.detail_scroll.saturating_add(3);
+    }
+
+    pub fn scroll_detail_up(&mut self) {
+        self.detail_scroll = self.detail_scroll.saturating_sub(3);
+    }
+
+    pub fn scroll_detail_page_down(&mut self) {
+        self.detail_scroll = self.detail_scroll.saturating_add(8);
+    }
+
+    pub fn scroll_detail_page_up(&mut self) {
+        self.detail_scroll = self.detail_scroll.saturating_sub(8);
+    }
+
     pub fn is_new_issue_highlighted(&self, number: u64) -> bool {
         self.issue_highlight_kind(number) == Some(IssueHighlightKind::New)
     }
@@ -366,12 +410,20 @@ impl App {
     }
 
     pub fn set_selected_detail(&mut self, detail: IssueDetail) {
+        let previous = self
+            .selected_detail
+            .as_ref()
+            .map(|detail| detail.summary.number);
+        if previous != Some(detail.summary.number) {
+            self.detail_scroll = 0;
+        }
         self.selected_detail = Some(detail);
         self.comments_expanded = true;
     }
 
     pub fn clear_selected_detail(&mut self) {
         self.selected_detail = None;
+        self.detail_scroll = 0;
     }
 
     pub fn toggle_comments(&mut self) {
