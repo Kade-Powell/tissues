@@ -5,7 +5,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Widget, Wrap},
+    widgets::{
+        Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Widget,
+        Wrap,
+    },
 };
 use tachyonfx::{EffectManager, Interpolation, fx};
 
@@ -127,22 +130,33 @@ fn render_body(app: &App, area: Rect, buffer: &mut Buffer) {
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(area);
 
-    let items: Vec<ListItem> = app.issues.iter().map(issue_row).collect();
-    let list = List::new(items)
+    let widths = [
+        Constraint::Length(8),
+        Constraint::Length(9),
+        Constraint::Length(16),
+        Constraint::Min(20),
+    ];
+    let header = Row::new(["Number", "State", "Labels", "Title"])
+        .style(Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        .bottom_margin(1);
+    let rows = app.issues.iter().map(issue_row);
+    let table = Table::new(rows, widths)
         .block(Block::bordered().title("Issues"))
-        .highlight_style(
+        .header(header)
+        .row_highlight_style(
             Style::new()
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol(">");
-    let mut state = ratatui::widgets::ListState::default().with_selected(Some(app.selected_index));
-    ratatui::widgets::StatefulWidget::render(list, columns[0], buffer, &mut state);
+        .highlight_symbol(">")
+        .highlight_spacing(HighlightSpacing::Always);
+    let mut state = TableState::default().with_selected(Some(app.selected_index));
+    ratatui::widgets::StatefulWidget::render(table, columns[0], buffer, &mut state);
 
     render_detail(app, columns[1], buffer);
 }
 
-fn issue_row(issue: &IssueSummary) -> ListItem<'_> {
+fn issue_row(issue: &IssueSummary) -> Row<'_> {
     let state = match issue.state {
         IssueState::Open => "open",
         IssueState::Closed => "closed",
@@ -159,15 +173,12 @@ fn issue_row(issue: &IssueSummary) -> ListItem<'_> {
             .join(",")
     };
 
-    ListItem::new(Line::from(vec![
-        Span::styled(
-            format!("#{: <5}", issue.number),
-            Style::new().fg(Color::Cyan),
-        ),
-        Span::styled(format!("{state: <8}"), state_style(issue.state.clone())),
-        Span::styled(format!("{labels: <16}"), Style::new().fg(Color::Magenta)),
-        Span::raw(issue.title.clone()),
-    ]))
+    Row::new([
+        Cell::from(format!("#{}", issue.number)).style(Style::new().fg(Color::Cyan)),
+        Cell::from(state).style(state_style(issue.state.clone())),
+        Cell::from(labels).style(Style::new().fg(Color::Magenta)),
+        Cell::from(issue.title.clone()),
+    ])
 }
 
 fn state_style(state: IssueState) -> Style {
@@ -306,6 +317,10 @@ mod tests {
         assert!(rendered.contains("owner/skunkwork"));
         assert!(rendered.contains("State: open"));
         assert!(rendered.contains("Search: redraw"));
+        assert!(rendered.contains("Number"));
+        assert!(rendered.contains("State"));
+        assert!(rendered.contains("Labels"));
+        assert!(rendered.contains("Title"));
         assert!(rendered.contains("#122"));
         assert!(rendered.contains("open"));
         assert!(rendered.contains("Fix login redraw"));
