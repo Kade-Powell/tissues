@@ -10,7 +10,7 @@ use ratatui::{
         Wrap,
     },
 };
-use ratatui_textarea::TextArea;
+use ratatui_textarea::{CursorMove, TextArea};
 use tachyonfx::{EffectManager, Interpolation, fx};
 use tui_tree_widget::{Tree, TreeItem, TreeState};
 
@@ -331,12 +331,7 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
 }
 
 fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut Buffer) {
-    let lines = if app.input.is_empty() {
-        vec![String::new()]
-    } else {
-        app.input.lines().map(ToOwned::to_owned).collect()
-    };
-    let mut textarea = TextArea::new(lines);
+    let mut textarea = textarea_at_end(input_lines(&app.input));
     textarea.set_block(Block::bordered().title(match app.mode {
         UiMode::CommentComposer => "Comment Body",
         UiMode::NewIssue => "New Issue: title | body",
@@ -349,9 +344,8 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
         UiMode::Search => "Search issue titles",
         _ => "",
     });
-    textarea.set_cursor_line_style(Style::new().bg(Color::DarkGray));
-    textarea.set_cursor_style(Style::new().fg(Color::Black).bg(Color::Cyan));
     textarea.set_style(Style::new().fg(Color::White));
+    set_visible_cursor(&mut textarea);
     (&textarea).render(area, buffer);
 }
 
@@ -372,25 +366,23 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
             vertical: 0,
         }));
 
-    Paragraph::new(if app.input.is_empty() {
-        " "
-    } else {
-        app.input.as_str()
-    })
-    .block(Block::bordered().title("Title"))
-    .style(field_style(
+    let title_active = app.new_issue_field == NewIssueField::Title;
+    let mut title = textarea_at_end(input_lines(&app.input));
+    title.set_block(Block::bordered().title("Title"));
+    title.set_style(field_style(
         &app.new_issue_field,
         &NewIssueField::Title,
         Color::White,
-    ))
-    .render(rows[0], buffer);
-
-    let body_lines = if app.body_input.is_empty() {
-        vec![String::new()]
+    ));
+    if title_active {
+        set_visible_cursor(&mut title);
     } else {
-        app.body_input.lines().map(ToOwned::to_owned).collect()
-    };
-    let mut body = TextArea::new(body_lines);
+        hide_cursor(&mut title);
+    }
+    (&title).render(rows[0], buffer);
+
+    let body_active = app.new_issue_field == NewIssueField::Body;
+    let mut body = textarea_at_end(input_lines(&app.body_input));
     body.set_block(Block::bordered().title("Body (Markdown)"));
     body.set_placeholder_text("Write the issue body");
     body.set_style(field_style(
@@ -398,8 +390,11 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
         &NewIssueField::Body,
         Color::White,
     ));
-    body.set_cursor_line_style(Style::new().bg(Color::DarkGray));
-    body.set_cursor_style(Style::new().fg(Color::Black).bg(Color::Cyan));
+    if body_active {
+        set_visible_cursor(&mut body);
+    } else {
+        hide_cursor(&mut body);
+    }
     (&body).render(rows[1], buffer);
 
     let selected = if app.new_issue_labels.is_empty() {
@@ -413,10 +408,20 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
     } else {
         suggestions.join(", ")
     };
-    Paragraph::new(format!(
-        "selected: {selected}\ninput: {}\nsuggestions: {suggestions}",
-        app.label_input
-    ))
+    let input_line = if app.new_issue_field == NewIssueField::Labels {
+        Line::from(vec![
+            Span::raw("input: "),
+            Span::raw(app.label_input.clone()),
+            Span::styled(" ", Style::new().fg(Color::Black).bg(Color::Cyan)),
+        ])
+    } else {
+        Line::from(format!("input: {}", app.label_input))
+    };
+    Paragraph::new(vec![
+        Line::from(format!("selected: {selected}")),
+        input_line,
+        Line::from(format!("suggestions: {suggestions}")),
+    ])
     .block(Block::bordered().title("Labels"))
     .style(field_style(
         &app.new_issue_field,
@@ -436,6 +441,31 @@ fn field_style(active: &NewIssueField, field: &NewIssueField, color: Color) -> S
     } else {
         Style::new().fg(color)
     }
+}
+
+fn input_lines(input: &str) -> Vec<String> {
+    if input.is_empty() {
+        vec![String::new()]
+    } else {
+        input.lines().map(ToOwned::to_owned).collect()
+    }
+}
+
+fn textarea_at_end(lines: Vec<String>) -> TextArea<'static> {
+    let mut textarea = TextArea::new(lines);
+    textarea.move_cursor(CursorMove::Bottom);
+    textarea.move_cursor(CursorMove::End);
+    textarea
+}
+
+fn set_visible_cursor(textarea: &mut TextArea<'_>) {
+    textarea.set_cursor_line_style(Style::new().bg(Color::DarkGray));
+    textarea.set_cursor_style(Style::new().fg(Color::Black).bg(Color::Cyan));
+}
+
+fn hide_cursor(textarea: &mut TextArea<'_>) {
+    textarea.set_cursor_line_style(Style::new());
+    textarea.set_cursor_style(Style::new());
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -574,6 +604,13 @@ mod tests {
         assert!(rendered.contains("selected: bug"));
         assert!(rendered.contains("input: do"));
         assert!(rendered.contains("suggestions: docs"));
+    }
+
+    #[test]
+    fn textareas_render_cursor_at_the_end_of_current_input() {
+        let textarea = textarea_at_end(input_lines("first\nsecond"));
+
+        assert_eq!(textarea.cursor(), (1, 6));
     }
 
     #[test]
