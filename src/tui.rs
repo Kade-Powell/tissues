@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     io::{self, Write},
     process::Command,
     thread,
@@ -12,7 +12,7 @@ use ratatui::DefaultTerminal;
 
 use crate::{
     app::{App, FlashKind, IssueStateFilter, NewIssueField, PendingAction, UiMode},
-    domain::{IssueState, IssueSummary},
+    domain::{IssueComment, IssueState, IssueSummary},
     github::IssueBackend,
     ui::{self, WorktrackEffects},
 };
@@ -30,6 +30,9 @@ pub async fn run<B: IssueBackend>(
     app.begin_action(PendingAction::Refresh, "Starting Worktrack");
     effects.trigger_startup_loading();
     draw_app(terminal, app, &mut effects, Duration::from_millis(120))?;
+    if let Ok(login) = backend.current_login().await {
+        app.set_viewer_login(login);
+    }
     refresh(app, backend).await;
 
     let mut last_frame = Instant::now();
@@ -43,7 +46,7 @@ pub async fn run<B: IssueBackend>(
         app.advance_new_issue_animation();
 
         if can_auto_refresh(app) && Instant::now() >= next_auto_refresh {
-            if auto_refresh(app, backend).await.has_new_issues() {
+            if auto_refresh(app, backend).await.has_notifications() {
                 play_new_issue_notification();
             }
             next_auto_refresh = Instant::now() + AUTO_REFRESH_INTERVAL;
@@ -102,11 +105,16 @@ fn system_notification_sound_command() -> Option<(&'static str, &'static [&'stat
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct AutoRefreshOutcome {
     new_issue_numbers: Vec<u64>,
+    mention_issue_numbers: Vec<u64>,
 }
 
 impl AutoRefreshOutcome {
     fn has_new_issues(&self) -> bool {
         !self.new_issue_numbers.is_empty()
+    }
+
+    fn has_notifications(&self) -> bool {
+        self.has_new_issues() || !self.mention_issue_numbers.is_empty()
     }
 }
 
@@ -420,6 +428,11 @@ async fn auto_refresh<B: IssueBackend>(app: &mut App, backend: &B) -> AutoRefres
         .iter()
         .map(|issue| issue.number)
         .collect::<BTreeSet<_>>();
+    let previous_comment_counts = app
+        .issues
+        .iter()
+        .map(|issue| (issue.number, issue.comment_count))
+        .collect::<HashMap<_, _>>();
     let selected_issue_number = app.selected_issue().map(|issue| issue.number);
 
     match backend.list_issues(&app.repo, &app.filters).await {
@@ -430,18 +443,27 @@ async fn auto_refresh<B: IssueBackend>(app: &mut App, backend: &B) -> AutoRefres
                 .map(|issue| issue.number)
                 .collect::<Vec<_>>();
             let new_issue_status = new_issue_notice(&issues, &new_issue_numbers);
+            let mention_issue_numbers = if let Some(login) = app.viewer_login.clone() {
+                mentioned_issues(backend, app, &issues, &previous_comment_counts, &login).await
+            } else {
+                Vec::new()
+            };
+            let mention_status = mention_notice(&issues, &mention_issue_numbers);
 
             app.set_issues(issues);
             if let Some(number) = selected_issue_number {
                 app.select_issue_number(number);
             }
             app.highlight_new_issues(new_issue_numbers.clone());
+            app.highlight_mentioned_issues(mention_issue_numbers.clone());
 
             match load_selected_detail(app, backend).await {
                 Ok(()) => {
                     app.finish_action();
                     app.flash = Some(FlashKind::Refresh);
                     if let Some(status) = new_issue_status {
+                        app.set_status(status);
+                    } else if let Some(status) = mention_status {
                         app.set_status(status);
                     } else {
                         app.set_status("Auto-refreshed; no new issues");
@@ -454,7 +476,10 @@ async fn auto_refresh<B: IssueBackend>(app: &mut App, backend: &B) -> AutoRefres
                 }
             }
 
-            AutoRefreshOutcome { new_issue_numbers }
+            AutoRefreshOutcome {
+                new_issue_numbers,
+                mention_issue_numbers,
+            }
         }
         Err(err) => {
             app.finish_action();
@@ -478,6 +503,77 @@ fn new_issue_notice(issues: &[IssueSummary], new_issue_numbers: &[u64]) -> Optio
         Some(format!(
             "{} new issues; newest #{}: {}",
             new_issue_numbers.len(),
+            first_issue.number,
+            first_issue.title
+        ))
+    }
+}
+
+async fn mentioned_issues<B: IssueBackend>(
+    backend: &B,
+    app: &App,
+    issues: &[IssueSummary],
+    previous_comment_counts: &HashMap<u64, u64>,
+    login: &str,
+) -> Vec<u64> {
+    let mut mentioned = Vec::new();
+
+    for issue in issues {
+        let Some(previous_count) = previous_comment_counts.get(&issue.number).copied() else {
+            continue;
+        };
+        if issue.comment_count <= previous_count {
+            continue;
+        }
+
+        let new_comment_count = (issue.comment_count - previous_count) as usize;
+        let Ok(comments) = backend.list_comments(&app.repo, issue.number).await else {
+            continue;
+        };
+
+        if comments
+            .iter()
+            .rev()
+            .take(new_comment_count)
+            .any(|comment| comment_mentions_login(comment, login))
+        {
+            mentioned.push(issue.number);
+        }
+    }
+
+    mentioned
+}
+
+fn comment_mentions_login(comment: &IssueComment, login: &str) -> bool {
+    text_mentions_login(&comment.body, login)
+}
+
+fn text_mentions_login(text: &str, login: &str) -> bool {
+    let needle = format!("@{}", login.to_lowercase());
+    let text = text.to_lowercase();
+
+    text.match_indices(&needle).any(|(index, _)| {
+        let after_index = index + needle.len();
+        text[after_index..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '-')
+    })
+}
+
+fn mention_notice(issues: &[IssueSummary], mention_issue_numbers: &[u64]) -> Option<String> {
+    let first_number = mention_issue_numbers.first()?;
+    let first_issue = issues.iter().find(|issue| issue.number == *first_number)?;
+
+    if mention_issue_numbers.len() == 1 {
+        Some(format!(
+            "Mentioned on #{}: {}",
+            first_issue.number, first_issue.title
+        ))
+    } else {
+        Some(format!(
+            "{} new mentions; latest #{}: {}",
+            mention_issue_numbers.len(),
             first_issue.number,
             first_issue.title
         ))
@@ -759,7 +855,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use color_eyre::eyre::Result;
-    use std::sync::Mutex;
+    use std::{collections::HashMap, sync::Mutex};
 
     use crate::{
         app::IssueFilters,
@@ -776,6 +872,7 @@ mod tests {
         commented_body: Mutex<Option<String>>,
         state_updates: Mutex<Vec<(u64, IssueState)>>,
         issues: Mutex<Vec<IssueSummary>>,
+        comments: Mutex<HashMap<u64, Vec<IssueComment>>>,
         labels: Mutex<Vec<Label>>,
     }
 
@@ -801,6 +898,7 @@ mod tests {
             commented_body: Mutex::new(None),
             state_updates: Mutex::new(Vec::new()),
             issues: Mutex::new(issues),
+            comments: Mutex::new(HashMap::new()),
             labels: Mutex::new(vec![
                 Label {
                     name: "bug".to_string(),
@@ -812,8 +910,20 @@ mod tests {
         }
     }
 
+    fn comment(body: &str) -> IssueComment {
+        IssueComment {
+            author: None,
+            body: body.to_string(),
+            created_at: None,
+        }
+    }
+
     #[async_trait]
     impl IssueBackend for MockBackend {
+        async fn current_login(&self) -> Result<String> {
+            Ok("kpowel".to_string())
+        }
+
         async fn list_issues(
             &self,
             _repo: &Repository,
@@ -847,9 +957,15 @@ mod tests {
         async fn list_comments(
             &self,
             _repo: &Repository,
-            _number: u64,
+            number: u64,
         ) -> Result<Vec<IssueComment>> {
-            unreachable!("not used by these tests")
+            Ok(self
+                .comments
+                .lock()
+                .unwrap()
+                .get(&number)
+                .cloned()
+                .unwrap_or_default())
         }
 
         async fn list_labels(&self, _repo: &Repository) -> Result<Vec<Label>> {
@@ -879,11 +995,18 @@ mod tests {
         ) -> Result<IssueComment> {
             *self.commented_body.lock().unwrap() = Some(body.to_string());
             *self.issues.lock().unwrap() = vec![issue(1, "Fix redraw", IssueState::Open, 2)];
-            Ok(IssueComment {
+            let comment = IssueComment {
                 author: None,
                 body: "done".to_string(),
                 created_at: None,
-            })
+            };
+            self.comments
+                .lock()
+                .unwrap()
+                .entry(1)
+                .or_default()
+                .push(comment.clone());
+            Ok(comment)
         }
 
         async fn set_issue_state(
@@ -1070,6 +1193,64 @@ mod tests {
         assert_eq!(app.flash, Some(FlashKind::Refresh));
         assert!(app.is_new_issue_highlighted(3));
         assert_eq!(app.mode, UiMode::Browsing);
+    }
+
+    #[tokio::test]
+    async fn auto_refresh_notifies_when_new_comment_mentions_viewer() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        backend
+            .comments
+            .lock()
+            .unwrap()
+            .insert(1, vec![comment("Initial note")]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_viewer_login("kpowel");
+        refresh(&mut app, &backend).await;
+
+        *backend.issues.lock().unwrap() = vec![issue(1, "Fix redraw", IssueState::Open, 2)];
+        backend.comments.lock().unwrap().insert(
+            1,
+            vec![comment("Initial note"), comment("@kpowel can you look?")],
+        );
+
+        let outcome = auto_refresh(&mut app, &backend).await;
+
+        assert_eq!(outcome.mention_issue_numbers, vec![1]);
+        assert!(outcome.has_notifications());
+        assert_eq!(app.status, "Mentioned on #1: Fix redraw");
+        assert_eq!(
+            app.issue_highlight_kind(1),
+            Some(crate::app::IssueHighlightKind::Mention)
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_refresh_ignores_old_mentions_without_new_comments() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        backend
+            .comments
+            .lock()
+            .unwrap()
+            .insert(1, vec![comment("@kpowel old note")]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_viewer_login("kpowel");
+        refresh(&mut app, &backend).await;
+
+        let outcome = auto_refresh(&mut app, &backend).await;
+
+        assert!(outcome.mention_issue_numbers.is_empty());
+        assert!(!outcome.has_notifications());
+    }
+
+    #[test]
+    fn mention_matching_requires_github_login_boundary() {
+        assert!(text_mentions_login("@kpowel please review", "kpowel"));
+        assert!(text_mentions_login("cc @KPOWEL.", "kpowel"));
+        assert!(!text_mentions_login(
+            "@kpowel-extra should not match",
+            "kpowel"
+        ));
+        assert!(!text_mentions_login("@kpowell should not match", "kpowel"));
     }
 
     #[tokio::test]

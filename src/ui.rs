@@ -19,7 +19,9 @@ use tachyonfx::{
 use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::{
-    app::{App, FlashKind, IssueStateFilter, NewIssueField, PendingAction, UiMode},
+    app::{
+        App, FlashKind, IssueHighlightKind, IssueStateFilter, NewIssueField, PendingAction, UiMode,
+    },
     domain::{IssueComment, IssueDetail, IssueState, IssueSummary},
 };
 
@@ -225,7 +227,7 @@ fn render_body(app: &App, area: Rect, buffer: &mut Buffer) {
     let rows = app.issues.iter().map(|issue| {
         issue_row(
             issue,
-            app.is_new_issue_highlighted(issue.number),
+            app.issue_highlight_kind(issue.number),
             app.new_issue_animation_frame,
         )
     });
@@ -245,7 +247,11 @@ fn render_body(app: &App, area: Rect, buffer: &mut Buffer) {
     render_detail(app, columns[1], buffer);
 }
 
-fn issue_row(issue: &IssueSummary, is_new: bool, animation_frame: u8) -> Row<'_> {
+fn issue_row(
+    issue: &IssueSummary,
+    highlight: Option<IssueHighlightKind>,
+    animation_frame: u8,
+) -> Row<'_> {
     let state = match issue.state {
         IssueState::Open => "open",
         IssueState::Closed => "closed",
@@ -262,9 +268,13 @@ fn issue_row(issue: &IssueSummary, is_new: bool, animation_frame: u8) -> Row<'_>
             .join(",")
     };
 
-    let title = if is_new {
+    let title = if let Some(kind) = highlight.as_ref() {
+        let badge = match kind {
+            IssueHighlightKind::New => "NEW ",
+            IssueHighlightKind::Mention => "PING ",
+        };
         Cell::from(Line::from(vec![
-            Span::styled("NEW ", Style::new().fg(Color::Yellow).bold()),
+            Span::styled(badge, Style::new().fg(Color::Yellow).bold()),
             Span::raw(issue.title.clone()),
         ]))
     } else {
@@ -278,18 +288,20 @@ fn issue_row(issue: &IssueSummary, is_new: bool, animation_frame: u8) -> Row<'_>
         title,
     ]);
 
-    if is_new {
+    if let Some(kind) = highlight {
         let pulse_is_high = (animation_frame / 8).is_multiple_of(2);
         let style = if pulse_is_high {
-            Style::new()
-                .fg(Color::Black)
-                .bg(Color::LightYellow)
-                .add_modifier(Modifier::BOLD)
+            match kind {
+                IssueHighlightKind::New => Style::new().fg(Color::Black).bg(Color::LightYellow),
+                IssueHighlightKind::Mention => Style::new().fg(Color::Black).bg(Color::LightCyan),
+            }
+            .add_modifier(Modifier::BOLD)
         } else {
-            Style::new()
-                .fg(Color::Yellow)
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD)
+            match kind {
+                IssueHighlightKind::New => Style::new().fg(Color::Yellow).bg(Color::DarkGray),
+                IssueHighlightKind::Mention => Style::new().fg(Color::Cyan).bg(Color::DarkGray),
+            }
+            .add_modifier(Modifier::BOLD)
         };
         row.style(style)
     } else {
@@ -719,6 +731,24 @@ mod tests {
         assert!(rendered.contains("#130"));
         assert!(rendered.contains("NEW"));
         assert!(rendered.contains("Fresh"));
+    }
+
+    #[test]
+    fn renders_mention_highlight_in_issue_list() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_issues(vec![
+            issue(122, "Fix login redraw", IssueState::Open, &["bug"]),
+            issue(130, "Ping", IssueState::Open, &[]),
+        ]);
+        app.highlight_mentioned_issues(vec![130]);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("#130"));
+        assert!(rendered.contains("PING"));
+        assert!(rendered.contains("Ping"));
     }
 
     #[test]

@@ -88,6 +88,18 @@ pub enum FlashKind {
 const NEW_ISSUE_ANIMATION_FRAMES: u8 = 90;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IssueHighlightKind {
+    New,
+    Mention,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssueHighlight {
+    pub number: u64,
+    pub kind: IssueHighlightKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct App {
     pub repo: Repository,
     pub filters: IssueFilters,
@@ -105,7 +117,8 @@ pub struct App {
     pub comments_expanded: bool,
     pub pending_action: Option<PendingAction>,
     pub flash: Option<FlashKind>,
-    pub new_issue_highlights: Vec<u64>,
+    pub viewer_login: Option<String>,
+    pub issue_highlights: Vec<IssueHighlight>,
     pub new_issue_animation_frame: u8,
     pub should_quit: bool,
 }
@@ -129,7 +142,8 @@ impl App {
             comments_expanded: true,
             pending_action: None,
             flash: None,
-            new_issue_highlights: Vec::new(),
+            viewer_login: None,
+            issue_highlights: Vec::new(),
             new_issue_animation_frame: 0,
             should_quit: false,
         }
@@ -192,25 +206,53 @@ impl App {
         self.pending_action = None;
     }
 
+    pub fn set_viewer_login(&mut self, login: impl Into<String>) {
+        self.viewer_login = Some(login.into());
+    }
+
     pub fn highlight_new_issues(&mut self, numbers: Vec<u64>) {
-        self.new_issue_highlights = numbers;
-        self.new_issue_animation_frame = 0;
+        self.highlight_issues(numbers, IssueHighlightKind::New);
+    }
+
+    pub fn highlight_mentioned_issues(&mut self, numbers: Vec<u64>) {
+        self.highlight_issues(numbers, IssueHighlightKind::Mention);
+    }
+
+    fn highlight_issues(&mut self, numbers: Vec<u64>, kind: IssueHighlightKind) {
+        self.issue_highlights
+            .retain(|highlight| highlight.kind != kind);
+        self.issue_highlights
+            .extend(numbers.into_iter().map(|number| IssueHighlight {
+                number,
+                kind: kind.clone(),
+            }));
+
+        if !self.issue_highlights.is_empty() {
+            self.new_issue_animation_frame = 0;
+        }
     }
 
     pub fn advance_new_issue_animation(&mut self) {
-        if self.new_issue_highlights.is_empty() {
+        if self.issue_highlights.is_empty() {
             return;
         }
 
         self.new_issue_animation_frame = self.new_issue_animation_frame.saturating_add(1);
         if self.new_issue_animation_frame >= NEW_ISSUE_ANIMATION_FRAMES {
-            self.new_issue_highlights.clear();
+            self.issue_highlights.clear();
             self.new_issue_animation_frame = 0;
         }
     }
 
     pub fn is_new_issue_highlighted(&self, number: u64) -> bool {
-        self.new_issue_highlights.contains(&number)
+        self.issue_highlight_kind(number) == Some(IssueHighlightKind::New)
+    }
+
+    pub fn issue_highlight_kind(&self, number: u64) -> Option<IssueHighlightKind> {
+        self.issue_highlights
+            .iter()
+            .find(|highlight| highlight.number == number)
+            .map(|highlight| highlight.kind.clone())
     }
 
     pub fn set_selected_detail(&mut self, detail: IssueDetail) {
@@ -316,9 +358,12 @@ impl App {
     }
 
     fn clear_missing_issue_highlights(&mut self) {
-        self.new_issue_highlights
-            .retain(|number| self.issues.iter().any(|issue| issue.number == *number));
-        if self.new_issue_highlights.is_empty() {
+        self.issue_highlights.retain(|highlight| {
+            self.issues
+                .iter()
+                .any(|issue| issue.number == highlight.number)
+        });
+        if self.issue_highlights.is_empty() {
             self.new_issue_animation_frame = 0;
         }
     }
@@ -484,7 +529,22 @@ mod tests {
 
         app.set_issues(vec![issue(1, "one")]);
 
-        assert!(app.new_issue_highlights.is_empty());
+        assert!(app.issue_highlights.is_empty());
         assert_eq!(app.new_issue_animation_frame, 0);
+    }
+
+    #[test]
+    fn mention_highlights_are_tracked_separately_from_new_issues() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_issues(vec![issue(1, "one"), issue(2, "two")]);
+
+        app.highlight_new_issues(vec![1]);
+        app.highlight_mentioned_issues(vec![2]);
+
+        assert_eq!(app.issue_highlight_kind(1), Some(IssueHighlightKind::New));
+        assert_eq!(
+            app.issue_highlight_kind(2),
+            Some(IssueHighlightKind::Mention)
+        );
     }
 }

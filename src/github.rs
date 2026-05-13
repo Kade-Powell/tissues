@@ -12,6 +12,7 @@ use crate::{
 
 #[async_trait]
 pub trait IssueBackend {
+    async fn current_login(&self) -> Result<String>;
     async fn list_issues(
         &self,
         repo: &Repository,
@@ -55,7 +56,7 @@ impl GitHubClient {
         Ok(Self { crab })
     }
 
-    async fn current_login(&self) -> Result<String> {
+    pub async fn load_current_login(&self) -> Result<String> {
         let user = self
             .crab
             .current()
@@ -68,6 +69,10 @@ impl GitHubClient {
 
 #[async_trait]
 impl IssueBackend for GitHubClient {
+    async fn current_login(&self) -> Result<String> {
+        self.load_current_login().await
+    }
+
     async fn list_issues(
         &self,
         repo: &Repository,
@@ -76,7 +81,7 @@ impl IssueBackend for GitHubClient {
         let labels = filters.labels.clone();
         let assignee = match &filters.assignee {
             AssigneeFilter::Any => None,
-            AssigneeFilter::Me => Some(self.current_login().await?),
+            AssigneeFilter::Me => Some(self.load_current_login().await?),
             AssigneeFilter::None => Some("none".to_string()),
             AssigneeFilter::User(user) => Some(user.clone()),
         };
