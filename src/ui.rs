@@ -10,6 +10,7 @@ use ratatui::{
         Wrap,
     },
 };
+use ratatui_textarea::TextArea;
 use tachyonfx::{EffectManager, Interpolation, fx};
 
 use crate::{
@@ -233,16 +234,43 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
     if let Some(title) = title {
         let popup = centered_rect(64, 35, area);
         Clear.render(popup, buffer);
-        let body = match app.mode {
-            UiMode::ConfirmClose => "Press y to confirm, Esc to cancel".to_string(),
-            UiMode::Error => app.status.clone(),
-            _ => app.input.clone(),
-        };
-        Paragraph::new(body)
-            .block(Block::bordered().title(title))
-            .wrap(Wrap { trim: false })
-            .render(popup, buffer);
+        match app.mode {
+            UiMode::ConfirmClose => Paragraph::new("Press y to confirm, Esc to cancel")
+                .block(Block::bordered().title(title))
+                .wrap(Wrap { trim: false })
+                .render(popup, buffer),
+            UiMode::Error => Paragraph::new(app.status.clone())
+                .block(Block::bordered().title(title))
+                .wrap(Wrap { trim: false })
+                .render(popup, buffer),
+            _ => render_text_editor(app, title, popup, buffer),
+        }
     }
+}
+
+fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut Buffer) {
+    let lines = if app.input.is_empty() {
+        vec![String::new()]
+    } else {
+        app.input.lines().map(ToOwned::to_owned).collect()
+    };
+    let mut textarea = TextArea::new(lines);
+    textarea.set_block(Block::bordered().title(match app.mode {
+        UiMode::CommentComposer => "Comment Body",
+        UiMode::NewIssue => "New Issue: title | body",
+        UiMode::Search => "Search Issues",
+        _ => title,
+    }));
+    textarea.set_placeholder_text(match app.mode {
+        UiMode::CommentComposer => "Write a comment",
+        UiMode::NewIssue => "Title | optional body",
+        UiMode::Search => "Search issue titles",
+        _ => "",
+    });
+    textarea.set_cursor_line_style(Style::new().bg(Color::DarkGray));
+    textarea.set_cursor_style(Style::new().fg(Color::Black).bg(Color::Cyan));
+    textarea.set_style(Style::new().fg(Color::White));
+    (&textarea).render(area, buffer);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -335,5 +363,19 @@ mod tests {
 
         effects.trigger_refresh();
         assert!(effects.has_effects());
+    }
+
+    #[test]
+    fn renders_comment_composer_as_text_editor() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::CommentComposer;
+        app.input = "Looks good".to_string();
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Comment Body"));
+        assert!(rendered.contains("Looks good"));
     }
 }
