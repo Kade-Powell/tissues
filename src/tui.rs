@@ -23,6 +23,9 @@ pub async fn run<B: IssueBackend>(
     backend: &B,
 ) -> Result<()> {
     let mut effects = WorktrackEffects::default();
+    app.begin_action(PendingAction::Refresh, "Starting Worktrack");
+    effects.trigger_startup_loading();
+    draw_app(terminal, app, &mut effects, Duration::from_millis(120))?;
     refresh(app, backend).await;
 
     let mut last_frame = Instant::now();

@@ -15,7 +15,8 @@ Worktrack is a Rust terminal app for working through GitHub issues in one reposi
 - Auto-refresh issue data every 10 seconds while browsing.
 - Show a visible notification and terminal bell when new issues arrive.
 - Show a confirmation after successful writes once issue state has reloaded.
-- Animate loading, success, and error states with TachyonFX.
+- Show compact loading indicators for routine actions.
+- Use TachyonFX for the initial startup load plus success and error states.
 - Use your existing `gh` login instead of storing a token in the app.
 
 ## Requirements

@@ -28,11 +28,15 @@ pub struct WorktrackEffects {
 }
 
 impl WorktrackEffects {
-    pub fn trigger_refresh(&mut self) {
+    pub fn trigger_startup_loading(&mut self) {
         self.trigger_loading();
     }
 
-    pub fn trigger_loading(&mut self) {
+    pub fn trigger_refresh(&mut self) {
+        // Routine refreshes use the compact loading overlay instead of a page-wide effect.
+    }
+
+    fn trigger_loading(&mut self) {
         self.manager.add_unique_effect(
             "loading",
             fx::parallel(&[
@@ -375,7 +379,7 @@ fn render_loading_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         .as_ref()
         .map(pending_action_label)
         .unwrap_or("Working");
-    let body = format!("{title}\n\n{}\n\n[>>>>>>>>>>>>>>>>>>>>]", app.status);
+    let body = format!("[*] {title}\n\n{}", app.status);
 
     Paragraph::new(body)
         .block(Block::bordered().title("Working"))
@@ -632,18 +636,19 @@ mod tests {
     }
 
     #[test]
-    fn creates_refresh_effects() {
+    fn routine_refresh_does_not_start_page_wide_effects() {
         let mut effects = WorktrackEffects::default();
 
         effects.trigger_refresh();
-        assert!(effects.has_effects());
+
+        assert!(!effects.has_effects());
     }
 
     #[test]
-    fn creates_loading_effects() {
+    fn creates_startup_loading_effects() {
         let mut effects = WorktrackEffects::default();
 
-        effects.trigger_loading();
+        effects.trigger_startup_loading();
 
         assert!(effects.has_effects());
     }
@@ -659,7 +664,7 @@ mod tests {
 
         assert!(rendered.contains("Working"));
         assert!(rendered.contains("Creating issue"));
-        assert!(rendered.contains("[>>>>>>>>>>>>>>>>>>>>]"));
+        assert!(rendered.contains("[*]"));
     }
 
     #[test]
