@@ -419,13 +419,29 @@ fn markdown_leaf(id: String, markdown: &str) -> TreeItem<'_, String> {
 }
 
 fn render_footer(app: &App, area: Rect, buffer: &mut Buffer) {
-    let footer = format!(
-        "q quit | r refresh | / search | f filter | Enter fold | c comment | n new issue | x close/reopen\n{}",
-        app.status
-    );
+    let footer = format!("{}\n{}", footer_shortcuts(app), app.status);
     Paragraph::new(footer)
         .style(Style::new().fg(Color::Gray))
         .render(area, buffer);
+}
+
+fn footer_shortcuts(app: &App) -> &'static str {
+    match app.mode {
+        UiMode::Browsing => {
+            "q quit | r refresh | / search | f filter | Enter fold | c comment | n new issue | x close/reopen"
+        }
+        UiMode::Search => "Enter search | Esc cancel | Backspace delete",
+        UiMode::CommentComposer => "Ctrl+D submit | Enter newline | Ctrl+J newline | Esc cancel",
+        UiMode::CloseComment => "Ctrl+D close | Enter newline | Ctrl+J newline | Esc cancel",
+        UiMode::NewIssue => {
+            "Tab/Shift+Tab fields | Ctrl+D create | Enter edit/add label | Ctrl+J newline | Esc cancel"
+        }
+        UiMode::ConfirmClose => "y/Enter reopen | Esc cancel",
+        UiMode::Success => "Any key continue",
+        UiMode::Loading => "Working",
+        UiMode::Error => "Esc dismiss",
+        UiMode::FilterEditor => "Esc cancel",
+    }
 }
 
 fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
@@ -760,6 +776,27 @@ mod tests {
         assert!(rendered.contains("c comment"));
         assert!(rendered.contains("n new issue"));
         assert!(rendered.contains("x close/reopen"));
+    }
+
+    #[test]
+    fn footer_shortcuts_follow_active_screen() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+
+        assert!(footer_shortcuts(&app).contains("q quit"));
+
+        app.mode = UiMode::NewIssue;
+        assert!(footer_shortcuts(&app).contains("Ctrl+D create"));
+        assert!(!footer_shortcuts(&app).contains("q quit"));
+
+        app.mode = UiMode::CommentComposer;
+        assert!(footer_shortcuts(&app).contains("Ctrl+D submit"));
+        assert!(!footer_shortcuts(&app).contains("n new issue"));
+
+        app.mode = UiMode::CloseComment;
+        assert!(footer_shortcuts(&app).contains("Ctrl+D close"));
+
+        app.mode = UiMode::Search;
+        assert!(footer_shortcuts(&app).contains("Enter search"));
     }
 
     #[test]
