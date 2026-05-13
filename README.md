@@ -24,6 +24,7 @@ Worktrack is a Rust terminal app for working through GitHub issues in one reposi
 - Show a confirmation after successful writes once issue state has reloaded.
 - Show compact loading indicators for routine actions with contained TachyonFX movement.
 - Use tasteful TachyonFX coalesce, slide, wave, and startup motion effects without broad color shifts.
+- Use an exabind-inspired Catppuccin terminal frame style with compact title chips.
 - Use your existing `gh` login instead of storing a token in the app.
 
 ## Requirements

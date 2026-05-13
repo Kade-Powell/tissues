@@ -4,6 +4,7 @@ use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
+    symbols::border::Set,
     text::{Line, Span},
     widgets::{
         Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Widget,
@@ -34,6 +35,37 @@ const ASSIGNEE_FILTER_PRIMARY_LABEL: &str = "Apply";
 const ASSIGNEE_EDITOR_PRIMARY_LABEL: &str = "Assign";
 const ISSUE_LABEL_PRIMARY_LABEL: &str = "Save";
 
+const ROSEWATER: Color = Color::from_u32(0xf5e0dc);
+const PINK: Color = Color::from_u32(0xf5c2e7);
+const MAUVE: Color = Color::from_u32(0xcba6f7);
+const RED: Color = Color::from_u32(0xf38ba8);
+const PEACH: Color = Color::from_u32(0xfab387);
+const YELLOW: Color = Color::from_u32(0xf9e2af);
+const GREEN: Color = Color::from_u32(0xa6e3a1);
+const TEAL: Color = Color::from_u32(0x94e2d5);
+const SKY: Color = Color::from_u32(0x89dceb);
+const BLUE: Color = Color::from_u32(0x89b4fa);
+const TEXT: Color = Color::from_u32(0xcdd6f4);
+const SUBTEXT1: Color = Color::from_u32(0xbac2de);
+const SUBTEXT0: Color = Color::from_u32(0xa6adc8);
+const OVERLAY1: Color = Color::from_u32(0x7f849c);
+const SURFACE2: Color = Color::from_u32(0x585b70);
+const SURFACE1: Color = Color::from_u32(0x45475a);
+const SURFACE0: Color = Color::from_u32(0x313244);
+const MANTLE: Color = Color::from_u32(0x181825);
+const CRUST: Color = Color::from_u32(0x11111b);
+
+const EXABIND_FRAME: Set = Set {
+    top_left: "▟",
+    top_right: "▜",
+    bottom_left: "▔",
+    bottom_right: "▔",
+    vertical_left: "▏",
+    vertical_right: "▕",
+    horizontal_top: "▔",
+    horizontal_bottom: "▔",
+};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MouseTarget {
     IssueRow(usize),
@@ -55,7 +87,7 @@ impl WorktrackEffects {
             "startup-loading",
             fx::parallel(&[
                 fx::coalesce_from(
-                    Style::new().fg(Color::DarkGray),
+                    Style::new().fg(SURFACE1).bg(CRUST),
                     (720, Interpolation::SineOut),
                 ),
                 fx::slide_in(
@@ -78,11 +110,11 @@ impl WorktrackEffects {
                     Motion::LeftToRight,
                     5,
                     0,
-                    Color::Reset,
+                    SURFACE0,
                     (240, Interpolation::SineOut),
                 ),
                 fx::coalesce_from(
-                    Style::new().fg(Color::DarkGray),
+                    Style::new().fg(SURFACE1).bg(CRUST),
                     (360, Interpolation::SineOut),
                 )
                 .with_pattern(subtle_wave_pattern()),
@@ -98,11 +130,11 @@ impl WorktrackEffects {
                     Motion::DownToUp,
                     4,
                     0,
-                    Color::Reset,
+                    SURFACE0,
                     (260, Interpolation::SineOut),
                 ),
                 fx::coalesce_from(
-                    Style::new().fg(Color::DarkGray),
+                    Style::new().fg(SURFACE1).bg(CRUST),
                     (420, Interpolation::SineOut),
                 ),
             ]),
@@ -113,8 +145,11 @@ impl WorktrackEffects {
         self.manager.add_unique_effect(
             "error",
             fx::parallel(&[
-                fx::dissolve_to(Style::new().fg(Color::Red), (360, Interpolation::SineOut)),
-                fx::fade_to_fg(Color::Red, (350, Interpolation::SineOut)),
+                fx::dissolve_to(
+                    Style::new().fg(RED).bg(MANTLE),
+                    (360, Interpolation::SineOut),
+                ),
+                fx::fade_to_fg(RED, (350, Interpolation::SineOut)),
             ]),
         );
     }
@@ -147,6 +182,8 @@ pub fn trigger_flash_effect(app: &mut App, effects: &mut WorktrackEffects) {
 }
 
 pub fn render(app: &App, area: Rect, buffer: &mut Buffer) {
+    Block::new().style(page_style()).render(area, buffer);
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -162,6 +199,50 @@ pub fn render(app: &App, area: Rect, buffer: &mut Buffer) {
     render_body(app, rows[2], buffer);
     render_footer(app, rows[3], buffer);
     render_overlay(app, area, buffer);
+}
+
+fn page_style() -> Style {
+    Style::new().fg(TEXT).bg(CRUST)
+}
+
+fn surface_style() -> Style {
+    Style::new().fg(TEXT).bg(SURFACE0)
+}
+
+fn modal_style() -> Style {
+    Style::new().fg(TEXT).bg(MANTLE)
+}
+
+fn frame_block(title: impl Into<String>, accent: Color) -> Block<'static> {
+    let title = format!(" {} ", title.into());
+
+    Block::bordered()
+        .border_set(EXABIND_FRAME)
+        .border_style(Style::new().fg(accent).bg(SURFACE0))
+        .title(Span::styled(
+            title,
+            Style::new()
+                .fg(CRUST)
+                .bg(accent)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .style(surface_style())
+}
+
+fn modal_block(title: impl Into<String>, accent: Color) -> Block<'static> {
+    let title = format!(" {} ", title.into());
+
+    Block::bordered()
+        .border_set(EXABIND_FRAME)
+        .border_style(Style::new().fg(accent).bg(MANTLE))
+        .title(Span::styled(
+            title,
+            Style::new()
+                .fg(CRUST)
+                .bg(accent)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .style(modal_style())
 }
 
 pub fn effect_area(app: &App, area: Rect) -> Rect {
@@ -193,14 +274,19 @@ fn render_header(app: &App, area: Rect, buffer: &mut Buffer) {
         .filter(|issue| issue.state == IssueState::Closed)
         .count();
     let header = Line::from(vec![
-        Span::styled(app.repo.to_string(), Style::new().fg(Color::Cyan).bold()),
-        Span::raw(format!(
-            "    open: {open}  closed: {closed}  all: {}",
-            app.issues.len()
-        )),
+        Span::styled(app.repo.to_string(), Style::new().fg(SKY).bg(CRUST).bold()),
+        Span::styled(
+            format!(
+                "    open: {open}  closed: {closed}  all: {}",
+                app.issues.len()
+            ),
+            Style::new().fg(SUBTEXT1).bg(CRUST),
+        ),
     ]);
 
-    Paragraph::new(header).render(area, buffer);
+    Paragraph::new(header)
+        .style(page_style())
+        .render(area, buffer);
 }
 
 fn render_filters(app: &App, area: Rect, buffer: &mut Buffer) {
@@ -221,8 +307,13 @@ fn render_filters(app: &App, area: Rect, buffer: &mut Buffer) {
     );
 
     Paragraph::new(filters)
-        .block(Block::default().borders(Borders::BOTTOM))
-        .style(Style::new().fg(Color::Yellow))
+        .block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::new().fg(SURFACE1).bg(CRUST))
+                .style(page_style()),
+        )
+        .style(Style::new().fg(YELLOW).bg(CRUST))
         .render(area, buffer);
 }
 
@@ -243,7 +334,12 @@ fn render_body(app: &App, area: Rect, buffer: &mut Buffer) {
         Constraint::Min(6),
     ];
     let header = Row::new(["Number", "State", "Who", "Labels", "Title"])
-        .style(Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        .style(
+            Style::new()
+                .fg(YELLOW)
+                .bg(SURFACE0)
+                .add_modifier(Modifier::BOLD),
+        )
         .bottom_margin(1);
     let rows = app.issues.iter().map(|issue| {
         issue_row(
@@ -253,14 +349,16 @@ fn render_body(app: &App, area: Rect, buffer: &mut Buffer) {
         )
     });
     let table = Table::new(rows, widths)
-        .block(Block::bordered().title("Issues"))
+        .block(frame_block("Issues", MAUVE))
+        .style(surface_style())
         .header(header)
         .row_highlight_style(
             Style::new()
-                .bg(Color::DarkGray)
+                .fg(TEXT)
+                .bg(SURFACE1)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol(">")
+        .highlight_symbol("▸")
         .highlight_spacing(HighlightSpacing::Always);
     let mut state = TableState::default().with_selected(Some(app.selected_index));
     ratatui::widgets::StatefulWidget::render(table, columns[0], buffer, &mut state);
@@ -306,33 +404,34 @@ fn issue_row(
             IssueHighlightKind::Mention => "PING ",
         };
         Cell::from(Line::from(vec![
-            Span::styled(badge, Style::new().fg(Color::Yellow).bold()),
-            Span::raw(issue.title.clone()),
+            Span::styled(badge, Style::new().fg(YELLOW).bg(SURFACE0).bold()),
+            Span::styled(issue.title.clone(), surface_style()),
         ]))
     } else {
         Cell::from(issue.title.clone())
     };
 
     let row = Row::new([
-        Cell::from(format!("#{}", issue.number)).style(Style::new().fg(Color::Cyan)),
+        Cell::from(format!("#{}", issue.number)).style(Style::new().fg(SKY).bg(SURFACE0)),
         Cell::from(state).style(state_style(issue.state.clone())),
-        Cell::from(assignees).style(Style::new().fg(Color::Blue)),
-        Cell::from(labels).style(Style::new().fg(Color::Magenta)),
+        Cell::from(assignees).style(Style::new().fg(BLUE).bg(SURFACE0)),
+        Cell::from(labels).style(Style::new().fg(PINK).bg(SURFACE0)),
         title,
-    ]);
+    ])
+    .style(surface_style());
 
     if let Some(kind) = highlight {
         let pulse_is_high = (animation_frame / 8).is_multiple_of(2);
         let style = if pulse_is_high {
             match kind {
-                IssueHighlightKind::New => Style::new().fg(Color::Black).bg(Color::LightYellow),
-                IssueHighlightKind::Mention => Style::new().fg(Color::Black).bg(Color::LightCyan),
+                IssueHighlightKind::New => Style::new().fg(CRUST).bg(YELLOW),
+                IssueHighlightKind::Mention => Style::new().fg(CRUST).bg(SKY),
             }
             .add_modifier(Modifier::BOLD)
         } else {
             match kind {
-                IssueHighlightKind::New => Style::new().fg(Color::Yellow).bg(Color::DarkGray),
-                IssueHighlightKind::Mention => Style::new().fg(Color::Cyan).bg(Color::DarkGray),
+                IssueHighlightKind::New => Style::new().fg(YELLOW).bg(SURFACE1),
+                IssueHighlightKind::Mention => Style::new().fg(SKY).bg(SURFACE1),
             }
             .add_modifier(Modifier::BOLD)
         };
@@ -344,8 +443,8 @@ fn issue_row(
 
 fn state_style(state: IssueState) -> Style {
     match state {
-        IssueState::Open => Style::new().fg(Color::Green),
-        IssueState::Closed => Style::new().fg(Color::DarkGray),
+        IssueState::Open => Style::new().fg(GREEN).bg(SURFACE0),
+        IssueState::Closed => Style::new().fg(OVERLAY1).bg(SURFACE0),
     }
 }
 
@@ -380,7 +479,8 @@ fn render_detail(app: &App, area: Rect, buffer: &mut Buffer) {
     };
 
     Paragraph::new(detail)
-        .block(Block::bordered().title("Detail"))
+        .block(frame_block("Detail", BLUE))
+        .style(surface_style())
         .wrap(Wrap { trim: true })
         .render(area, buffer);
 }
@@ -389,10 +489,14 @@ fn render_detail_tree(app: &App, detail: &IssueDetail, area: Rect, buffer: &mut 
     let items = detail_tree_items(detail);
     let tree = Tree::new(&items)
         .expect("detail tree item identifiers are unique")
-        .block(Block::bordered().title(format!("Detail #{}", detail.summary.number)))
-        .highlight_style(Style::new().bg(Color::DarkGray).fg(Color::White))
-        .node_open_symbol("- ")
-        .node_closed_symbol("+ ")
+        .block(frame_block(
+            format!("Detail #{}", detail.summary.number),
+            BLUE,
+        ))
+        .style(surface_style())
+        .highlight_style(Style::new().bg(SURFACE1).fg(TEXT))
+        .node_open_symbol("▾ ")
+        .node_closed_symbol("▸ ")
         .node_no_children_symbol("  ");
     let mut state = TreeState::<String>::default();
     state.open(vec!["description".to_string()]);
@@ -463,7 +567,7 @@ fn markdown_leaf(id: String, markdown: &str) -> TreeItem<'_, String> {
 fn render_footer(app: &App, area: Rect, buffer: &mut Buffer) {
     let footer = format!("{}\n{}", footer_shortcuts(app), app.status);
     Paragraph::new(footer)
-        .style(Style::new().fg(Color::Gray))
+        .style(Style::new().fg(SUBTEXT0).bg(CRUST))
         .render(area, buffer);
 }
 
@@ -522,16 +626,18 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
             UiMode::IssueLabelEditor => render_issue_label_editor(app, popup, buffer),
             UiMode::Loading => render_loading_overlay(app, popup, buffer),
             UiMode::ConfirmClose => Paragraph::new("Press y to reopen, Esc to cancel")
-                .block(Block::bordered().title(title))
+                .block(modal_block(title, PEACH))
+                .style(modal_style())
                 .wrap(Wrap { trim: false })
                 .render(popup, buffer),
             UiMode::Error => Paragraph::new(app.status.clone())
-                .block(Block::bordered().title(title))
+                .block(modal_block(title, RED))
+                .style(Style::new().fg(RED).bg(MANTLE))
                 .wrap(Wrap { trim: false })
                 .render(popup, buffer),
             UiMode::Success => Paragraph::new(format!("{}\n\nState reloaded.", app.status))
-                .block(Block::bordered().title(title))
-                .style(Style::new().fg(Color::Green))
+                .block(modal_block(title, GREEN))
+                .style(Style::new().fg(GREEN).bg(MANTLE))
                 .wrap(Wrap { trim: false })
                 .render(popup, buffer),
             _ => render_text_editor(app, title, popup, buffer),
@@ -548,8 +654,8 @@ fn render_loading_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
     let body = format!("[*] {title}\n\n{}", app.status);
 
     Paragraph::new(body)
-        .block(Block::bordered().title("Working"))
-        .style(Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .block(modal_block("Working", SKY))
+        .style(Style::new().fg(SKY).bg(MANTLE).add_modifier(Modifier::BOLD))
         .wrap(Wrap { trim: false })
         .render(area, buffer);
 }
@@ -596,7 +702,8 @@ fn render_assignee_picker(app: &App, title: &'static str, area: Rect, buffer: &m
     }
 
     Paragraph::new(lines)
-        .block(Block::bordered().title(title))
+        .block(modal_block(title, TEAL))
+        .style(modal_style())
         .wrap(Wrap { trim: false })
         .render(rows[0], buffer);
     render_action_buttons(assignee_primary_label(app), rows[1], buffer);
@@ -630,8 +737,8 @@ fn render_issue_label_editor(app: &App, area: Rect, buffer: &mut Buffer) {
     }
 
     Paragraph::new(lines)
-        .block(Block::bordered().title("Edit Labels"))
-        .style(Style::new().fg(Color::Magenta))
+        .block(modal_block("Edit Labels", PINK))
+        .style(Style::new().fg(PINK).bg(MANTLE))
         .wrap(Wrap { trim: false })
         .render(rows[0], buffer);
     render_action_buttons(ISSUE_LABEL_PRIMARY_LABEL, rows[1], buffer);
@@ -707,13 +814,16 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
     };
 
     let mut textarea = textarea_at_end(input_lines(&app.input));
-    textarea.set_block(Block::bordered().title(match app.mode {
-        UiMode::CommentComposer => "Comment Body",
-        UiMode::CloseComment => "Closing Comment",
-        UiMode::NewIssue => "New Issue: title | body",
-        UiMode::Search => "Search Issues",
-        _ => title,
-    }));
+    textarea.set_block(modal_block(
+        match app.mode {
+            UiMode::CommentComposer => "Comment Body",
+            UiMode::CloseComment => "Closing Comment",
+            UiMode::NewIssue => "New Issue: title | body",
+            UiMode::Search => "Search Issues",
+            _ => title,
+        },
+        SKY,
+    ));
     textarea.set_placeholder_text(match app.mode {
         UiMode::CommentComposer => "Write a comment",
         UiMode::CloseComment => "Required comment before closing",
@@ -721,7 +831,7 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
         UiMode::Search => "Search issue titles",
         _ => "",
     });
-    textarea.set_style(Style::new().fg(Color::White));
+    textarea.set_style(modal_style());
     set_visible_cursor(&mut textarea);
     (&textarea).render(rows[0], buffer);
 
@@ -731,7 +841,7 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
 }
 
 fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
-    let block = Block::bordered().title("New Issue");
+    let block = modal_block("New Issue", MAUVE);
     let inner = block.inner(area);
     block.render(area, buffer);
 
@@ -750,11 +860,11 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
 
     let title_active = app.new_issue_field == NewIssueField::Title;
     let mut title = textarea_at_end(input_lines(&app.input));
-    title.set_block(Block::bordered().title("Title"));
+    title.set_block(modal_block("Title", ROSEWATER));
     title.set_style(field_style(
         &app.new_issue_field,
         &NewIssueField::Title,
-        Color::White,
+        TEXT,
     ));
     if title_active {
         set_visible_cursor(&mut title);
@@ -765,12 +875,12 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
 
     let body_active = app.new_issue_field == NewIssueField::Body;
     let mut body = textarea_at_end(input_lines(&app.body_input));
-    body.set_block(Block::bordered().title("Body (Markdown)"));
+    body.set_block(modal_block("Body (Markdown)", SKY));
     body.set_placeholder_text("Write the issue body");
     body.set_style(field_style(
         &app.new_issue_field,
         &NewIssueField::Body,
-        Color::White,
+        TEXT,
     ));
     if body_active {
         set_visible_cursor(&mut body);
@@ -794,7 +904,7 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
         Line::from(vec![
             Span::raw("input: "),
             Span::raw(app.label_input.clone()),
-            Span::styled(" ", Style::new().fg(Color::Black).bg(Color::Cyan)),
+            Span::styled(" ", Style::new().fg(CRUST).bg(SKY)),
         ])
     } else {
         Line::from(format!("input: {}", app.label_input))
@@ -804,11 +914,11 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
         input_line,
         Line::from(format!("suggestions: {suggestions}")),
     ])
-    .block(Block::bordered().title("Labels"))
+    .block(modal_block("Labels", PINK))
     .style(field_style(
         &app.new_issue_field,
         &NewIssueField::Labels,
-        Color::Magenta,
+        PINK,
     ))
     .wrap(Wrap { trim: false })
     .render(rows[2], buffer);
@@ -820,23 +930,21 @@ fn render_action_buttons(primary: &'static str, area: Rect, buffer: &mut Buffer)
     let buttons = Line::from(vec![
         Span::styled(
             format!(" {primary} Ctrl+S "),
-            Style::new()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Style::new().fg(CRUST).bg(SKY).add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(
             " Cancel Esc ",
             Style::new()
-                .fg(Color::White)
-                .bg(Color::DarkGray)
+                .fg(TEXT)
+                .bg(SURFACE1)
                 .add_modifier(Modifier::BOLD),
         ),
     ]);
 
     Paragraph::new(buttons)
-        .block(Block::bordered().title("Actions"))
+        .block(modal_block("Actions", SURFACE2))
+        .style(modal_style())
         .render(area, buffer);
 }
 
@@ -853,9 +961,9 @@ fn field_style(active: &NewIssueField, field: &NewIssueField, color: Color) -> S
         Style::new()
             .fg(color)
             .add_modifier(Modifier::BOLD)
-            .bg(Color::DarkGray)
+            .bg(SURFACE1)
     } else {
-        Style::new().fg(color)
+        Style::new().fg(color).bg(MANTLE)
     }
 }
 
@@ -875,8 +983,8 @@ fn textarea_at_end(lines: Vec<String>) -> TextArea<'static> {
 }
 
 fn set_visible_cursor(textarea: &mut TextArea<'_>) {
-    textarea.set_cursor_line_style(Style::new().bg(Color::DarkGray));
-    textarea.set_cursor_style(Style::new().fg(Color::Black).bg(Color::Cyan));
+    textarea.set_cursor_line_style(Style::new().bg(SURFACE1));
+    textarea.set_cursor_style(Style::new().fg(CRUST).bg(SKY));
 }
 
 fn hide_cursor(textarea: &mut TextArea<'_>) {
