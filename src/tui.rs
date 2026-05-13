@@ -17,7 +17,7 @@ use crate::{
     ui::{self, WorktrackEffects},
 };
 
-const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 #[cfg(target_os = "macos")]
 const MACOS_NOTIFICATION_SOUND: &str = "/System/Library/Sounds/Glass.aiff";
 

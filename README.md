@@ -13,7 +13,7 @@ Worktrack is a Rust terminal app for working through GitHub issues in one reposi
 - Close issues with a required closing comment.
 - Reopen issues after confirmation.
 - Refresh issue data without leaving the terminal.
-- Auto-refresh issue data every 10 seconds while browsing.
+- Auto-refresh issue data every 5 seconds while browsing.
 - Show a visible notification, terminal bell, and macOS system sound when new issues arrive.
 - Notify when new comments mention your authenticated GitHub username.
 - Animate newly arrived issues in the list with a temporary `NEW` row highlight.
@@ -73,7 +73,7 @@ cargo run
 - `Esc`: cancel the current input or modal.
 - `q`: quit when not editing text.
 
-While browsing, Worktrack automatically reloads issues every 10 seconds. If the refreshed list contains issue numbers that were not already visible, or new comments mention your authenticated GitHub username, the footer shows the notification, the terminal bell rings, and macOS plays the system notification sound when available.
+While browsing, Worktrack automatically reloads issues every 5 seconds. If the refreshed list contains issue numbers that were not already visible, or new comments mention your authenticated GitHub username, the footer shows the notification, the terminal bell rings, and macOS plays the system notification sound when available.
 
 ## Development
 
