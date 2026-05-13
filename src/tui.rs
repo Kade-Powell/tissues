@@ -153,9 +153,7 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
             Some((PendingAction::Refresh, "Refreshing issues".to_string()))
         }
         UiMode::CommentComposer | UiMode::CloseComment
-            if key.code == KeyCode::Char('s')
-                && key.modifiers.contains(KeyModifiers::CONTROL)
-                && !app.input.trim().is_empty() =>
+            if is_submit_key(key) && !app.input.trim().is_empty() =>
         {
             app.selected_issue().map(|issue| {
                 let action = if app.mode == UiMode::CloseComment {
@@ -196,13 +194,18 @@ fn pending_state_action(state: IssueState) -> PendingAction {
 }
 
 fn should_submit_new_issue(app: &App, key: KeyEvent) -> bool {
-    if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+    if is_submit_key(key) {
         return true;
     }
 
     key.code == KeyCode::Enter
         && app.new_issue_field == NewIssueField::Labels
         && app.label_input.trim().is_empty()
+}
+
+fn is_submit_key(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('s') | KeyCode::Char('d'))
+        && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
 async fn handle_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
@@ -255,7 +258,7 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
         KeyCode::Char('c') if app.selected_issue().is_some() => {
             app.input.clear();
             app.mode = UiMode::CommentComposer;
-            app.set_status("Write a comment, Enter adds lines, Ctrl+S submits");
+            app.set_status("Write a comment, Enter adds lines, Ctrl+D submits");
         }
         KeyCode::Char('n') => open_new_issue(app, backend).await,
         KeyCode::Char('x') if app.selected_issue().is_some() => {
@@ -263,7 +266,7 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
                 Some(IssueState::Open) => {
                     app.input.clear();
                     app.mode = UiMode::CloseComment;
-                    app.set_status("Closing requires a comment, Enter adds lines, Ctrl+S closes");
+                    app.set_status("Closing requires a comment, Enter adds lines, Ctrl+D closes");
                 }
                 Some(IssueState::Closed) => {
                     app.mode = UiMode::ConfirmClose;
@@ -299,7 +302,7 @@ async fn handle_comment_key<B: IssueBackend>(app: &mut App, backend: &B, key: Ke
         }
         KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push('\n'),
         KeyCode::Enter => app.input.push('\n'),
-        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char(_) if is_submit_key(key) => {
             submit_comment(app, backend).await;
         }
         KeyCode::Backspace => {
@@ -321,7 +324,7 @@ async fn handle_close_comment_key<B: IssueBackend>(app: &mut App, backend: &B, k
         }
         KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push('\n'),
         KeyCode::Enter => app.input.push('\n'),
-        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char(_) if is_submit_key(key) => {
             close_issue_with_comment(app, backend).await;
         }
         KeyCode::Backspace => {
@@ -346,9 +349,7 @@ async fn handle_new_issue_key<B: IssueBackend>(app: &mut App, backend: &B, key: 
         }
         KeyCode::Tab => app.next_new_issue_field(),
         KeyCode::BackTab => app.previous_new_issue_field(),
-        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            submit_new_issue(app, backend, true).await
-        }
+        KeyCode::Char(_) if is_submit_key(key) => submit_new_issue(app, backend, true).await,
         KeyCode::Enter
             if key.modifiers.contains(KeyModifiers::CONTROL)
                 && app.new_issue_field == NewIssueField::Body =>
@@ -759,7 +760,7 @@ async fn open_new_issue<B: IssueBackend>(app: &mut App, backend: &B) {
             app.finish_action();
             app.mode = UiMode::NewIssue;
             app.set_repo_labels(labels);
-            app.set_status("New issue: Tab fields, Enter edits, Ctrl+S creates");
+            app.set_status("New issue: Tab fields, Enter edits, Ctrl+D creates");
         }
         Err(err) => {
             app.finish_action();
@@ -1111,7 +1112,7 @@ mod tests {
         assert_eq!(
             loading_preview(
                 &app,
-                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
+                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)
             ),
             Some((
                 PendingAction::AddComment,
@@ -1124,7 +1125,7 @@ mod tests {
         assert_eq!(
             loading_preview(
                 &app,
-                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
+                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)
             ),
             Some((PendingAction::CloseIssue, "Closing issue #1".to_string()))
         );
@@ -1148,7 +1149,7 @@ mod tests {
         assert_eq!(
             loading_preview(
                 &app,
-                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
+                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)
             ),
             Some((PendingAction::CreateIssue, "Creating issue".to_string()))
         );
@@ -1353,7 +1354,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn comment_enter_inserts_newline_and_ctrl_s_submits() {
+    async fn comment_enter_inserts_newline_and_ctrl_d_submits() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/skunkwork".parse().unwrap());
         refresh(&mut app, &backend).await;
@@ -1379,7 +1380,7 @@ mod tests {
         handle_comment_key(
             &mut app,
             &backend,
-            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
         )
         .await;
 
@@ -1406,13 +1407,13 @@ mod tests {
         assert_eq!(app.mode, UiMode::CloseComment);
         assert_eq!(
             app.status,
-            "Closing requires a comment, Enter adds lines, Ctrl+S closes"
+            "Closing requires a comment, Enter adds lines, Ctrl+D closes"
         );
 
         handle_close_comment_key(
             &mut app,
             &backend,
-            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
         )
         .await;
 
@@ -1424,7 +1425,7 @@ mod tests {
         handle_close_comment_key(
             &mut app,
             &backend,
-            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
         )
         .await;
 
@@ -1531,7 +1532,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn body_enter_inserts_newline_and_ctrl_s_submits_new_issue() {
+    async fn body_enter_inserts_newline_and_ctrl_d_submits_new_issue() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/skunkwork".parse().unwrap());
         open_new_issue(&mut app, &backend).await;
@@ -1558,7 +1559,7 @@ mod tests {
         handle_new_issue_key(
             &mut app,
             &backend,
-            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
         )
         .await;
 

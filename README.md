@@ -68,7 +68,8 @@ cargo run
 - `x`: close the selected open issue with a required comment, or reopen a closed issue after confirmation.
 - `Tab` / `Shift+Tab`: move between new issue fields.
 - `Enter`: move from title to body, insert body newlines, or add the current label.
-- `Ctrl+S`: submit a comment, close with comment, or create the issue from any new issue field.
+- `Ctrl+D`: submit a comment, close with comment, or create the issue from any new issue field.
+- `Ctrl+S`: also submits when your terminal does not intercept it.
 - `Ctrl+Enter` or `Ctrl+J`: insert a newline while writing an issue body or comment.
 - `Esc`: cancel the current input or modal.
 - `q`: quit when not editing text.

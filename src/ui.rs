@@ -442,7 +442,11 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
     };
 
     if let Some(title) = title {
-        let popup = centered_rect(72, 55, area);
+        let popup = if app.mode == UiMode::NewIssue {
+            centered_rect(72, 70, area)
+        } else {
+            centered_rect(72, 55, area)
+        };
         Clear.render(popup, buffer);
         match app.mode {
             UiMode::NewIssue => render_new_issue_editor(app, popup, buffer),
@@ -492,6 +496,18 @@ fn pending_action_label(action: &PendingAction) -> &'static str {
 }
 
 fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut Buffer) {
+    let rows = if matches!(app.mode, UiMode::CommentComposer | UiMode::CloseComment) {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(3)])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(100)])
+            .split(area)
+    };
+
     let mut textarea = textarea_at_end(input_lines(&app.input));
     textarea.set_block(Block::bordered().title(match app.mode {
         UiMode::CommentComposer => "Comment Body",
@@ -509,7 +525,11 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
     });
     textarea.set_style(Style::new().fg(Color::White));
     set_visible_cursor(&mut textarea);
-    (&textarea).render(area, buffer);
+    (&textarea).render(rows[0], buffer);
+
+    if matches!(app.mode, UiMode::CommentComposer | UiMode::CloseComment) {
+        render_action_buttons("Submit", rows[1], buffer);
+    }
 }
 
 fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
@@ -523,6 +543,7 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
             Constraint::Length(3),
             Constraint::Min(6),
             Constraint::Length(6),
+            Constraint::Length(3),
         ])
         .split(inner.inner(Margin {
             horizontal: 1,
@@ -593,6 +614,32 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
     ))
     .wrap(Wrap { trim: false })
     .render(rows[2], buffer);
+
+    render_action_buttons("Create", rows[3], buffer);
+}
+
+fn render_action_buttons(primary: &'static str, area: Rect, buffer: &mut Buffer) {
+    let buttons = Line::from(vec![
+        Span::styled(
+            format!(" {primary} Ctrl+D "),
+            Style::new()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            " Cancel Esc ",
+            Style::new()
+                .fg(Color::White)
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+
+    Paragraph::new(buttons)
+        .block(Block::bordered().title("Actions"))
+        .render(area, buffer);
 }
 
 fn field_style(active: &NewIssueField, field: &NewIssueField, color: Color) -> Style {
@@ -821,6 +868,8 @@ mod tests {
 
         assert!(rendered.contains("Comment Body"));
         assert!(rendered.contains("Looks good"));
+        assert!(rendered.contains("Submit Ctrl+D"));
+        assert!(rendered.contains("Cancel Esc"));
     }
 
     #[test]
@@ -835,6 +884,8 @@ mod tests {
 
         assert!(rendered.contains("Closing Comment"));
         assert!(rendered.contains("Closing after verification"));
+        assert!(rendered.contains("Submit Ctrl+D"));
+        assert!(rendered.contains("Cancel Esc"));
     }
 
     #[test]
@@ -867,6 +918,8 @@ mod tests {
         assert!(rendered.contains("selected: bug"));
         assert!(rendered.contains("input: do"));
         assert!(rendered.contains("suggestions: docs"));
+        assert!(rendered.contains("Create Ctrl+D"));
+        assert!(rendered.contains("Cancel Esc"));
     }
 
     #[test]
