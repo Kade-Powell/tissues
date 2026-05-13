@@ -354,7 +354,7 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
         KeyCode::Char('n') => open_new_issue(app, backend).await,
         KeyCode::Char('x') if app.selected_issue().is_some() => {
             match app.selected_issue().map(|issue| issue.state.clone()) {
-                Some(IssueState::Open) => open_close_comment(app),
+                Some(IssueState::Open) => open_close_comment(app, backend).await,
                 Some(IssueState::Closed) => {
                     app.mode = UiMode::ConfirmClose;
                 }
@@ -459,10 +459,13 @@ async fn handle_mouse_target<B: IssueBackend>(app: &mut App, backend: &B, target
     }
 }
 
-fn open_comment_composer(app: &mut App) {
+async fn open_comment_composer<B: IssueBackend>(app: &mut App, backend: &B) {
     app.input.clear();
+    let mention_status = load_collaborators_for_mentions(app, backend).await;
     app.mode = UiMode::CommentComposer;
-    app.set_status("Write a comment, Enter adds lines, Ctrl+S submits");
+    app.set_status(mention_status.unwrap_or_else(|| {
+        "Write a comment, Enter adds lines, Tab completes @mentions, Ctrl+S submits".to_string()
+    }));
 }
 
 fn open_command_prompt(app: &mut App) {
@@ -471,10 +474,38 @@ fn open_command_prompt(app: &mut App) {
     app.set_status("Type a command, for example :refresh or :filter state");
 }
 
-fn open_close_comment(app: &mut App) {
+async fn open_close_comment<B: IssueBackend>(app: &mut App, backend: &B) {
     app.input.clear();
+    let mention_status = load_collaborators_for_mentions(app, backend).await;
     app.mode = UiMode::CloseComment;
-    app.set_status("Closing requires a comment, Enter adds lines, Ctrl+S closes");
+    app.set_status(mention_status.unwrap_or_else(|| {
+        "Closing requires a comment, Tab completes @mentions, Ctrl+S closes".to_string()
+    }));
+}
+
+async fn load_collaborators_for_mentions<B: IssueBackend>(
+    app: &mut App,
+    backend: &B,
+) -> Option<String> {
+    if !app.repo_collaborators.is_empty() {
+        return None;
+    }
+
+    app.begin_action(PendingAction::LoadCollaborators, "Loading collaborators");
+    match backend.list_collaborators(&app.repo).await {
+        Ok(collaborators) => {
+            app.finish_action();
+            app.set_repo_collaborators(collaborators);
+            None
+        }
+        Err(err) => {
+            app.finish_action();
+            app.flash = Some(FlashKind::Error);
+            Some(format!(
+                "Mention suggestions unavailable: {err:#}; writing still works"
+            ))
+        }
+    }
 }
 
 fn cancel_active_screen(app: &mut App) {
@@ -593,7 +624,10 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
             refresh(app, backend).await;
         }
         "n" | "new" | "new issue" => open_new_issue(app, backend).await,
-        "c" | "comment" if app.selected_issue().is_some() => open_comment_composer(app),
+        "c" | "comment" if app.selected_issue().is_some() => {
+            open_comment_composer(app, backend).await;
+        }
+        "mention" | "mentions" | "ping" => jump_to_first_mention(app, backend).await,
         "e" | "edit" if app.selected_issue().is_some() => open_issue_editor(app, backend).await,
         "a" | "assign" | "assignees" if app.selected_issue().is_some() => {
             open_assignee_editor(app, backend).await;
@@ -603,7 +637,7 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
         }
         "x" | "close" if app.selected_issue().is_some() => {
             match app.selected_issue().map(|issue| issue.state.clone()) {
-                Some(IssueState::Open) => open_close_comment(app),
+                Some(IssueState::Open) => open_close_comment(app, backend).await,
                 Some(IssueState::Closed) => {
                     app.mode = UiMode::ConfirmClose;
                 }
@@ -622,6 +656,20 @@ fn complete_command(app: &mut App) {
     if let Some(suggestion) = command_suggestions(&app.input).into_iter().next() {
         app.input = suggestion;
     }
+}
+
+async fn jump_to_first_mention<B: IssueBackend>(app: &mut App, backend: &B) {
+    let Some(number) = app.first_mentioned_issue_number() else {
+        app.mode = UiMode::Browsing;
+        app.flash = Some(FlashKind::Error);
+        app.set_status("No mention highlights to jump to");
+        return;
+    };
+
+    app.select_issue_number(number);
+    refresh_selected_detail(app, backend).await;
+    app.mode = UiMode::Browsing;
+    app.set_status(format!("Jumped to mention on issue #{number}"));
 }
 
 fn command_suggestions(input: &str) -> Vec<String> {
@@ -643,6 +691,8 @@ fn command_suggestions(input: &str) -> Vec<String> {
         "labels",
         "new",
         "close",
+        "ping",
+        "mentions",
         "refresh",
         "quit",
     ];
@@ -699,6 +749,9 @@ async fn handle_comment_key<B: IssueBackend>(app: &mut App, backend: &B, key: Ke
         }
         KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push('\n'),
         KeyCode::Enter => app.input.push('\n'),
+        KeyCode::Tab => {
+            app.complete_input_mention();
+        }
         KeyCode::Char(_) if is_submit_key(key) => {
             submit_comment(app, backend).await;
         }
@@ -721,6 +774,9 @@ async fn handle_close_comment_key<B: IssueBackend>(app: &mut App, backend: &B, k
         }
         KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push('\n'),
         KeyCode::Enter => app.input.push('\n'),
+        KeyCode::Tab => {
+            app.complete_input_mention();
+        }
         KeyCode::Char(_) if is_submit_key(key) => {
             close_issue_with_comment(app, backend).await;
         }
@@ -744,6 +800,8 @@ async fn handle_new_issue_key<B: IssueBackend>(app: &mut App, backend: &B, key: 
             app.label_input.clear();
             app.new_issue_labels.clear();
         }
+        KeyCode::Tab
+            if app.new_issue_field == NewIssueField::Body && app.complete_body_mention() => {}
         KeyCode::Tab => app.next_new_issue_field(),
         KeyCode::BackTab => app.previous_new_issue_field(),
         KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -791,6 +849,8 @@ async fn handle_issue_editor_key<B: IssueBackend>(app: &mut App, backend: &B, ke
             app.input.clear();
             app.body_input.clear();
         }
+        KeyCode::Tab
+            if app.issue_edit_field == IssueEditField::Body && app.complete_body_mention() => {}
         KeyCode::Tab | KeyCode::BackTab => app.next_issue_edit_field(),
         KeyCode::Char(_) if is_submit_key(key) => save_issue_edit(app, backend).await,
         KeyCode::Enter
@@ -968,10 +1028,10 @@ async fn auto_refresh<B: IssueBackend>(app: &mut App, backend: &B) -> AutoRefres
         .iter()
         .map(|issue| issue.number)
         .collect::<BTreeSet<_>>();
-    let previous_comment_counts = app
+    let previous_issue_meta = app
         .issues
         .iter()
-        .map(|issue| (issue.number, issue.comment_count))
+        .map(|issue| (issue.number, (issue.comment_count, issue.updated_at)))
         .collect::<HashMap<_, _>>();
     let selected_issue_number = app.selected_issue().map(|issue| issue.number);
 
@@ -984,7 +1044,7 @@ async fn auto_refresh<B: IssueBackend>(app: &mut App, backend: &B) -> AutoRefres
                 .collect::<Vec<_>>();
             let new_issue_status = new_issue_notice(&issues, &new_issue_numbers);
             let mention_issue_numbers = if let Some(login) = app.viewer_login.clone() {
-                mentioned_issues(backend, app, &issues, &previous_comment_counts, &login).await
+                mentioned_issues(backend, app, &issues, &previous_issue_meta, &login).await
             } else {
                 Vec::new()
             };
@@ -1053,35 +1113,84 @@ async fn mentioned_issues<B: IssueBackend>(
     backend: &B,
     app: &App,
     issues: &[IssueSummary],
-    previous_comment_counts: &HashMap<u64, u64>,
+    previous_issue_meta: &HashMap<u64, (u64, Option<chrono::DateTime<chrono::Utc>>)>,
     login: &str,
 ) -> Vec<u64> {
     let mut mentioned = Vec::new();
 
     for issue in issues {
-        let Some(previous_count) = previous_comment_counts.get(&issue.number).copied() else {
-            continue;
-        };
-        if issue.comment_count <= previous_count {
-            continue;
-        }
+        let previous = previous_issue_meta.get(&issue.number).copied();
 
-        let new_comment_count = (issue.comment_count - previous_count) as usize;
-        let Ok(comments) = backend.list_comments(&app.repo, issue.number).await else {
-            continue;
-        };
-
-        if comments
-            .iter()
-            .rev()
-            .take(new_comment_count)
-            .any(|comment| comment_mentions_login(comment, login))
+        if new_comments_mention_login(backend, app, issue, previous, login).await
+            || issue_body_mentions_login(backend, app, issue, previous, login).await
         {
             mentioned.push(issue.number);
         }
     }
 
     mentioned
+}
+
+async fn new_comments_mention_login<B: IssueBackend>(
+    backend: &B,
+    app: &App,
+    issue: &IssueSummary,
+    previous: Option<(u64, Option<chrono::DateTime<chrono::Utc>>)>,
+    login: &str,
+) -> bool {
+    let Some((previous_count, _)) = previous else {
+        return false;
+    };
+    if issue.comment_count <= previous_count {
+        return false;
+    }
+
+    let new_comment_count = (issue.comment_count - previous_count) as usize;
+    let Ok(comments) = backend.list_comments(&app.repo, issue.number).await else {
+        return false;
+    };
+
+    comments
+        .iter()
+        .rev()
+        .take(new_comment_count)
+        .any(|comment| comment_mentions_login(comment, login))
+}
+
+async fn issue_body_mentions_login<B: IssueBackend>(
+    backend: &B,
+    app: &App,
+    issue: &IssueSummary,
+    previous: Option<(u64, Option<chrono::DateTime<chrono::Utc>>)>,
+    login: &str,
+) -> bool {
+    if !issue_body_is_new_or_updated(issue, previous) {
+        return false;
+    }
+
+    let Ok(detail) = backend.get_issue(&app.repo, issue.number).await else {
+        return false;
+    };
+
+    text_mentions_login(&detail.body, login)
+}
+
+fn issue_body_is_new_or_updated(
+    issue: &IssueSummary,
+    previous: Option<(u64, Option<chrono::DateTime<chrono::Utc>>)>,
+) -> bool {
+    let Some((previous_count, previous_updated_at)) = previous else {
+        return true;
+    };
+    if issue.comment_count != previous_count {
+        return false;
+    }
+
+    match (issue.updated_at, previous_updated_at) {
+        (Some(current), Some(previous)) => current > previous,
+        (Some(_), None) => true,
+        _ => false,
+    }
 }
 
 fn comment_mentions_login(comment: &IssueComment, login: &str) -> bool {
@@ -1428,8 +1537,15 @@ async fn open_new_issue<B: IssueBackend>(app: &mut App, backend: &B) {
                     "templates unavailable".to_string()
                 }
             };
+            let mention_status = match backend.list_collaborators(&app.repo).await {
+                Ok(collaborators) => {
+                    app.set_repo_collaborators(collaborators);
+                    "Tab completes @mentions"
+                }
+                Err(_) => "mention suggestions unavailable",
+            };
             app.set_status(format!(
-                "New issue: Tab fields, Ctrl+S creates, {template_status}"
+                "New issue: Tab fields, Ctrl+S creates, {template_status}, {mention_status}"
             ));
         }
         Err(err) => {
@@ -1457,7 +1573,16 @@ async fn open_issue_editor<B: IssueBackend>(app: &mut App, backend: &B) {
             app.finish_action();
             app.set_selected_detail(detail);
             app.begin_issue_edit(body);
-            app.set_status("Edit title/body, Tab fields, Ctrl+S saves");
+            let mention_status = match backend.list_collaborators(&app.repo).await {
+                Ok(collaborators) => {
+                    app.set_repo_collaborators(collaborators);
+                    "Tab completes @mentions"
+                }
+                Err(_) => "mention suggestions unavailable",
+            };
+            app.set_status(format!(
+                "Edit title/body, Tab fields, Ctrl+S saves, {mention_status}"
+            ));
         }
         Err(err) => {
             app.finish_action();
@@ -1717,6 +1842,7 @@ mod tests {
         assignee_updates: Mutex<Vec<(u64, Vec<String>)>>,
         label_updates: Mutex<Vec<(u64, Vec<String>)>>,
         issues: Mutex<Vec<IssueSummary>>,
+        detail_bodies: Mutex<HashMap<u64, String>>,
         comments: Mutex<HashMap<u64, Vec<IssueComment>>>,
         labels: Mutex<Vec<Label>>,
         collaborators: Mutex<Vec<User>>,
@@ -1749,6 +1875,7 @@ mod tests {
             assignee_updates: Mutex::new(Vec::new()),
             label_updates: Mutex::new(Vec::new()),
             issues: Mutex::new(issues),
+            detail_bodies: Mutex::new(HashMap::new()),
             comments: Mutex::new(HashMap::new()),
             labels: Mutex::new(vec![
                 Label {
@@ -1806,9 +1933,16 @@ mod tests {
                 .find(|issue| issue.number == number)
                 .cloned()
                 .unwrap_or_else(|| issue(number, &format!("Issue {number}"), IssueState::Open, 0));
+            let body = self
+                .detail_bodies
+                .lock()
+                .unwrap()
+                .get(&number)
+                .cloned()
+                .unwrap_or_else(|| format!("## Body for issue {number}"));
             Ok(IssueDetail {
                 summary,
-                body: format!("## Body for issue {number}"),
+                body,
                 comments: vec![IssueComment {
                     author: None,
                     body: format!("Comment for issue {number}"),
@@ -2213,6 +2347,25 @@ mod tests {
 
         assert_eq!(app.input, "sort updated");
         assert_eq!(app.mode, UiMode::Command);
+    }
+
+    #[tokio::test]
+    async fn colon_command_ping_selects_first_mentioned_issue() {
+        let backend = backend_with_issues(vec![
+            issue(1, "Fix redraw", IssueState::Open, 0),
+            issue(2, "Needs review", IssueState::Open, 0),
+        ]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        refresh(&mut app, &backend).await;
+        app.highlight_mentioned_issues(vec![2]);
+        app.input = ":ping".to_string();
+        app.mode = UiMode::Command;
+
+        run_command(&mut app, &backend).await;
+
+        assert_eq!(app.selected_issue().unwrap().number, 2);
+        assert_eq!(app.selected_detail.as_ref().unwrap().summary.number, 2);
+        assert_eq!(app.mode, UiMode::Browsing);
     }
 
     #[tokio::test]
@@ -2664,6 +2817,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auto_refresh_notifies_when_new_issue_body_mentions_viewer() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 0)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_viewer_login("kpowel");
+        refresh(&mut app, &backend).await;
+
+        *backend.issues.lock().unwrap() = vec![
+            issue(2, "Need review", IssueState::Open, 0),
+            issue(1, "Fix redraw", IssueState::Open, 0),
+        ];
+        backend
+            .detail_bodies
+            .lock()
+            .unwrap()
+            .insert(2, "Please review @kpowel".to_string());
+
+        let outcome = auto_refresh(&mut app, &backend).await;
+
+        assert_eq!(outcome.mention_issue_numbers, vec![2]);
+        assert_eq!(
+            app.issue_highlight_kind(2),
+            Some(crate::app::IssueHighlightKind::Mention)
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_refresh_notifies_when_updated_issue_body_mentions_viewer() {
+        let mut first = issue(1, "Fix redraw", IssueState::Open, 0);
+        first.updated_at = Some(chrono::Utc::now() - chrono::Duration::minutes(5));
+        let backend = backend_with_issues(vec![first.clone()]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_viewer_login("kpowel");
+        refresh(&mut app, &backend).await;
+
+        first.updated_at = Some(chrono::Utc::now());
+        *backend.issues.lock().unwrap() = vec![first];
+        backend
+            .detail_bodies
+            .lock()
+            .unwrap()
+            .insert(1, "Updated body for @kpowel".to_string());
+
+        let outcome = auto_refresh(&mut app, &backend).await;
+
+        assert_eq!(outcome.mention_issue_numbers, vec![1]);
+        assert_eq!(app.status, "Mentioned on #1: Fix redraw");
+    }
+
+    #[tokio::test]
     async fn auto_refresh_ignores_old_mentions_without_new_comments() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         backend
@@ -2839,6 +3041,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tab_completes_comment_and_close_comment_mentions() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_repo_collaborators(vec![User {
+            login: "alice".to_string(),
+        }]);
+
+        app.mode = UiMode::CommentComposer;
+        app.input = "cc @a".to_string();
+        handle_comment_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        )
+        .await;
+        assert_eq!(app.input, "cc @alice ");
+
+        app.mode = UiMode::CloseComment;
+        app.input = "closing @a".to_string();
+        handle_close_comment_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        )
+        .await;
+        assert_eq!(app.input, "closing @alice ");
+    }
+
+    #[tokio::test]
     async fn closing_open_issue_requires_comment_and_refreshes_state() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/skunkwork".parse().unwrap());
@@ -2854,7 +3085,7 @@ mod tests {
         assert_eq!(app.mode, UiMode::CloseComment);
         assert_eq!(
             app.status,
-            "Closing requires a comment, Enter adds lines, Ctrl+S closes"
+            "Closing requires a comment, Tab completes @mentions, Ctrl+S closes"
         );
 
         handle_close_comment_key(
@@ -3028,6 +3259,39 @@ mod tests {
         assert_eq!(app.input, "A");
         assert_eq!(app.body_input, "*\nb");
         assert_eq!(app.new_issue_labels, vec!["docs"]);
+    }
+
+    #[tokio::test]
+    async fn tab_completes_mentions_in_new_issue_and_issue_edit_bodies() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_repo_collaborators(vec![User {
+            login: "alice".to_string(),
+        }]);
+
+        app.mode = UiMode::NewIssue;
+        app.new_issue_field = NewIssueField::Body;
+        app.body_input = "Need @a".to_string();
+        handle_new_issue_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        )
+        .await;
+        assert_eq!(app.body_input, "Need @alice ");
+        assert_eq!(app.new_issue_field, NewIssueField::Body);
+
+        app.mode = UiMode::IssueEditor;
+        app.issue_edit_field = IssueEditField::Body;
+        app.body_input = "Body @a".to_string();
+        handle_issue_editor_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        )
+        .await;
+        assert_eq!(app.body_input, "Body @alice ");
+        assert_eq!(app.issue_edit_field, IssueEditField::Body);
     }
 
     #[tokio::test]

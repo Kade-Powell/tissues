@@ -628,13 +628,17 @@ fn footer_shortcuts(app: &App) -> &'static str {
         }
         UiMode::Command => "Enter run | Esc cancel | Backspace delete",
         UiMode::Search => "Enter search | Esc cancel | Backspace delete",
-        UiMode::CommentComposer => "Ctrl+S submit | Enter newline | Ctrl+J newline | Esc cancel",
-        UiMode::CloseComment => "Ctrl+S close | Enter newline | Ctrl+J newline | Esc cancel",
+        UiMode::CommentComposer => {
+            "Ctrl+S submit | Tab complete @mention | Enter newline | Ctrl+J newline | Esc cancel"
+        }
+        UiMode::CloseComment => {
+            "Ctrl+S close | Tab complete @mention | Enter newline | Ctrl+J newline | Esc cancel"
+        }
         UiMode::NewIssue => {
-            "Tab fields | Ctrl+T template | Ctrl+S create | Enter edit/add label | Ctrl+J newline | Esc cancel"
+            "Tab fields/@mention | Ctrl+T template | Ctrl+S create | Enter edit/add label | Ctrl+J newline | Esc cancel"
         }
         UiMode::IssueEditor => {
-            "Tab fields | Ctrl+S save | Enter edit/newline | Ctrl+J newline | Esc cancel"
+            "Tab fields/@mention | Ctrl+S save | Enter edit/newline | Ctrl+J newline | Esc cancel"
         }
         UiMode::AssigneeFilter => "Enter apply filter | type search | j/k move | Esc cancel",
         UiMode::AssigneeEditor => {
@@ -710,7 +714,7 @@ fn render_command_bar(app: &App, area: Rect, buffer: &mut Buffer) {
         .split(area);
     let mut textarea = textarea_at_end(vec![command_prompt_line(&app.input)]);
     textarea.set_block(modal_block(
-        "Command  :fs filter state  :fa filter assignee  :s <text> search  :assign  :labels  :comment",
+        "Command  :fs filter state  :fa filter assignee  :s <text> search  :ping/:mentions  :assign  :comment",
         ACTION_ACCENT,
     ));
     textarea.set_style(modal_style());
@@ -745,6 +749,8 @@ fn command_suggestions_line(input: &str) -> String {
         "labels",
         "new",
         "close",
+        "ping",
+        "mentions",
         "refresh",
         "quit",
     ]
@@ -937,7 +943,7 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
     let rows = if matches!(app.mode, UiMode::CommentComposer | UiMode::CloseComment) {
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(3), Constraint::Length(3)])
+            .constraints([Constraint::Min(3), Constraint::Length(4)])
             .split(area)
     } else {
         Layout::default()
@@ -971,7 +977,12 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
     (&textarea).render(rows[0], buffer);
 
     if matches!(app.mode, UiMode::CommentComposer | UiMode::CloseComment) {
-        render_action_buttons(COMMENT_PRIMARY_LABEL, rows[1], buffer);
+        let footer_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(3)])
+            .split(rows[1]);
+        render_mention_suggestions(&app.input_mention_suggestions(), footer_rows[0], buffer);
+        render_action_buttons(COMMENT_PRIMARY_LABEL, footer_rows[1], buffer);
     }
 }
 
@@ -1053,6 +1064,7 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
         Line::from(format!("selected: {selected}")),
         input_line,
         Line::from(format!("suggestions: {suggestions}")),
+        mention_suggestions_line(&app.body_mention_suggestions()),
         Line::from(format!("templates: {}", template_summary(app))),
     ])
     .block(modal_block("Labels", LABEL_ACCENT))
@@ -1077,6 +1089,7 @@ fn render_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(6),
+            Constraint::Length(1),
             Constraint::Length(3),
         ])
         .split(inner.inner(Margin {
@@ -1104,7 +1117,29 @@ fn render_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
     }
     (&body).render(rows[1], buffer);
 
-    render_action_buttons(ISSUE_EDIT_PRIMARY_LABEL, rows[2], buffer);
+    render_mention_suggestions(&app.body_mention_suggestions(), rows[2], buffer);
+    render_action_buttons(ISSUE_EDIT_PRIMARY_LABEL, rows[3], buffer);
+}
+
+fn render_mention_suggestions(suggestions: &[String], area: Rect, buffer: &mut Buffer) {
+    Paragraph::new(mention_suggestions_line(suggestions))
+        .style(Style::new().fg(MUTED_FG))
+        .render(area, buffer);
+}
+
+fn mention_suggestions_line(suggestions: &[String]) -> Line<'static> {
+    if suggestions.is_empty() {
+        Line::from("mentions: none")
+    } else {
+        Line::from(format!(
+            "mentions: {}",
+            suggestions
+                .iter()
+                .map(|login| format!("@{login}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
 }
 
 fn template_summary(app: &App) -> String {
@@ -1287,7 +1322,7 @@ fn issue_editor_mouse_target(area: Rect, point: Rect) -> Option<MouseTarget> {
         return Some(MouseTarget::IssueEditField(IssueEditField::Body));
     }
 
-    action_mouse_target(rows[2], ISSUE_EDIT_PRIMARY_LABEL, point)
+    action_mouse_target(rows[3], ISSUE_EDIT_PRIMARY_LABEL, point)
 }
 
 fn picker_mouse_target(
@@ -1408,6 +1443,7 @@ fn issue_editor_rows(area: Rect) -> std::rc::Rc<[Rect]> {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(6),
+            Constraint::Length(1),
             Constraint::Length(3),
         ])
         .split(inner)
@@ -1424,9 +1460,12 @@ fn comment_editor_action_area(area: Rect) -> Rect {
     let popup = centered_rect(72, 55, area);
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(3)])
+        .constraints([Constraint::Min(3), Constraint::Length(4)])
         .split(popup);
-    rows[1]
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(3)])
+        .split(rows[1])[1]
 }
 
 fn action_mouse_target(area: Rect, primary: &'static str, point: Rect) -> Option<MouseTarget> {
@@ -1782,7 +1821,7 @@ mod tests {
             Some(MouseTarget::IssueEditField(IssueEditField::Body))
         );
         assert_eq!(
-            mouse_target(&app, area, rows[2].x + 2, rows[2].y + 1),
+            mouse_target(&app, area, rows[3].x + 2, rows[3].y + 1),
             Some(MouseTarget::PrimaryAction)
         );
     }
@@ -1975,14 +2014,18 @@ mod tests {
     fn renders_comment_composer_as_text_editor() {
         let mut app = App::new("owner/skunkwork".parse().unwrap());
         app.mode = UiMode::CommentComposer;
-        app.input = "Looks good".to_string();
+        app.input = "Looks good @a".to_string();
+        app.set_repo_collaborators(vec![crate::domain::User {
+            login: "alice".to_string(),
+        }]);
 
         let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
         render(&app, buffer.area, &mut buffer);
         let rendered = buffer_to_string(&buffer);
 
         assert!(rendered.contains("Comment Body"));
-        assert!(rendered.contains("Looks good"));
+        assert!(rendered.contains("Looks good @a"));
+        assert!(rendered.contains("mentions: @alice"));
         assert!(rendered.contains("Submit Ctrl+S"));
         assert!(rendered.contains("Cancel Esc"));
     }
@@ -2037,9 +2080,33 @@ mod tests {
         assert!(rendered.contains("selected: bug"));
         assert!(rendered.contains("input: do"));
         assert!(rendered.contains("suggestions: docs"));
+        assert!(rendered.contains("mentions: none"));
         assert_eq!(template_summary(&app), "bug report");
         assert!(rendered.contains("Create Ctrl+S"));
         assert!(rendered.contains("Cancel Esc"));
+    }
+
+    #[test]
+    fn renders_body_mention_suggestions_in_new_issue_and_issue_editors() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_repo_collaborators(vec![crate::domain::User {
+            login: "alice".to_string(),
+        }]);
+
+        app.start_new_issue();
+        app.new_issue_field = NewIssueField::Body;
+        app.body_input = "Need @a".to_string();
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 110, 32));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+        assert!(rendered.contains("mentions: @alice"));
+
+        app.mode = UiMode::IssueEditor;
+        app.issue_edit_field = IssueEditField::Body;
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 110, 32));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+        assert!(rendered.contains("mentions: @alice"));
     }
 
     #[test]

@@ -354,9 +354,9 @@ impl App {
 
     fn highlight_issues(&mut self, numbers: Vec<u64>, kind: IssueHighlightKind) {
         self.issue_highlights
-            .retain(|highlight| highlight.kind != kind);
+            .retain(|highlight| highlight.kind != kind && !numbers.contains(&highlight.number));
         self.issue_highlights
-            .extend(numbers.into_iter().map(|number| IssueHighlight {
+            .extend(numbers.iter().copied().map(|number| IssueHighlight {
                 number,
                 kind: kind.clone(),
             }));
@@ -407,6 +407,13 @@ impl App {
             .iter()
             .find(|highlight| highlight.number == number)
             .map(|highlight| highlight.kind.clone())
+    }
+
+    pub fn first_mentioned_issue_number(&self) -> Option<u64> {
+        self.issue_highlights
+            .iter()
+            .find(|highlight| highlight.kind == IssueHighlightKind::Mention)
+            .map(|highlight| highlight.number)
     }
 
     pub fn set_selected_detail(&mut self, detail: IssueDetail) {
@@ -647,6 +654,22 @@ impl App {
         }
     }
 
+    pub fn input_mention_suggestions(&self) -> Vec<String> {
+        mention_suggestions(&self.repo_collaborators, &self.input)
+    }
+
+    pub fn body_mention_suggestions(&self) -> Vec<String> {
+        mention_suggestions(&self.repo_collaborators, &self.body_input)
+    }
+
+    pub fn complete_input_mention(&mut self) -> bool {
+        complete_mention(&self.repo_collaborators, &mut self.input)
+    }
+
+    pub fn complete_body_mention(&mut self) -> bool {
+        complete_mention(&self.repo_collaborators, &mut self.body_input)
+    }
+
     fn clamp_selection(&mut self) {
         if self.issues.is_empty() {
             self.selected_index = 0;
@@ -719,6 +742,53 @@ impl App {
         } else {
             self.picker_index = self.picker_index.min(item_count - 1);
         }
+    }
+}
+
+fn mention_suggestions(collaborators: &[User], text: &str) -> Vec<String> {
+    let Some((_, prefix)) = active_mention_range(text) else {
+        return Vec::new();
+    };
+    let prefix = prefix.to_lowercase();
+
+    collaborators
+        .iter()
+        .map(|user| user.login.as_str())
+        .filter(|login| prefix.is_empty() || login.to_lowercase().starts_with(&prefix))
+        .take(5)
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn complete_mention(collaborators: &[User], text: &mut String) -> bool {
+    let Some((start, _)) = active_mention_range(text) else {
+        return false;
+    };
+    let Some(login) = mention_suggestions(collaborators, text).into_iter().next() else {
+        return false;
+    };
+
+    text.replace_range(start.., &format!("@{login} "));
+    true
+}
+
+fn active_mention_range(text: &str) -> Option<(usize, &str)> {
+    let start = text.rfind('@')?;
+    if start > 0 {
+        let before = text[..start].chars().next_back()?;
+        if before.is_ascii_alphanumeric() || before == '-' {
+            return None;
+        }
+    }
+
+    let prefix = &text[start + 1..];
+    if prefix
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    {
+        Some((start, prefix))
+    } else {
+        None
     }
 }
 
@@ -937,6 +1007,29 @@ mod tests {
             app.assignee_filter_choices(),
             vec![AssigneeChoice::User("alice".to_string())]
         );
+    }
+
+    #[test]
+    fn suggests_and_completes_collaborator_mentions_from_text() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_repo_collaborators(vec![
+            User {
+                login: "alice".to_string(),
+            },
+            User {
+                login: "bob".to_string(),
+            },
+        ]);
+        app.input = "Can @al".to_string();
+        app.body_input = "cc @b".to_string();
+
+        assert_eq!(app.input_mention_suggestions(), vec!["alice".to_string()]);
+        assert!(app.complete_input_mention());
+        assert_eq!(app.input, "Can @alice ");
+
+        assert_eq!(app.body_mention_suggestions(), vec!["bob".to_string()]);
+        assert!(app.complete_body_mention());
+        assert_eq!(app.body_input, "cc @bob ");
     }
 
     #[test]

@@ -12,6 +12,7 @@ skunkwork is a Rust terminal app for working through GitHub issues in one reposi
 - Create new issues, optionally starting from Markdown issue templates in `.github/ISSUE_TEMPLATE`.
 - Edit issue title and body inline.
 - Add comments to existing issues.
+- Complete `@username` mentions from repository collaborators while writing comments and issue bodies.
 - Assign issues to yourself, a collaborator, or nobody.
 - Edit labels on existing issues.
 - Use mouse clicks for issue selection, modal fields, picker rows, and action buttons.
@@ -21,6 +22,7 @@ skunkwork is a Rust terminal app for working through GitHub issues in one reposi
 - Auto-refresh issue data every 5 seconds while browsing.
 - Show a visible notification, terminal bell, and macOS system sound when new issues arrive.
 - Notify when new comments mention your authenticated GitHub username.
+- Notify when new issue descriptions or updated issue bodies mention your authenticated GitHub username.
 - Animate newly arrived issues in the list with a temporary `NEW` row highlight.
 - Animate mentioned issues in the list with a temporary `PING` row highlight.
 - Show issue author, assignees, relative age, mention badges, and stale badges in the list.
@@ -73,6 +75,7 @@ cargo run
 - `n`: create a new issue with separate title, Markdown body, and labels fields.
 - `x`: close the selected open issue with a required comment, or reopen a closed issue after confirmation.
 - `Tab` / `Shift+Tab`: move between new issue fields.
+- `Tab`: complete an active `@username` mention while writing a comment or issue body.
 - `Enter`: move from title to body, insert body newlines, or add the current label.
 - `Ctrl+T`: apply the next available issue template while creating a new issue.
 - `Ctrl+S`: submit a comment, close with comment, or create the issue from any new issue field.
@@ -95,11 +98,12 @@ Useful commands:
 - `:labels`: edit labels on the selected issue.
 - `:edit`: edit the selected issue title and Markdown body.
 - `:comment`: comment on the selected issue.
+- `:ping` or `:mentions`: jump to the first highlighted mention.
 - `:new`: create a new issue.
 - `:close`: close or reopen the selected issue.
 - `:quit`: quit.
 
-While browsing, skunkwork automatically reloads issues every 5 seconds. If the refreshed list contains issue numbers that were not already visible, or new comments mention your authenticated GitHub username, the footer shows the notification, the terminal bell rings, and macOS plays the system notification sound when available.
+While browsing, skunkwork automatically reloads issues every 5 seconds. If the refreshed list contains issue numbers that were not already visible, or new comments, new issue descriptions, or updated issue bodies mention your authenticated GitHub username, the footer shows the notification, the terminal bell rings, and macOS plays the system notification sound when available.
 
 ## Development
 
