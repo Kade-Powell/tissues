@@ -1,4 +1,8 @@
-use std::time::{Duration, Instant};
+use std::{
+    collections::BTreeSet,
+    io::{self, Write},
+    time::{Duration, Instant},
+};
 
 use color_eyre::eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -6,10 +10,12 @@ use ratatui::DefaultTerminal;
 
 use crate::{
     app::{App, FlashKind, IssueStateFilter, NewIssueField, PendingAction, UiMode},
-    domain::IssueState,
+    domain::{IssueState, IssueSummary},
     github::IssueBackend,
     ui::{self, WorktrackEffects},
 };
+
+const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
 pub async fn run<B: IssueBackend>(
     terminal: &mut DefaultTerminal,
@@ -20,12 +26,22 @@ pub async fn run<B: IssueBackend>(
     refresh(app, backend).await;
 
     let mut last_frame = Instant::now();
+    let mut next_auto_refresh = Instant::now() + AUTO_REFRESH_INTERVAL;
     while !app.should_quit {
         let elapsed = last_frame.elapsed();
         last_frame = Instant::now();
         ui::trigger_flash_effect(app, &mut effects);
 
         draw_app(terminal, app, &mut effects, elapsed)?;
+
+        if can_auto_refresh(app) && Instant::now() >= next_auto_refresh {
+            if auto_refresh(app, backend).await.has_new_issues() {
+                ring_terminal_bell();
+            }
+            next_auto_refresh = Instant::now() + AUTO_REFRESH_INTERVAL;
+        } else if !can_auto_refresh(app) {
+            next_auto_refresh = Instant::now() + AUTO_REFRESH_INTERVAL;
+        }
 
         if event::poll(Duration::from_millis(33))?
             && let Event::Key(key) = event::read()?
@@ -41,6 +57,26 @@ pub async fn run<B: IssueBackend>(
     }
 
     Ok(())
+}
+
+fn can_auto_refresh(app: &App) -> bool {
+    matches!(app.mode, UiMode::Browsing)
+}
+
+fn ring_terminal_bell() {
+    print!("\x07");
+    let _ = io::stdout().flush();
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct AutoRefreshOutcome {
+    new_issue_numbers: Vec<u64>,
+}
+
+impl AutoRefreshOutcome {
+    fn has_new_issues(&self) -> bool {
+        !self.new_issue_numbers.is_empty()
+    }
 }
 
 fn draw_app(
@@ -299,6 +335,79 @@ pub async fn refresh<B: IssueBackend>(app: &mut App, backend: &B) {
             app.flash = Some(FlashKind::Error);
             app.set_status(format!("Refresh failed: {err:#}"));
         }
+    }
+}
+
+async fn auto_refresh<B: IssueBackend>(app: &mut App, backend: &B) -> AutoRefreshOutcome {
+    let previous_numbers = app
+        .issues
+        .iter()
+        .map(|issue| issue.number)
+        .collect::<BTreeSet<_>>();
+    let selected_issue_number = app.selected_issue().map(|issue| issue.number);
+
+    match backend.list_issues(&app.repo, &app.filters).await {
+        Ok(issues) => {
+            let new_issue_numbers = issues
+                .iter()
+                .filter(|issue| !previous_numbers.contains(&issue.number))
+                .map(|issue| issue.number)
+                .collect::<Vec<_>>();
+            let new_issue_status = new_issue_notice(&issues, &new_issue_numbers);
+
+            app.set_issues(issues);
+            if let Some(number) = selected_issue_number {
+                app.select_issue_number(number);
+            }
+
+            match load_selected_detail(app, backend).await {
+                Ok(()) => {
+                    app.finish_action();
+                    app.flash = Some(if new_issue_numbers.is_empty() {
+                        FlashKind::Refresh
+                    } else {
+                        FlashKind::Success
+                    });
+                    if let Some(status) = new_issue_status {
+                        app.set_status(status);
+                    } else {
+                        app.set_status("Auto-refreshed; no new issues");
+                    }
+                }
+                Err(err) => {
+                    app.finish_action();
+                    app.flash = Some(FlashKind::Error);
+                    app.set_status(format!("Auto-refresh detail failed: {err:#}"));
+                }
+            }
+
+            AutoRefreshOutcome { new_issue_numbers }
+        }
+        Err(err) => {
+            app.finish_action();
+            app.flash = Some(FlashKind::Error);
+            app.set_status(format!("Auto-refresh failed: {err:#}"));
+            AutoRefreshOutcome::default()
+        }
+    }
+}
+
+fn new_issue_notice(issues: &[IssueSummary], new_issue_numbers: &[u64]) -> Option<String> {
+    let first_number = new_issue_numbers.first()?;
+    let first_issue = issues.iter().find(|issue| issue.number == *first_number)?;
+
+    if new_issue_numbers.len() == 1 {
+        Some(format!(
+            "New issue #{}: {}",
+            first_issue.number, first_issue.title
+        ))
+    } else {
+        Some(format!(
+            "{} new issues; newest #{}: {}",
+            new_issue_numbers.len(),
+            first_issue.number,
+            first_issue.title
+        ))
     }
 }
 
@@ -790,6 +899,58 @@ mod tests {
             app.selected_detail.as_ref().unwrap().body,
             "## Body for issue 1"
         );
+    }
+
+    #[tokio::test]
+    async fn auto_refresh_reports_new_issues_and_preserves_selection() {
+        let backend = backend_with_issues(vec![
+            issue(1, "Fix redraw", IssueState::Open, 1),
+            issue(2, "Add tree", IssueState::Open, 0),
+        ]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        refresh(&mut app, &backend).await;
+        app.select_issue_number(1);
+
+        *backend.issues.lock().unwrap() = vec![
+            issue(3, "Handle webhook", IssueState::Open, 0),
+            issue(1, "Fix redraw", IssueState::Open, 1),
+            issue(2, "Add tree", IssueState::Open, 0),
+        ];
+
+        let outcome = auto_refresh(&mut app, &backend).await;
+
+        assert_eq!(outcome.new_issue_numbers, vec![3]);
+        assert!(outcome.has_new_issues());
+        assert_eq!(app.selected_issue().unwrap().number, 1);
+        assert_eq!(app.status, "New issue #3: Handle webhook");
+        assert_eq!(app.flash, Some(FlashKind::Success));
+        assert_eq!(app.mode, UiMode::Browsing);
+    }
+
+    #[tokio::test]
+    async fn auto_refresh_keeps_quiet_status_when_no_new_issues_arrive() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        refresh(&mut app, &backend).await;
+
+        let outcome = auto_refresh(&mut app, &backend).await;
+
+        assert_eq!(outcome, AutoRefreshOutcome::default());
+        assert_eq!(app.status, "Auto-refreshed; no new issues");
+        assert_eq!(app.flash, Some(FlashKind::Refresh));
+        assert_eq!(app.mode, UiMode::Browsing);
+    }
+
+    #[test]
+    fn auto_refresh_only_runs_while_browsing() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        assert!(can_auto_refresh(&app));
+
+        app.mode = UiMode::CommentComposer;
+        assert!(!can_auto_refresh(&app));
+
+        app.mode = UiMode::NewIssue;
+        assert!(!can_auto_refresh(&app));
     }
 
     #[tokio::test]
