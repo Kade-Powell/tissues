@@ -12,11 +12,7 @@ use ratatui::{
     },
 };
 use ratatui_textarea::{CursorMove, TextArea};
-use tachyonfx::{
-    EffectManager, Interpolation, Motion, fx,
-    pattern::WavePattern,
-    wave::{Oscillator, WaveLayer},
-};
+use tachyonfx::{EffectManager, Interpolation, fx};
 use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::{
@@ -79,53 +75,15 @@ pub struct WorktrackEffects {
 
 impl WorktrackEffects {
     pub fn trigger_startup_loading(&mut self) {
-        self.manager.add_unique_effect(
-            "startup-loading",
-            fx::parallel(&[
-                fx::coalesce_from(Style::new().fg(DIM_FG), (720, Interpolation::SineOut)),
-                fx::slide_in(
-                    Motion::UpToDown,
-                    8,
-                    0,
-                    Color::Reset,
-                    (680, Interpolation::SineOut),
-                ),
-                fx::explode(1.6, 0.35, (520, Interpolation::SineOut)).reversed(),
-            ]),
-        );
+        self.add_coalesce_effect("startup-loading");
     }
 
     pub fn trigger_refresh(&mut self) {
-        self.manager.add_unique_effect(
-            "routine-loading",
-            fx::sequence(&[
-                fx::slide_in(
-                    Motion::LeftToRight,
-                    5,
-                    0,
-                    Color::Reset,
-                    (240, Interpolation::SineOut),
-                ),
-                fx::coalesce_from(Style::new().fg(DIM_FG), (360, Interpolation::SineOut))
-                    .with_pattern(subtle_wave_pattern()),
-            ]),
-        );
+        self.add_coalesce_effect("routine-loading");
     }
 
     pub fn trigger_success(&mut self) {
-        self.manager.add_unique_effect(
-            "success",
-            fx::parallel(&[
-                fx::slide_in(
-                    Motion::DownToUp,
-                    4,
-                    0,
-                    Color::Reset,
-                    (260, Interpolation::SineOut),
-                ),
-                fx::coalesce_from(Style::new().fg(DIM_FG), (420, Interpolation::SineOut)),
-            ]),
-        );
+        self.add_coalesce_effect("success");
     }
 
     pub fn trigger_error(&mut self) {
@@ -145,15 +103,13 @@ impl WorktrackEffects {
     pub fn has_effects(&self) -> bool {
         self.manager.is_running()
     }
-}
 
-fn subtle_wave_pattern() -> WavePattern {
-    WavePattern::new(
-        WaveLayer::new(Oscillator::sin(0.18, 0.0, 2.2))
-            .average(Oscillator::cos(0.0, 0.45, 1.4))
-            .amplitude(0.65),
-    )
-    .with_transition_width(0.2)
+    fn add_coalesce_effect(&mut self, id: &'static str) {
+        self.manager.add_unique_effect(
+            id,
+            fx::coalesce_from(Style::new().fg(DIM_FG), (600, Interpolation::BounceInOut)),
+        );
+    }
 }
 
 pub fn trigger_flash_effect(app: &mut App, effects: &mut WorktrackEffects) {
