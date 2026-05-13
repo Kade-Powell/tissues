@@ -113,6 +113,16 @@ pub enum IssueEditField {
     Body,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextCursorMove {
+    Left,
+    Right,
+    Home,
+    End,
+    Up,
+    Down,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PendingAction {
     Refresh,
@@ -179,6 +189,9 @@ pub struct App {
     pub input: String,
     pub body_input: String,
     pub label_input: String,
+    input_cursor: Option<usize>,
+    body_cursor: Option<usize>,
+    label_cursor: Option<usize>,
     pub new_issue_field: NewIssueField,
     pub new_issue_labels: Vec<String>,
     pub repo_labels: Vec<Label>,
@@ -213,6 +226,9 @@ impl App {
             input: String::new(),
             body_input: String::new(),
             label_input: String::new(),
+            input_cursor: None,
+            body_cursor: None,
+            label_cursor: None,
             new_issue_field: NewIssueField::Title,
             new_issue_labels: Vec::new(),
             repo_labels: Vec::new(),
@@ -323,6 +339,15 @@ impl App {
 
     pub fn set_query(&mut self, query: impl Into<String>) {
         self.filters.query = query.into();
+    }
+
+    pub fn clear_filters(&mut self) {
+        let sort = self.filters.sort.clone();
+        self.filters = IssueFilters {
+            state: IssueStateFilter::All,
+            sort,
+            ..IssueFilters::default()
+        };
     }
 
     pub fn set_status(&mut self, status: impl Into<String>) {
@@ -438,9 +463,9 @@ impl App {
     }
 
     pub fn start_new_issue(&mut self) {
-        self.input.clear();
-        self.body_input.clear();
-        self.label_input.clear();
+        self.clear_input();
+        self.clear_body_input();
+        self.clear_label_input();
         self.new_issue_labels.clear();
         self.new_issue_field = NewIssueField::Title;
         self.selected_template_index = 0;
@@ -463,11 +488,11 @@ impl App {
             return false;
         }
 
-        let template = &self.repo_issue_templates[self.selected_template_index];
+        let template = self.repo_issue_templates[self.selected_template_index].clone();
         if self.input.trim().is_empty() {
-            self.input = template.name.clone();
+            self.set_input_text(template.name.clone());
         }
-        self.body_input = template.body.clone();
+        self.set_body_input_text(template.body.clone());
         self.selected_template_index =
             (self.selected_template_index + 1) % self.repo_issue_templates.len();
         true
@@ -481,7 +506,7 @@ impl App {
     }
 
     pub fn reset_picker(&mut self) {
-        self.input.clear();
+        self.clear_input();
         self.picker_index = 0;
     }
 
@@ -506,7 +531,7 @@ impl App {
     }
 
     pub fn begin_assignee_edit(&mut self) {
-        self.input.clear();
+        self.clear_input();
         self.picker_index = 0;
         self.editing_assignees = self
             .selected_issue()
@@ -542,7 +567,7 @@ impl App {
     }
 
     pub fn begin_issue_label_edit(&mut self) {
-        self.input.clear();
+        self.clear_input();
         self.picker_index = 0;
         self.editing_issue_labels = self
             .selected_issue()
@@ -562,8 +587,8 @@ impl App {
             .selected_issue()
             .map(|issue| issue.title.clone())
             .unwrap_or_default();
-        self.input = title;
-        self.body_input = body.into();
+        self.set_input_text(title);
+        self.set_body_input_text(body.into());
         self.issue_edit_field = IssueEditField::Title;
         self.mode = UiMode::IssueEditor;
     }
@@ -621,7 +646,7 @@ impl App {
         }
 
         self.new_issue_labels.push(label);
-        self.label_input.clear();
+        self.clear_label_input();
     }
 
     pub fn pop_new_issue_label(&mut self) {
@@ -655,19 +680,141 @@ impl App {
     }
 
     pub fn input_mention_suggestions(&self) -> Vec<String> {
-        mention_suggestions(&self.repo_collaborators, &self.input)
+        mention_suggestions(&self.repo_collaborators, &self.input, self.input_cursor())
     }
 
     pub fn body_mention_suggestions(&self) -> Vec<String> {
-        mention_suggestions(&self.repo_collaborators, &self.body_input)
+        mention_suggestions(
+            &self.repo_collaborators,
+            &self.body_input,
+            self.body_cursor(),
+        )
     }
 
     pub fn complete_input_mention(&mut self) -> bool {
-        complete_mention(&self.repo_collaborators, &mut self.input)
+        complete_mention(
+            &self.repo_collaborators,
+            &mut self.input,
+            &mut self.input_cursor,
+        )
     }
 
     pub fn complete_body_mention(&mut self) -> bool {
-        complete_mention(&self.repo_collaborators, &mut self.body_input)
+        complete_mention(
+            &self.repo_collaborators,
+            &mut self.body_input,
+            &mut self.body_cursor,
+        )
+    }
+
+    pub fn set_input_text(&mut self, text: impl Into<String>) {
+        self.input = text.into();
+        self.input_cursor = Some(self.input.len());
+    }
+
+    pub fn set_body_input_text(&mut self, text: impl Into<String>) {
+        self.body_input = text.into();
+        self.body_cursor = Some(self.body_input.len());
+    }
+
+    pub fn set_label_input_text(&mut self, text: impl Into<String>) {
+        self.label_input = text.into();
+        self.label_cursor = Some(self.label_input.len());
+    }
+
+    pub fn clear_input(&mut self) {
+        self.input.clear();
+        self.input_cursor = Some(0);
+    }
+
+    pub fn clear_body_input(&mut self) {
+        self.body_input.clear();
+        self.body_cursor = Some(0);
+    }
+
+    pub fn clear_label_input(&mut self) {
+        self.label_input.clear();
+        self.label_cursor = Some(0);
+    }
+
+    pub fn input_cursor(&self) -> usize {
+        effective_cursor(&self.input, self.input_cursor)
+    }
+
+    pub fn body_cursor(&self) -> usize {
+        effective_cursor(&self.body_input, self.body_cursor)
+    }
+
+    pub fn label_cursor(&self) -> usize {
+        effective_cursor(&self.label_input, self.label_cursor)
+    }
+
+    pub fn input_cursor_position(&self) -> (u16, u16) {
+        cursor_position(&self.input, self.input_cursor())
+    }
+
+    pub fn body_cursor_position(&self) -> (u16, u16) {
+        cursor_position(&self.body_input, self.body_cursor())
+    }
+
+    pub fn label_cursor_position(&self) -> (u16, u16) {
+        cursor_position(&self.label_input, self.label_cursor())
+    }
+
+    pub fn insert_input_char(&mut self, c: char) {
+        insert_char(&mut self.input, &mut self.input_cursor, c);
+    }
+
+    pub fn insert_body_char(&mut self, c: char) {
+        insert_char(&mut self.body_input, &mut self.body_cursor, c);
+    }
+
+    pub fn insert_label_char(&mut self, c: char) {
+        insert_char(&mut self.label_input, &mut self.label_cursor, c);
+    }
+
+    pub fn insert_input_newline(&mut self) {
+        self.insert_input_char('\n');
+    }
+
+    pub fn insert_body_newline(&mut self) {
+        self.insert_body_char('\n');
+    }
+
+    pub fn backspace_input(&mut self) {
+        backspace(&mut self.input, &mut self.input_cursor);
+    }
+
+    pub fn backspace_body(&mut self) {
+        backspace(&mut self.body_input, &mut self.body_cursor);
+    }
+
+    pub fn backspace_label(&mut self) {
+        backspace(&mut self.label_input, &mut self.label_cursor);
+    }
+
+    pub fn delete_input(&mut self) {
+        delete(&mut self.input, &mut self.input_cursor);
+    }
+
+    pub fn delete_body(&mut self) {
+        delete(&mut self.body_input, &mut self.body_cursor);
+    }
+
+    pub fn delete_label(&mut self) {
+        delete(&mut self.label_input, &mut self.label_cursor);
+    }
+
+    pub fn move_input_cursor(&mut self, movement: TextCursorMove) {
+        move_cursor(&self.input, &mut self.input_cursor, movement);
+    }
+
+    pub fn move_body_cursor(&mut self, movement: TextCursorMove) {
+        move_cursor(&self.body_input, &mut self.body_cursor, movement);
+    }
+
+    pub fn move_label_cursor(&mut self, movement: TextCursorMove) {
+        move_cursor(&self.label_input, &mut self.label_cursor, movement);
     }
 
     fn clamp_selection(&mut self) {
@@ -745,8 +892,8 @@ impl App {
     }
 }
 
-fn mention_suggestions(collaborators: &[User], text: &str) -> Vec<String> {
-    let Some((_, prefix)) = active_mention_range(text) else {
+fn mention_suggestions(collaborators: &[User], text: &str, cursor: usize) -> Vec<String> {
+    let Some((_, _, prefix)) = active_mention_range(text, cursor) else {
         return Vec::new();
     };
     let prefix = prefix.to_lowercase();
@@ -760,20 +907,28 @@ fn mention_suggestions(collaborators: &[User], text: &str) -> Vec<String> {
         .collect()
 }
 
-fn complete_mention(collaborators: &[User], text: &mut String) -> bool {
-    let Some((start, _)) = active_mention_range(text) else {
+fn complete_mention(collaborators: &[User], text: &mut String, cursor: &mut Option<usize>) -> bool {
+    let current_cursor = effective_cursor(text, *cursor);
+    let Some((start, end, _)) = active_mention_range(text, current_cursor) else {
         return false;
     };
-    let Some(login) = mention_suggestions(collaborators, text).into_iter().next() else {
+    let Some(login) = mention_suggestions(collaborators, text, current_cursor)
+        .into_iter()
+        .next()
+    else {
         return false;
     };
 
-    text.replace_range(start.., &format!("@{login} "));
+    let replacement = format!("@{login} ");
+    text.replace_range(start..end, &replacement);
+    *cursor = Some(start + replacement.len());
     true
 }
 
-fn active_mention_range(text: &str) -> Option<(usize, &str)> {
-    let start = text.rfind('@')?;
+fn active_mention_range(text: &str, cursor: usize) -> Option<(usize, usize, &str)> {
+    let cursor = clamp_cursor(text, cursor);
+    let before_cursor = &text[..cursor];
+    let start = before_cursor.rfind('@')?;
     if start > 0 {
         let before = text[..start].chars().next_back()?;
         if before.is_ascii_alphanumeric() || before == '-' {
@@ -781,15 +936,136 @@ fn active_mention_range(text: &str) -> Option<(usize, &str)> {
         }
     }
 
-    let prefix = &text[start + 1..];
+    let prefix = &text[start + 1..cursor];
     if prefix
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
     {
-        Some((start, prefix))
+        Some((start, cursor, prefix))
     } else {
         None
     }
+}
+
+fn effective_cursor(text: &str, cursor: Option<usize>) -> usize {
+    clamp_cursor(text, cursor.unwrap_or(text.len()))
+}
+
+fn clamp_cursor(text: &str, cursor: usize) -> usize {
+    if cursor >= text.len() {
+        return text.len();
+    }
+
+    let mut cursor = cursor;
+    while cursor > 0 && !text.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    cursor
+}
+
+fn insert_char(text: &mut String, cursor: &mut Option<usize>, c: char) {
+    let current = effective_cursor(text, *cursor);
+    text.insert(current, c);
+    *cursor = Some(current + c.len_utf8());
+}
+
+fn backspace(text: &mut String, cursor: &mut Option<usize>) {
+    let current = effective_cursor(text, *cursor);
+    let Some(previous) = previous_cursor(text, current) else {
+        *cursor = Some(0);
+        return;
+    };
+
+    text.replace_range(previous..current, "");
+    *cursor = Some(previous);
+}
+
+fn delete(text: &mut String, cursor: &mut Option<usize>) {
+    let current = effective_cursor(text, *cursor);
+    let Some(next) = next_cursor(text, current) else {
+        *cursor = Some(text.len());
+        return;
+    };
+
+    text.replace_range(current..next, "");
+    *cursor = Some(current);
+}
+
+fn move_cursor(text: &str, cursor: &mut Option<usize>, movement: TextCursorMove) {
+    let current = effective_cursor(text, *cursor);
+    *cursor = Some(match movement {
+        TextCursorMove::Left => previous_cursor(text, current).unwrap_or(0),
+        TextCursorMove::Right => next_cursor(text, current).unwrap_or(text.len()),
+        TextCursorMove::Home => line_start(text, current),
+        TextCursorMove::End => line_end(text, current),
+        TextCursorMove::Up => vertical_cursor(text, current, -1),
+        TextCursorMove::Down => vertical_cursor(text, current, 1),
+    });
+}
+
+fn previous_cursor(text: &str, cursor: usize) -> Option<usize> {
+    text[..cursor].char_indices().last().map(|(index, _)| index)
+}
+
+fn next_cursor(text: &str, cursor: usize) -> Option<usize> {
+    text[cursor..]
+        .chars()
+        .next()
+        .map(|ch| cursor + ch.len_utf8())
+}
+
+fn line_start(text: &str, cursor: usize) -> usize {
+    text[..cursor].rfind('\n').map_or(0, |index| index + 1)
+}
+
+fn line_end(text: &str, cursor: usize) -> usize {
+    text[cursor..]
+        .find('\n')
+        .map_or(text.len(), |offset| cursor + offset)
+}
+
+fn vertical_cursor(text: &str, cursor: usize, direction: isize) -> usize {
+    let start = line_start(text, cursor);
+    let column = text[start..cursor].chars().count();
+
+    if direction < 0 {
+        if start == 0 {
+            return cursor;
+        }
+        let previous_end = start - 1;
+        let previous_start = line_start(text, previous_end);
+        cursor_at_column(text, previous_start, previous_end, column)
+    } else {
+        let end = line_end(text, cursor);
+        if end == text.len() {
+            return cursor;
+        }
+        let next_start = end + 1;
+        let next_end = line_end(text, next_start);
+        cursor_at_column(text, next_start, next_end, column)
+    }
+}
+
+fn cursor_at_column(text: &str, start: usize, end: usize, column: usize) -> usize {
+    text[start..end]
+        .char_indices()
+        .nth(column)
+        .map_or(end, |(offset, _)| start + offset)
+}
+
+fn cursor_position(text: &str, cursor: usize) -> (u16, u16) {
+    let cursor = clamp_cursor(text, cursor);
+    let mut row = 0u16;
+    let mut column = 0u16;
+    for ch in text[..cursor].chars() {
+        if ch == '\n' {
+            row = row.saturating_add(1);
+            column = 0;
+        } else {
+            column = column.saturating_add(1);
+        }
+    }
+    (row, column)
 }
 
 fn compare_updated(left: &IssueSummary, right: &IssueSummary) -> Ordering {

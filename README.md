@@ -76,6 +76,7 @@ cargo run
 - `x`: close the selected open issue with a required comment, or reopen a closed issue after confirmation.
 - `Tab` / `Shift+Tab`: move between new issue fields.
 - `Tab`: complete an active `@username` mention while writing a comment or issue body.
+- Arrow keys, `Home`, `End`, `Backspace`, and `Delete`: edit text at the cursor in command, search, comment, issue, and picker fields.
 - `Enter`: move from title to body, insert body newlines, or add the current label.
 - `Ctrl+T`: apply the next available issue template while creating a new issue.
 - `Ctrl+S`: submit a comment, close with comment, or create the issue from any new issue field.
@@ -87,6 +88,7 @@ cargo run
 Useful commands:
 
 - `:refresh`: reload issues now.
+- `:all`, `:clear`, or `:clear filters`: clear state, assignee, label, and search filters.
 - `:fs` or `:filter state`: cycle state filter: open, closed, all.
 - `:fa` or `:filter assignee`: choose an assignee filter: any, me, unassigned, or a collaborator.
 - `:s <text>` or `:search <text>`: search issue titles.

@@ -15,7 +15,7 @@ use ratatui::DefaultTerminal;
 use crate::{
     app::{
         App, AssigneeChoice, AssigneeFilter, FlashKind, IssueEditField, IssueSort,
-        IssueStateFilter, NewIssueField, PendingAction, UiMode,
+        IssueStateFilter, NewIssueField, PendingAction, TextCursorMove, UiMode,
     },
     domain::{IssueComment, IssueState, IssueSummary},
     github::IssueBackend,
@@ -304,6 +304,18 @@ fn is_submit_key(key: KeyEvent) -> bool {
     key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
+fn cursor_movement(key: KeyEvent) -> Option<TextCursorMove> {
+    match key.code {
+        KeyCode::Left => Some(TextCursorMove::Left),
+        KeyCode::Right => Some(TextCursorMove::Right),
+        KeyCode::Home => Some(TextCursorMove::Home),
+        KeyCode::End => Some(TextCursorMove::End),
+        KeyCode::Up => Some(TextCursorMove::Up),
+        KeyCode::Down => Some(TextCursorMove::Down),
+        _ => None,
+    }
+}
+
 async fn handle_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
     match app.mode {
         UiMode::Browsing => handle_browsing_key(app, backend, key).await,
@@ -460,7 +472,7 @@ async fn handle_mouse_target<B: IssueBackend>(app: &mut App, backend: &B, target
 }
 
 async fn open_comment_composer<B: IssueBackend>(app: &mut App, backend: &B) {
-    app.input.clear();
+    app.clear_input();
     let mention_status = load_collaborators_for_mentions(app, backend).await;
     app.mode = UiMode::CommentComposer;
     app.set_status(mention_status.unwrap_or_else(|| {
@@ -469,13 +481,13 @@ async fn open_comment_composer<B: IssueBackend>(app: &mut App, backend: &B) {
 }
 
 fn open_command_prompt(app: &mut App) {
-    app.input.clear();
+    app.clear_input();
     app.mode = UiMode::Command;
     app.set_status("Type a command, for example :refresh or :filter state");
 }
 
 async fn open_close_comment<B: IssueBackend>(app: &mut App, backend: &B) {
-    app.input.clear();
+    app.clear_input();
     let mention_status = load_collaborators_for_mentions(app, backend).await;
     app.mode = UiMode::CloseComment;
     app.set_status(mention_status.unwrap_or_else(|| {
@@ -512,23 +524,23 @@ fn cancel_active_screen(app: &mut App) {
     match app.mode {
         UiMode::CommentComposer | UiMode::CloseComment => {
             app.mode = UiMode::Browsing;
-            app.input.clear();
+            app.clear_input();
         }
         UiMode::NewIssue => {
             app.mode = UiMode::Browsing;
-            app.input.clear();
-            app.body_input.clear();
-            app.label_input.clear();
+            app.clear_input();
+            app.clear_body_input();
+            app.clear_label_input();
             app.new_issue_labels.clear();
         }
         UiMode::IssueEditor => {
             app.mode = UiMode::Browsing;
-            app.input.clear();
-            app.body_input.clear();
+            app.clear_input();
+            app.clear_body_input();
         }
         UiMode::AssigneeFilter | UiMode::AssigneeEditor | UiMode::IssueLabelEditor => {
             app.mode = UiMode::Browsing;
-            app.input.clear();
+            app.clear_input();
             app.editing_assignees.clear();
             app.editing_issue_labels.clear();
         }
@@ -537,7 +549,7 @@ fn cancel_active_screen(app: &mut App) {
         }
         UiMode::Command | UiMode::Search => {
             app.mode = UiMode::Browsing;
-            app.input.clear();
+            app.clear_input();
         }
         _ => {}
     }
@@ -548,17 +560,25 @@ async fn handle_command_key<B: IssueBackend>(app: &mut App, backend: &B, key: Ke
         KeyCode::Esc => cancel_active_screen(app),
         KeyCode::Enter => run_command(app, backend).await,
         KeyCode::Tab => complete_command(app),
-        KeyCode::Backspace => {
-            app.input.pop();
+        _ if cursor_movement(key).is_some() => {
+            app.move_input_cursor(cursor_movement(key).expect("cursor movement checked"));
         }
-        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push(c),
+        KeyCode::Backspace => {
+            app.backspace_input();
+        }
+        KeyCode::Delete => {
+            app.delete_input();
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.insert_input_char(c);
+        }
         _ => {}
     }
 }
 
 async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
     let command = normalized_command(&app.input);
-    app.input.clear();
+    app.clear_input();
 
     match command.as_str() {
         "" => {
@@ -578,7 +598,7 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
             open_assignee_filter(app, backend).await;
         }
         command if is_search_prompt_command(command) => {
-            app.input = app.filters.query.clone();
+            app.set_input_text(app.filters.query.clone());
             app.mode = UiMode::Search;
             app.set_status("Search issue titles");
         }
@@ -623,6 +643,11 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
             app.mode = UiMode::Browsing;
             refresh(app, backend).await;
         }
+        "all" | "clear" | "clear filters" | "filters clear" | "reset filters" => {
+            app.clear_filters();
+            app.mode = UiMode::Browsing;
+            refresh(app, backend).await;
+        }
         "n" | "new" | "new issue" => open_new_issue(app, backend).await,
         "c" | "comment" if app.selected_issue().is_some() => {
             open_comment_composer(app, backend).await;
@@ -654,7 +679,7 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
 
 fn complete_command(app: &mut App) {
     if let Some(suggestion) = command_suggestions(&app.input).into_iter().next() {
-        app.input = suggestion;
+        app.set_input_text(suggestion);
     }
 }
 
@@ -691,6 +716,8 @@ fn command_suggestions(input: &str) -> Vec<String> {
         "labels",
         "new",
         "close",
+        "all",
+        "clear",
         "ping",
         "mentions",
         "refresh",
@@ -733,10 +760,16 @@ async fn handle_search_key<B: IssueBackend>(app: &mut App, backend: &B, key: Key
             app.mode = UiMode::Browsing;
             refresh(app, backend).await;
         }
-        KeyCode::Backspace => {
-            app.input.pop();
+        _ if cursor_movement(key).is_some() => {
+            app.move_input_cursor(cursor_movement(key).expect("cursor movement checked"));
         }
-        KeyCode::Char(c) => app.input.push(c),
+        KeyCode::Backspace => {
+            app.backspace_input();
+        }
+        KeyCode::Delete => {
+            app.delete_input();
+        }
+        KeyCode::Char(c) => app.insert_input_char(c),
         _ => {}
     }
 }
@@ -745,10 +778,15 @@ async fn handle_comment_key<B: IssueBackend>(app: &mut App, backend: &B, key: Ke
     match key.code {
         KeyCode::Esc => {
             app.mode = UiMode::Browsing;
-            app.input.clear();
+            app.clear_input();
         }
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push('\n'),
-        KeyCode::Enter => app.input.push('\n'),
+        _ if cursor_movement(key).is_some() => {
+            app.move_input_cursor(cursor_movement(key).expect("cursor movement checked"));
+        }
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.insert_input_newline()
+        }
+        KeyCode::Enter => app.insert_input_newline(),
         KeyCode::Tab => {
             app.complete_input_mention();
         }
@@ -756,12 +794,17 @@ async fn handle_comment_key<B: IssueBackend>(app: &mut App, backend: &B, key: Ke
             submit_comment(app, backend).await;
         }
         KeyCode::Backspace => {
-            app.input.pop();
+            app.backspace_input();
+        }
+        KeyCode::Delete => {
+            app.delete_input();
         }
         KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.input.push('\n');
+            app.insert_input_newline();
         }
-        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push(c),
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.insert_input_char(c);
+        }
         _ => {}
     }
 }
@@ -770,10 +813,15 @@ async fn handle_close_comment_key<B: IssueBackend>(app: &mut App, backend: &B, k
     match key.code {
         KeyCode::Esc => {
             app.mode = UiMode::Browsing;
-            app.input.clear();
+            app.clear_input();
         }
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push('\n'),
-        KeyCode::Enter => app.input.push('\n'),
+        _ if cursor_movement(key).is_some() => {
+            app.move_input_cursor(cursor_movement(key).expect("cursor movement checked"));
+        }
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.insert_input_newline()
+        }
+        KeyCode::Enter => app.insert_input_newline(),
         KeyCode::Tab => {
             app.complete_input_mention();
         }
@@ -781,12 +829,17 @@ async fn handle_close_comment_key<B: IssueBackend>(app: &mut App, backend: &B, k
             close_issue_with_comment(app, backend).await;
         }
         KeyCode::Backspace => {
-            app.input.pop();
+            app.backspace_input();
+        }
+        KeyCode::Delete => {
+            app.delete_input();
         }
         KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.input.push('\n');
+            app.insert_input_newline();
         }
-        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push(c),
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.insert_input_char(c);
+        }
         _ => {}
     }
 }
@@ -795,15 +848,21 @@ async fn handle_new_issue_key<B: IssueBackend>(app: &mut App, backend: &B, key: 
     match key.code {
         KeyCode::Esc => {
             app.mode = UiMode::Browsing;
-            app.input.clear();
-            app.body_input.clear();
-            app.label_input.clear();
+            app.clear_input();
+            app.clear_body_input();
+            app.clear_label_input();
             app.new_issue_labels.clear();
         }
         KeyCode::Tab
             if app.new_issue_field == NewIssueField::Body && app.complete_body_mention() => {}
         KeyCode::Tab => app.next_new_issue_field(),
         KeyCode::BackTab => app.previous_new_issue_field(),
+        _ if cursor_movement(key).is_some() => {
+            move_new_issue_field_cursor(
+                app,
+                cursor_movement(key).expect("cursor movement checked"),
+            );
+        }
         KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             if app.apply_next_issue_template() {
                 app.set_status("Applied issue template");
@@ -817,23 +876,26 @@ async fn handle_new_issue_key<B: IssueBackend>(app: &mut App, backend: &B, key: 
             if key.modifiers.contains(KeyModifiers::CONTROL)
                 && app.new_issue_field == NewIssueField::Body =>
         {
-            app.body_input.push('\n');
+            app.insert_body_newline();
         }
         KeyCode::Enter if app.new_issue_field == NewIssueField::Title => {
             app.new_issue_field = NewIssueField::Body;
         }
         KeyCode::Enter if app.new_issue_field == NewIssueField::Body => {
-            app.body_input.push('\n');
+            app.insert_body_newline();
         }
         KeyCode::Enter => submit_new_issue(app, backend, false).await,
         KeyCode::Backspace => {
             backspace_new_issue_field(app);
         }
+        KeyCode::Delete => {
+            delete_new_issue_field(app);
+        }
         KeyCode::Char('j')
             if key.modifiers.contains(KeyModifiers::CONTROL)
                 && app.new_issue_field == NewIssueField::Body =>
         {
-            app.body_input.push('\n');
+            app.insert_body_newline();
         }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             push_new_issue_char(app, c);
@@ -846,43 +908,54 @@ async fn handle_issue_editor_key<B: IssueBackend>(app: &mut App, backend: &B, ke
     match key.code {
         KeyCode::Esc => {
             app.mode = UiMode::Browsing;
-            app.input.clear();
-            app.body_input.clear();
+            app.clear_input();
+            app.clear_body_input();
         }
         KeyCode::Tab
             if app.issue_edit_field == IssueEditField::Body && app.complete_body_mention() => {}
         KeyCode::Tab | KeyCode::BackTab => app.next_issue_edit_field(),
+        _ if cursor_movement(key).is_some() => {
+            move_issue_editor_cursor(app, cursor_movement(key).expect("cursor movement checked"));
+        }
         KeyCode::Char(_) if is_submit_key(key) => save_issue_edit(app, backend).await,
         KeyCode::Enter
             if key.modifiers.contains(KeyModifiers::CONTROL)
                 && app.issue_edit_field == IssueEditField::Body =>
         {
-            app.body_input.push('\n');
+            app.insert_body_newline();
         }
         KeyCode::Enter if app.issue_edit_field == IssueEditField::Title => {
             app.issue_edit_field = IssueEditField::Body;
         }
         KeyCode::Enter if app.issue_edit_field == IssueEditField::Body => {
-            app.body_input.push('\n');
+            app.insert_body_newline();
         }
         KeyCode::Backspace => match app.issue_edit_field {
             IssueEditField::Title => {
-                app.input.pop();
+                app.backspace_input();
             }
             IssueEditField::Body => {
-                app.body_input.pop();
+                app.backspace_body();
+            }
+        },
+        KeyCode::Delete => match app.issue_edit_field {
+            IssueEditField::Title => {
+                app.delete_input();
+            }
+            IssueEditField::Body => {
+                app.delete_body();
             }
         },
         KeyCode::Char('j')
             if key.modifiers.contains(KeyModifiers::CONTROL)
                 && app.issue_edit_field == IssueEditField::Body =>
         {
-            app.body_input.push('\n');
+            app.insert_body_newline();
         }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             match app.issue_edit_field {
-                IssueEditField::Title => app.input.push(c),
-                IssueEditField::Body => app.body_input.push(c),
+                IssueEditField::Title => app.insert_input_char(c),
+                IssueEditField::Body => app.insert_body_char(c),
             }
         }
         _ => {}
@@ -900,8 +973,15 @@ async fn handle_assignee_picker_key<B: IssueBackend>(app: &mut App, backend: &B,
         KeyCode::Esc => cancel_active_screen(app),
         KeyCode::Down | KeyCode::Char('j') => app.select_next_picker_item(choices.len()),
         KeyCode::Up | KeyCode::Char('k') => app.select_previous_picker_item(),
+        _ if cursor_movement(key).is_some() => {
+            app.move_input_cursor(cursor_movement(key).expect("cursor movement checked"));
+        }
         KeyCode::Backspace => {
-            app.input.pop();
+            app.backspace_input();
+            app.picker_index = 0;
+        }
+        KeyCode::Delete => {
+            app.delete_input();
             app.picker_index = 0;
         }
         KeyCode::Enter => {
@@ -911,7 +991,7 @@ async fn handle_assignee_picker_key<B: IssueBackend>(app: &mut App, backend: &B,
             toggle_selected_assignee(app);
         }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.input.push(c);
+            app.insert_input_char(c);
             app.picker_index = 0;
         }
         _ => {}
@@ -959,8 +1039,15 @@ async fn handle_issue_label_key<B: IssueBackend>(app: &mut App, backend: &B, key
         KeyCode::Esc => cancel_active_screen(app),
         KeyCode::Down | KeyCode::Char('j') => app.select_next_picker_item(choices.len()),
         KeyCode::Up | KeyCode::Char('k') => app.select_previous_picker_item(),
+        _ if cursor_movement(key).is_some() => {
+            app.move_input_cursor(cursor_movement(key).expect("cursor movement checked"));
+        }
         KeyCode::Backspace => {
-            app.input.pop();
+            app.backspace_input();
+            app.picker_index = 0;
+        }
+        KeyCode::Delete => {
+            app.delete_input();
             app.picker_index = 0;
         }
         KeyCode::Enter => {
@@ -970,7 +1057,7 @@ async fn handle_issue_label_key<B: IssueBackend>(app: &mut App, backend: &B, key
         }
         KeyCode::Char(_) if is_submit_key(key) => save_issue_labels(app, backend).await,
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.input.push(c);
+            app.insert_input_char(c);
             app.picker_index = 0;
         }
         _ => {}
@@ -1351,7 +1438,7 @@ async fn submit_comment<B: IssueBackend>(app: &mut App, backend: &B) {
     );
     match backend.add_comment(&app.repo, number, &body).await {
         Ok(comment) => {
-            app.input.clear();
+            app.clear_input();
             refresh_after_action(
                 app,
                 backend,
@@ -1395,7 +1482,7 @@ async fn close_issue_with_comment<B: IssueBackend>(app: &mut App, backend: &B) {
             .await
         {
             Ok(_) => {
-                app.input.clear();
+                app.clear_input();
                 refresh_after_action(
                     app,
                     backend,
@@ -1449,9 +1536,9 @@ async fn submit_new_issue<B: IssueBackend>(app: &mut App, backend: &B, force_cre
     {
         Ok(issue) => {
             let number = issue.number;
-            app.input.clear();
-            app.body_input.clear();
-            app.label_input.clear();
+            app.clear_input();
+            app.clear_body_input();
+            app.clear_label_input();
             app.new_issue_labels.clear();
             refresh_after_action(
                 app,
@@ -1493,8 +1580,8 @@ async fn save_issue_edit<B: IssueBackend>(app: &mut App, backend: &B) {
     );
     match backend.update_issue(&app.repo, number, &title, &body).await {
         Ok(issue) => {
-            app.input.clear();
-            app.body_input.clear();
+            app.clear_input();
+            app.clear_body_input();
             refresh_after_action(
                 app,
                 backend,
@@ -1660,7 +1747,7 @@ async fn apply_assignee_filter<B: IssueBackend>(
         AssigneeChoice::Unassigned => AssigneeFilter::None,
         AssigneeChoice::User(login) => AssigneeFilter::User(login),
     };
-    app.input.clear();
+    app.clear_input();
     app.mode = UiMode::Browsing;
     refresh(app, backend).await;
 }
@@ -1738,27 +1825,50 @@ async fn save_issue_labels<B: IssueBackend>(app: &mut App, backend: &B) {
 
 fn push_new_issue_char(app: &mut App, c: char) {
     match app.new_issue_field {
-        NewIssueField::Title => app.input.push(c),
-        NewIssueField::Body => app.body_input.push(c),
-        NewIssueField::Labels => app.label_input.push(c),
+        NewIssueField::Title => app.insert_input_char(c),
+        NewIssueField::Body => app.insert_body_char(c),
+        NewIssueField::Labels => app.insert_label_char(c),
     }
 }
 
 fn backspace_new_issue_field(app: &mut App) {
     match app.new_issue_field {
         NewIssueField::Title => {
-            app.input.pop();
+            app.backspace_input();
         }
         NewIssueField::Body => {
-            app.body_input.pop();
+            app.backspace_body();
         }
         NewIssueField::Labels => {
             if app.label_input.is_empty() {
                 app.pop_new_issue_label();
             } else {
-                app.label_input.pop();
+                app.backspace_label();
             }
         }
+    }
+}
+
+fn delete_new_issue_field(app: &mut App) {
+    match app.new_issue_field {
+        NewIssueField::Title => app.delete_input(),
+        NewIssueField::Body => app.delete_body(),
+        NewIssueField::Labels => app.delete_label(),
+    }
+}
+
+fn move_new_issue_field_cursor(app: &mut App, movement: TextCursorMove) {
+    match app.new_issue_field {
+        NewIssueField::Title => app.move_input_cursor(movement),
+        NewIssueField::Body => app.move_body_cursor(movement),
+        NewIssueField::Labels => app.move_label_cursor(movement),
+    }
+}
+
+fn move_issue_editor_cursor(app: &mut App, movement: TextCursorMove) {
+    match app.issue_edit_field {
+        IssueEditField::Title => app.move_input_cursor(movement),
+        IssueEditField::Body => app.move_body_cursor(movement),
     }
 }
 
@@ -2283,6 +2393,55 @@ mod tests {
         .await;
 
         assert_eq!(app.filters.sort, IssueSort::Comments);
+    }
+
+    #[tokio::test]
+    async fn colon_command_all_and_clear_reset_list_filters() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.filters.state = IssueStateFilter::Closed;
+        app.filters.assignee = AssigneeFilter::Me;
+        app.filters.labels = vec!["bug".to_string()];
+        app.filters.query = "redraw".to_string();
+        app.filters.sort = IssueSort::Comments;
+        app.mode = UiMode::Command;
+        app.input = "all".to_string();
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.filters.state, IssueStateFilter::All);
+        assert_eq!(app.filters.assignee, AssigneeFilter::Any);
+        assert!(app.filters.labels.is_empty());
+        assert!(app.filters.query.is_empty());
+        assert_eq!(app.filters.sort, IssueSort::Comments);
+        assert_eq!(app.mode, UiMode::Browsing);
+
+        app.filters.state = IssueStateFilter::Closed;
+        app.filters.assignee = AssigneeFilter::None;
+        app.filters.labels = vec!["docs".to_string()];
+        app.filters.query = "tree".to_string();
+        app.filters.sort = IssueSort::Assignee;
+        app.mode = UiMode::Command;
+        app.input = "clear filters".to_string();
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.filters.state, IssueStateFilter::All);
+        assert_eq!(app.filters.assignee, AssigneeFilter::Any);
+        assert!(app.filters.labels.is_empty());
+        assert!(app.filters.query.is_empty());
+        assert_eq!(app.filters.sort, IssueSort::Assignee);
+        assert_eq!(*backend.list_calls.lock().unwrap(), 2);
     }
 
     #[tokio::test]
@@ -3070,6 +3229,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn comment_editor_inserts_and_deletes_at_cursor() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::CommentComposer;
+        app.input = "abcd".to_string();
+
+        for key in [
+            KeyCode::Left,
+            KeyCode::Left,
+            KeyCode::Char('X'),
+            KeyCode::Left,
+            KeyCode::Backspace,
+            KeyCode::Home,
+            KeyCode::Delete,
+        ] {
+            handle_comment_key(&mut app, &backend, KeyEvent::new(key, KeyModifiers::NONE)).await;
+        }
+
+        assert_eq!(app.input, "Xcd");
+    }
+
+    #[tokio::test]
+    async fn mention_completion_uses_cursor_position() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_repo_collaborators(vec![
+            User {
+                login: "alice".to_string(),
+            },
+            User {
+                login: "bob".to_string(),
+            },
+        ]);
+        app.mode = UiMode::CommentComposer;
+        app.input = "cc @a and @b".to_string();
+
+        for _ in 0.." and @b".len() {
+            handle_comment_key(
+                &mut app,
+                &backend,
+                KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            )
+            .await;
+        }
+        handle_comment_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.input, "cc @alice  and @b");
+    }
+
+    #[tokio::test]
     async fn closing_open_issue_requires_comment_and_refreshes_state() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/skunkwork".parse().unwrap());
@@ -3299,9 +3513,9 @@ mod tests {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/skunkwork".parse().unwrap());
         open_new_issue(&mut app, &backend).await;
-        app.input = "New task".to_string();
+        app.set_input_text("New task");
         app.new_issue_field = NewIssueField::Body;
-        app.body_input = "line one".to_string();
+        app.set_body_input_text("line one");
 
         handle_new_issue_key(
             &mut app,
@@ -3331,6 +3545,32 @@ mod tests {
             Some("line one\nl")
         );
         assert_eq!(app.mode, UiMode::Success);
+    }
+
+    #[tokio::test]
+    async fn issue_body_editor_inserts_newline_at_cursor() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::IssueEditor;
+        app.issue_edit_field = IssueEditField::Body;
+        app.body_input = "one two".to_string();
+
+        for _ in 0.."two".len() {
+            handle_issue_editor_key(
+                &mut app,
+                &backend,
+                KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            )
+            .await;
+        }
+        handle_issue_editor_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.body_input, "one \ntwo");
     }
 
     #[tokio::test]

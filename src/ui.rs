@@ -626,19 +626,19 @@ fn footer_shortcuts(app: &App) -> &'static str {
         UiMode::Browsing => {
             ": commands | n new | x close | j/k move | PgUp/PgDn detail | Enter fold | q quit"
         }
-        UiMode::Command => "Enter run | Esc cancel | Backspace delete",
-        UiMode::Search => "Enter search | Esc cancel | Backspace delete",
+        UiMode::Command => "Enter run | Tab complete | Arrows edit | Esc cancel",
+        UiMode::Search => "Enter search | Arrows edit | Esc cancel",
         UiMode::CommentComposer => {
-            "Ctrl+S submit | Tab complete @mention | Enter newline | Ctrl+J newline | Esc cancel"
+            "Ctrl+S submit | Tab @mention | Arrows edit | Enter/Ctrl+J newline | Esc cancel"
         }
         UiMode::CloseComment => {
-            "Ctrl+S close | Tab complete @mention | Enter newline | Ctrl+J newline | Esc cancel"
+            "Ctrl+S close | Tab @mention | Arrows edit | Enter/Ctrl+J newline | Esc cancel"
         }
         UiMode::NewIssue => {
-            "Tab fields/@mention | Ctrl+T template | Ctrl+S create | Enter edit/add label | Ctrl+J newline | Esc cancel"
+            "Tab fields/@mention | Arrows edit | Ctrl+T template | Ctrl+S create | Esc cancel"
         }
         UiMode::IssueEditor => {
-            "Tab fields/@mention | Ctrl+S save | Enter edit/newline | Ctrl+J newline | Esc cancel"
+            "Tab fields/@mention | Arrows edit | Ctrl+S save | Enter/Ctrl+J newline | Esc cancel"
         }
         UiMode::AssigneeFilter => "Enter apply filter | type search | j/k move | Esc cancel",
         UiMode::AssigneeEditor => {
@@ -712,9 +712,12 @@ fn render_command_bar(app: &App, area: Rect, buffer: &mut Buffer) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Length(1)])
         .split(area);
-    let mut textarea = textarea_at_end(vec![command_prompt_line(&app.input)]);
+    let mut textarea = textarea_at_cursor(
+        vec![command_prompt_line(&app.input)],
+        command_cursor_position(app),
+    );
     textarea.set_block(modal_block(
-        "Command  :fs filter state  :fa filter assignee  :s <text> search  :ping/:mentions  :assign  :comment",
+        "Command  :all clear filters  :fs filter state  :fa filter assignee  :s <text> search  :ping/:mentions  :assign",
         ACTION_ACCENT,
     ));
     textarea.set_style(modal_style());
@@ -728,6 +731,16 @@ fn render_command_bar(app: &App, area: Rect, buffer: &mut Buffer) {
 fn command_prompt_line(input: &str) -> String {
     let command = input.strip_prefix(':').unwrap_or(input);
     format!(":{command}")
+}
+
+fn command_cursor_position(app: &App) -> (u16, u16) {
+    let cursor = app.input_cursor();
+    let display_cursor = if app.input.starts_with(':') {
+        cursor
+    } else {
+        cursor.saturating_add(1)
+    };
+    (0, display_cursor.min(u16::MAX as usize) as u16)
 }
 
 fn command_suggestions_line(input: &str) -> String {
@@ -749,6 +762,8 @@ fn command_suggestions_line(input: &str) -> String {
         "labels",
         "new",
         "close",
+        "all",
+        "clear",
         "ping",
         "mentions",
         "refresh",
@@ -952,7 +967,7 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
             .split(area)
     };
 
-    let mut textarea = textarea_at_end(input_lines(&app.input));
+    let mut textarea = textarea_at_cursor(input_lines(&app.input), app.input_cursor_position());
     textarea.set_block(modal_block(
         match app.mode {
             UiMode::CommentComposer => "Comment Body",
@@ -969,7 +984,7 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
         UiMode::CloseComment => "Required comment before closing",
         UiMode::NewIssue => "Title | optional body",
         UiMode::Search => "Search issue titles",
-        UiMode::Command => ":fs, :fa, :s <text>, :assign, :labels, :new, :quit",
+        UiMode::Command => ":all, :fs, :fa, :s <text>, :assign, :labels, :new, :quit",
         _ => "",
     });
     textarea.set_style(modal_style());
@@ -1005,7 +1020,7 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
         }));
 
     let title_active = app.new_issue_field == NewIssueField::Title;
-    let mut title = textarea_at_end(input_lines(&app.input));
+    let mut title = textarea_at_cursor(input_lines(&app.input), app.input_cursor_position());
     title.set_block(modal_block("Title", TITLE_ACCENT));
     title.set_style(field_style(
         &app.new_issue_field,
@@ -1020,7 +1035,7 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
     (&title).render(rows[0], buffer);
 
     let body_active = app.new_issue_field == NewIssueField::Body;
-    let mut body = textarea_at_end(input_lines(&app.body_input));
+    let mut body = textarea_at_cursor(input_lines(&app.body_input), app.body_cursor_position());
     body.set_block(modal_block("Body (Markdown)", ACTION_ACCENT));
     body.set_placeholder_text("Write the issue body");
     body.set_style(field_style(
@@ -1097,7 +1112,7 @@ fn render_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
             vertical: 0,
         }));
 
-    let mut title = textarea_at_end(input_lines(&app.input));
+    let mut title = textarea_at_cursor(input_lines(&app.input), app.input_cursor_position());
     title.set_block(modal_block("Title", TITLE_ACCENT));
     title.set_style(modal_style());
     if app.issue_edit_field == IssueEditField::Title {
@@ -1107,7 +1122,7 @@ fn render_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
     }
     (&title).render(rows[0], buffer);
 
-    let mut body = textarea_at_end(input_lines(&app.body_input));
+    let mut body = textarea_at_cursor(input_lines(&app.body_input), app.body_cursor_position());
     body.set_block(modal_block("Body (Markdown)", ACTION_ACCENT));
     body.set_style(modal_style());
     if app.issue_edit_field == IssueEditField::Body {
@@ -1203,14 +1218,21 @@ fn input_lines(input: &str) -> Vec<String> {
     if input.is_empty() {
         vec![String::new()]
     } else {
-        input.lines().map(ToOwned::to_owned).collect()
+        input.split('\n').map(ToOwned::to_owned).collect()
     }
 }
 
+#[cfg(test)]
 fn textarea_at_end(lines: Vec<String>) -> TextArea<'static> {
     let mut textarea = TextArea::new(lines);
     textarea.move_cursor(CursorMove::Bottom);
     textarea.move_cursor(CursorMove::End);
+    textarea
+}
+
+fn textarea_at_cursor(lines: Vec<String>, cursor: (u16, u16)) -> TextArea<'static> {
+    let mut textarea = TextArea::new(lines);
+    textarea.move_cursor(CursorMove::Jump(cursor.0, cursor.1));
     textarea
 }
 
@@ -2095,7 +2117,7 @@ mod tests {
 
         app.start_new_issue();
         app.new_issue_field = NewIssueField::Body;
-        app.body_input = "Need @a".to_string();
+        app.set_body_input_text("Need @a");
         let mut buffer = Buffer::empty(Rect::new(0, 0, 110, 32));
         render(&app, buffer.area, &mut buffer);
         let rendered = buffer_to_string(&buffer);
