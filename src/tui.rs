@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeSet,
     io::{self, Write},
+    process::Command,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -16,6 +18,8 @@ use crate::{
 };
 
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+#[cfg(target_os = "macos")]
+const MACOS_NOTIFICATION_SOUND: &str = "/System/Library/Sounds/Glass.aiff";
 
 pub async fn run<B: IssueBackend>(
     terminal: &mut DefaultTerminal,
@@ -39,7 +43,7 @@ pub async fn run<B: IssueBackend>(
 
         if can_auto_refresh(app) && Instant::now() >= next_auto_refresh {
             if auto_refresh(app, backend).await.has_new_issues() {
-                ring_terminal_bell();
+                play_new_issue_notification();
             }
             next_auto_refresh = Instant::now() + AUTO_REFRESH_INTERVAL;
         } else if !can_auto_refresh(app) {
@@ -69,6 +73,29 @@ fn can_auto_refresh(app: &App) -> bool {
 fn ring_terminal_bell() {
     print!("\x07");
     let _ = io::stdout().flush();
+}
+
+fn play_new_issue_notification() {
+    ring_terminal_bell();
+    play_system_notification_sound();
+}
+
+fn play_system_notification_sound() {
+    if let Some((program, args)) = system_notification_sound_command() {
+        thread::spawn(move || {
+            let _ = Command::new(program).args(args).status();
+        });
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn system_notification_sound_command() -> Option<(&'static str, &'static [&'static str])> {
+    Some(("afplay", &[MACOS_NOTIFICATION_SOUND]))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_notification_sound_command() -> Option<(&'static str, &'static [&'static str])> {
+    None
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -954,6 +981,20 @@ mod tests {
 
         app.mode = UiMode::NewIssue;
         assert!(!can_auto_refresh(&app));
+    }
+
+    #[test]
+    fn notification_sound_uses_platform_sound_when_available() {
+        let command = system_notification_sound_command();
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            command,
+            Some(("afplay", &["/System/Library/Sounds/Glass.aiff"][..]))
+        );
+
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(command, None);
     }
 
     #[tokio::test]
