@@ -1,5 +1,7 @@
+use std::cmp::Ordering;
+
 use crate::{
-    domain::{IssueDetail, IssueSummary, Label, User},
+    domain::{IssueDetail, IssueSummary, IssueTemplate, Label, User},
     repo::Repository,
 };
 
@@ -16,6 +18,25 @@ impl IssueStateFilter {
             Self::Open => "open",
             Self::Closed => "closed",
             Self::All => "all",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IssueSort {
+    Updated,
+    Created,
+    Comments,
+    Assignee,
+}
+
+impl IssueSort {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Updated => "updated",
+            Self::Created => "created",
+            Self::Comments => "comments",
+            Self::Assignee => "assignee",
         }
     }
 }
@@ -45,6 +66,7 @@ pub struct IssueFilters {
     pub assignee: AssigneeFilter,
     pub labels: Vec<String>,
     pub query: String,
+    pub sort: IssueSort,
 }
 
 impl Default for IssueFilters {
@@ -54,6 +76,7 @@ impl Default for IssueFilters {
             assignee: AssigneeFilter::Any,
             labels: Vec::new(),
             query: String::new(),
+            sort: IssueSort::Updated,
         }
     }
 }
@@ -67,6 +90,7 @@ pub enum UiMode {
     CommentComposer,
     CloseComment,
     NewIssue,
+    IssueEditor,
     AssigneeFilter,
     AssigneeEditor,
     IssueLabelEditor,
@@ -84,14 +108,22 @@ pub enum NewIssueField {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IssueEditField {
+    Title,
+    Body,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PendingAction {
     Refresh,
     LoadLabels,
     LoadCollaborators,
+    LoadTemplates,
     CreateIssue,
     AddComment,
     CloseIssue,
     ReopenIssue,
+    UpdateIssue,
     UpdateAssignees,
     UpdateLabels,
 }
@@ -150,10 +182,13 @@ pub struct App {
     pub new_issue_field: NewIssueField,
     pub new_issue_labels: Vec<String>,
     pub repo_labels: Vec<Label>,
+    pub repo_issue_templates: Vec<IssueTemplate>,
+    pub selected_template_index: usize,
     pub repo_collaborators: Vec<User>,
     pub picker_index: usize,
     pub editing_assignees: Vec<String>,
     pub editing_issue_labels: Vec<String>,
+    pub issue_edit_field: IssueEditField,
     pub selected_detail: Option<IssueDetail>,
     pub comments_expanded: bool,
     pub pending_action: Option<PendingAction>,
@@ -179,10 +214,13 @@ impl App {
             new_issue_field: NewIssueField::Title,
             new_issue_labels: Vec::new(),
             repo_labels: Vec::new(),
+            repo_issue_templates: Vec::new(),
+            selected_template_index: 0,
             repo_collaborators: Vec::new(),
             picker_index: 0,
             editing_assignees: Vec::new(),
             editing_issue_labels: Vec::new(),
+            issue_edit_field: IssueEditField::Title,
             selected_detail: None,
             comments_expanded: true,
             pending_action: None,
@@ -196,6 +234,7 @@ impl App {
 
     pub fn set_issues(&mut self, issues: Vec<IssueSummary>) {
         self.issues = issues;
+        self.sort_issues();
         self.clamp_selection();
         self.clear_stale_detail();
         self.clear_missing_issue_highlights();
@@ -246,6 +285,16 @@ impl App {
             IssueStateFilter::Closed => IssueStateFilter::All,
             IssueStateFilter::All => IssueStateFilter::Open,
         };
+    }
+
+    pub fn cycle_sort(&mut self) {
+        self.filters.sort = match self.filters.sort {
+            IssueSort::Updated => IssueSort::Created,
+            IssueSort::Created => IssueSort::Comments,
+            IssueSort::Comments => IssueSort::Assignee,
+            IssueSort::Assignee => IssueSort::Updated,
+        };
+        self.sort_issues();
     }
 
     pub fn set_query(&mut self, query: impl Into<String>) {
@@ -335,11 +384,34 @@ impl App {
         self.label_input.clear();
         self.new_issue_labels.clear();
         self.new_issue_field = NewIssueField::Title;
+        self.selected_template_index = 0;
         self.mode = UiMode::NewIssue;
     }
 
     pub fn set_repo_labels(&mut self, labels: Vec<Label>) {
         self.repo_labels = labels;
+    }
+
+    pub fn set_repo_issue_templates(&mut self, templates: Vec<IssueTemplate>) {
+        self.repo_issue_templates = templates;
+        self.selected_template_index = self
+            .selected_template_index
+            .min(self.repo_issue_templates.len().saturating_sub(1));
+    }
+
+    pub fn apply_next_issue_template(&mut self) -> bool {
+        if self.repo_issue_templates.is_empty() {
+            return false;
+        }
+
+        let template = &self.repo_issue_templates[self.selected_template_index];
+        if self.input.trim().is_empty() {
+            self.input = template.name.clone();
+        }
+        self.body_input = template.body.clone();
+        self.selected_template_index =
+            (self.selected_template_index + 1) % self.repo_issue_templates.len();
+        true
     }
 
     pub fn set_repo_collaborators(&mut self, mut collaborators: Vec<User>) {
@@ -424,6 +496,24 @@ impl App {
             })
             .unwrap_or_default();
         self.mode = UiMode::IssueLabelEditor;
+    }
+
+    pub fn begin_issue_edit(&mut self, body: impl Into<String>) {
+        let title = self
+            .selected_issue()
+            .map(|issue| issue.title.clone())
+            .unwrap_or_default();
+        self.input = title;
+        self.body_input = body.into();
+        self.issue_edit_field = IssueEditField::Title;
+        self.mode = UiMode::IssueEditor;
+    }
+
+    pub fn next_issue_edit_field(&mut self) {
+        self.issue_edit_field = match self.issue_edit_field {
+            IssueEditField::Title => IssueEditField::Body,
+            IssueEditField::Body => IssueEditField::Title,
+        };
     }
 
     pub fn issue_label_choices(&self) -> Vec<String> {
@@ -513,6 +603,15 @@ impl App {
         }
     }
 
+    fn sort_issues(&mut self) {
+        match self.filters.sort {
+            IssueSort::Updated => self.issues.sort_by(compare_updated),
+            IssueSort::Created => self.issues.sort_by(compare_created),
+            IssueSort::Comments => self.issues.sort_by(compare_comments),
+            IssueSort::Assignee => self.issues.sort_by(compare_assignee),
+        }
+    }
+
     fn clear_stale_detail(&mut self) {
         let selected_number = self.selected_issue().map(|issue| issue.number);
         let detail_number = self
@@ -571,10 +670,41 @@ impl App {
     }
 }
 
+fn compare_updated(left: &IssueSummary, right: &IssueSummary) -> Ordering {
+    right.updated_at.cmp(&left.updated_at)
+}
+
+fn compare_created(left: &IssueSummary, right: &IssueSummary) -> Ordering {
+    right.created_at.cmp(&left.created_at)
+}
+
+fn compare_comments(left: &IssueSummary, right: &IssueSummary) -> Ordering {
+    right
+        .comment_count
+        .cmp(&left.comment_count)
+        .then_with(|| compare_updated(left, right))
+}
+
+fn compare_assignee(left: &IssueSummary, right: &IssueSummary) -> Ordering {
+    let left_assignee = left
+        .assignees
+        .first()
+        .map(|assignee| assignee.login.as_str())
+        .unwrap_or("~");
+    let right_assignee = right
+        .assignees
+        .first()
+        .map(|assignee| assignee.login.as_str())
+        .unwrap_or("~");
+    left_assignee
+        .cmp(right_assignee)
+        .then_with(|| compare_updated(left, right))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{IssueState, IssueSummary};
+    use crate::domain::{IssueState, IssueSummary, IssueTemplate, User};
 
     fn issue(number: u64, title: &str) -> IssueSummary {
         IssueSummary {
@@ -584,6 +714,7 @@ mod tests {
             labels: Vec::new(),
             assignees: Vec::new(),
             author: None,
+            created_at: None,
             updated_at: None,
             comment_count: 0,
         }
@@ -608,6 +739,23 @@ mod tests {
         assert_eq!(app.filters.state, IssueStateFilter::All);
         app.cycle_state_filter();
         assert_eq!(app.filters.state, IssueStateFilter::Open);
+    }
+
+    #[test]
+    fn cycles_sort_mode_and_orders_by_assignee() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.filters.sort = IssueSort::Assignee;
+        let unassigned = issue(1, "one");
+        let mut assigned = issue(2, "two");
+        assigned.assignees = vec![User {
+            login: "alice".to_string(),
+        }];
+        app.set_issues(vec![unassigned, assigned]);
+
+        assert_eq!(app.issues[0].number, 2);
+
+        app.cycle_sort();
+        assert_eq!(app.filters.sort, IssueSort::Updated);
     }
 
     #[test]
@@ -667,6 +815,19 @@ mod tests {
         assert!(app.body_input.is_empty());
         assert!(app.label_input.is_empty());
         assert!(app.new_issue_labels.is_empty());
+    }
+
+    #[test]
+    fn applies_issue_template_to_new_issue_body() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_repo_issue_templates(vec![IssueTemplate {
+            name: "bug report".to_string(),
+            body: "## Expected\n".to_string(),
+        }]);
+
+        assert!(app.apply_next_issue_template());
+        assert_eq!(app.input, "bug report");
+        assert_eq!(app.body_input, "## Expected\n");
     }
 
     #[test]

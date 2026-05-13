@@ -14,8 +14,8 @@ use ratatui::DefaultTerminal;
 
 use crate::{
     app::{
-        App, AssigneeChoice, AssigneeFilter, FlashKind, IssueStateFilter, NewIssueField,
-        PendingAction, UiMode,
+        App, AssigneeChoice, AssigneeFilter, FlashKind, IssueEditField, IssueSort,
+        IssueStateFilter, NewIssueField, PendingAction, UiMode,
     },
     domain::{IssueComment, IssueState, IssueSummary},
     github::IssueBackend,
@@ -211,6 +211,14 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
         UiMode::NewIssue if should_submit_new_issue(app, key) && !app.input.trim().is_empty() => {
             Some((PendingAction::CreateIssue, "Creating issue".to_string()))
         }
+        UiMode::IssueEditor if is_submit_key(key) && !app.input.trim().is_empty() => {
+            app.selected_issue().map(|issue| {
+                (
+                    PendingAction::UpdateIssue,
+                    format!("Updating issue #{}", issue.number),
+                )
+            })
+        }
         UiMode::AssigneeFilter if key.code == KeyCode::Enter => {
             Some((PendingAction::Refresh, "Refreshing issues".to_string()))
         }
@@ -303,6 +311,7 @@ async fn handle_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) 
         UiMode::CommentComposer => handle_comment_key(app, backend, key).await,
         UiMode::CloseComment => handle_close_comment_key(app, backend, key).await,
         UiMode::NewIssue => handle_new_issue_key(app, backend, key).await,
+        UiMode::IssueEditor => handle_issue_editor_key(app, backend, key).await,
         UiMode::AssigneeFilter | UiMode::AssigneeEditor => {
             handle_assignee_picker_key(app, backend, key).await;
         }
@@ -396,10 +405,14 @@ async fn handle_mouse_target<B: IssueBackend>(app: &mut App, backend: &B, target
         ui::MouseTarget::NewIssueField(field) if app.mode == UiMode::NewIssue => {
             app.new_issue_field = field;
         }
+        ui::MouseTarget::IssueEditField(field) if app.mode == UiMode::IssueEditor => {
+            app.issue_edit_field = field;
+        }
         ui::MouseTarget::PrimaryAction => match app.mode {
             UiMode::CommentComposer => submit_comment(app, backend).await,
             UiMode::CloseComment => close_issue_with_comment(app, backend).await,
             UiMode::NewIssue => submit_new_issue(app, backend, true).await,
+            UiMode::IssueEditor => save_issue_edit(app, backend).await,
             UiMode::AssigneeFilter | UiMode::AssigneeEditor => {
                 submit_assignee_picker(app, backend).await;
             }
@@ -462,6 +475,11 @@ fn cancel_active_screen(app: &mut App) {
             app.label_input.clear();
             app.new_issue_labels.clear();
         }
+        UiMode::IssueEditor => {
+            app.mode = UiMode::Browsing;
+            app.input.clear();
+            app.body_input.clear();
+        }
         UiMode::AssigneeFilter | UiMode::AssigneeEditor | UiMode::IssueLabelEditor => {
             app.mode = UiMode::Browsing;
             app.input.clear();
@@ -483,6 +501,7 @@ async fn handle_command_key<B: IssueBackend>(app: &mut App, backend: &B, key: Ke
     match key.code {
         KeyCode::Esc => cancel_active_screen(app),
         KeyCode::Enter => run_command(app, backend).await,
+        KeyCode::Tab => complete_command(app),
         KeyCode::Backspace => {
             app.input.pop();
         }
@@ -523,8 +542,44 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
             app.mode = UiMode::Browsing;
             refresh(app, backend).await;
         }
+        "me" | "mine" => {
+            app.filters.assignee = AssigneeFilter::Me;
+            app.mode = UiMode::Browsing;
+            refresh(app, backend).await;
+        }
+        "unassigned" | "none" => {
+            app.filters.assignee = AssigneeFilter::None;
+            app.mode = UiMode::Browsing;
+            refresh(app, backend).await;
+        }
+        "any" | "all assignees" => {
+            app.filters.assignee = AssigneeFilter::Any;
+            app.mode = UiMode::Browsing;
+            refresh(app, backend).await;
+        }
+        "sort" => {
+            app.cycle_sort();
+            app.mode = UiMode::Browsing;
+            refresh(app, backend).await;
+        }
+        command if sort_command(command).is_some() => {
+            app.filters.sort = sort_command(command).expect("sort command checked");
+            app.mode = UiMode::Browsing;
+            refresh(app, backend).await;
+        }
+        command if label_filter_command(command).is_some() => {
+            let label = label_filter_command(command).expect("label command checked");
+            if label == "any" || label == "none" || label == "clear" {
+                app.filters.labels.clear();
+            } else {
+                app.filters.labels = vec![label];
+            }
+            app.mode = UiMode::Browsing;
+            refresh(app, backend).await;
+        }
         "n" | "new" | "new issue" => open_new_issue(app, backend).await,
         "c" | "comment" if app.selected_issue().is_some() => open_comment_composer(app),
+        "e" | "edit" if app.selected_issue().is_some() => open_issue_editor(app, backend).await,
         "a" | "assign" | "assignees" if app.selected_issue().is_some() => {
             open_assignee_editor(app, backend).await;
         }
@@ -546,6 +601,63 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
             app.set_status(format!("Unknown command: {command}"));
         }
     }
+}
+
+fn complete_command(app: &mut App) {
+    if let Some(suggestion) = command_suggestions(&app.input).into_iter().next() {
+        app.input = suggestion;
+    }
+}
+
+fn command_suggestions(input: &str) -> Vec<String> {
+    let command = normalized_command(input);
+    let commands = [
+        "fs",
+        "fa",
+        "s ",
+        "me",
+        "unassigned",
+        "label ",
+        "sort updated",
+        "sort created",
+        "sort comments",
+        "sort assignee",
+        "edit",
+        "comment",
+        "assign",
+        "labels",
+        "new",
+        "close",
+        "refresh",
+        "quit",
+    ];
+
+    commands
+        .into_iter()
+        .filter(|candidate| command.is_empty() || candidate.starts_with(&command))
+        .take(5)
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn sort_command(command: &str) -> Option<IssueSort> {
+    let value = command.strip_prefix("sort ")?;
+    match value.trim() {
+        "updated" | "update" => Some(IssueSort::Updated),
+        "created" | "create" => Some(IssueSort::Created),
+        "comments" | "comment" => Some(IssueSort::Comments),
+        "assignee" | "assignees" | "who" => Some(IssueSort::Assignee),
+        _ => None,
+    }
+}
+
+fn label_filter_command(command: &str) -> Option<String> {
+    command
+        .strip_prefix("label ")
+        .or_else(|| command.strip_prefix("l "))
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 async fn handle_search_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
@@ -619,6 +731,14 @@ async fn handle_new_issue_key<B: IssueBackend>(app: &mut App, backend: &B, key: 
         }
         KeyCode::Tab => app.next_new_issue_field(),
         KeyCode::BackTab => app.previous_new_issue_field(),
+        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if app.apply_next_issue_template() {
+                app.set_status("Applied issue template");
+            } else {
+                app.flash = Some(FlashKind::Error);
+                app.set_status("No issue templates found");
+            }
+        }
         KeyCode::Char(_) if is_submit_key(key) => submit_new_issue(app, backend, true).await,
         KeyCode::Enter
             if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -644,6 +764,51 @@ async fn handle_new_issue_key<B: IssueBackend>(app: &mut App, backend: &B, key: 
         }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             push_new_issue_char(app, c);
+        }
+        _ => {}
+    }
+}
+
+async fn handle_issue_editor_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.mode = UiMode::Browsing;
+            app.input.clear();
+            app.body_input.clear();
+        }
+        KeyCode::Tab | KeyCode::BackTab => app.next_issue_edit_field(),
+        KeyCode::Char(_) if is_submit_key(key) => save_issue_edit(app, backend).await,
+        KeyCode::Enter
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && app.issue_edit_field == IssueEditField::Body =>
+        {
+            app.body_input.push('\n');
+        }
+        KeyCode::Enter if app.issue_edit_field == IssueEditField::Title => {
+            app.issue_edit_field = IssueEditField::Body;
+        }
+        KeyCode::Enter if app.issue_edit_field == IssueEditField::Body => {
+            app.body_input.push('\n');
+        }
+        KeyCode::Backspace => match app.issue_edit_field {
+            IssueEditField::Title => {
+                app.input.pop();
+            }
+            IssueEditField::Body => {
+                app.body_input.pop();
+            }
+        },
+        KeyCode::Char('j')
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && app.issue_edit_field == IssueEditField::Body =>
+        {
+            app.body_input.push('\n');
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            match app.issue_edit_field {
+                IssueEditField::Title => app.input.push(c),
+                IssueEditField::Body => app.body_input.push(c),
+            }
         }
         _ => {}
     }
@@ -1183,6 +1348,48 @@ async fn submit_new_issue<B: IssueBackend>(app: &mut App, backend: &B, force_cre
     }
 }
 
+async fn save_issue_edit<B: IssueBackend>(app: &mut App, backend: &B) {
+    let title = app.input.trim().to_string();
+    let body = app.body_input.trim().to_string();
+    let Some(issue) = app.selected_issue() else {
+        app.mode = UiMode::Browsing;
+        return;
+    };
+    let number = issue.number;
+
+    if title.is_empty() {
+        app.set_status("Issue title cannot be empty");
+        app.flash = Some(FlashKind::Error);
+        return;
+    }
+
+    app.begin_action(
+        PendingAction::UpdateIssue,
+        format!("Updating issue #{number}"),
+    );
+    match backend.update_issue(&app.repo, number, &title, &body).await {
+        Ok(issue) => {
+            app.input.clear();
+            app.body_input.clear();
+            refresh_after_action(
+                app,
+                backend,
+                Some(number),
+                format!("Updated issue #{number}"),
+                Some(issue),
+                None,
+            )
+            .await;
+        }
+        Err(err) => {
+            app.finish_action();
+            app.mode = UiMode::IssueEditor;
+            app.flash = Some(FlashKind::Error);
+            app.set_status(format!("Issue update failed: {err:#}"));
+        }
+    }
+}
+
 async fn open_new_issue<B: IssueBackend>(app: &mut App, backend: &B) {
     app.start_new_issue();
     app.begin_action(PendingAction::LoadLabels, "Loading repository labels");
@@ -1191,14 +1398,57 @@ async fn open_new_issue<B: IssueBackend>(app: &mut App, backend: &B) {
             app.finish_action();
             app.mode = UiMode::NewIssue;
             app.set_repo_labels(labels);
-            app.set_status("New issue: Tab fields, Enter edits, Ctrl+S creates");
+            let template_status = match backend.list_issue_templates(&app.repo).await {
+                Ok(templates) => {
+                    let count = templates.len();
+                    app.set_repo_issue_templates(templates);
+                    if count == 0 {
+                        "no templates".to_string()
+                    } else {
+                        format!("{count} templates, Ctrl+T applies")
+                    }
+                }
+                Err(_) => {
+                    app.set_repo_issue_templates(Vec::new());
+                    "templates unavailable".to_string()
+                }
+            };
+            app.set_status(format!(
+                "New issue: Tab fields, Ctrl+S creates, {template_status}"
+            ));
         }
         Err(err) => {
             app.finish_action();
             app.mode = UiMode::NewIssue;
             app.set_repo_labels(Vec::new());
+            app.set_repo_issue_templates(Vec::new());
             app.flash = Some(FlashKind::Error);
             app.set_status(format!("Labels unavailable: {err:#}; creating still works"));
+        }
+    }
+}
+
+async fn open_issue_editor<B: IssueBackend>(app: &mut App, backend: &B) {
+    let Some(issue) = app.selected_issue() else {
+        app.mode = UiMode::Browsing;
+        return;
+    };
+    let number = issue.number;
+
+    app.begin_action(PendingAction::Refresh, format!("Loading issue #{number}"));
+    match backend.get_issue(&app.repo, number).await {
+        Ok(detail) => {
+            let body = detail.body.clone();
+            app.finish_action();
+            app.set_selected_detail(detail);
+            app.begin_issue_edit(body);
+            app.set_status("Edit title/body, Tab fields, Ctrl+S saves");
+        }
+        Err(err) => {
+            app.finish_action();
+            app.mode = UiMode::Browsing;
+            app.flash = Some(FlashKind::Error);
+            app.set_status(format!("Issue edit unavailable: {err:#}"));
         }
     }
 }
@@ -1436,7 +1686,7 @@ mod tests {
 
     use crate::{
         app::IssueFilters,
-        domain::{IssueComment, IssueDetail, IssueSummary, Label, User},
+        domain::{IssueComment, IssueDetail, IssueSummary, IssueTemplate, Label, User},
         repo::Repository,
     };
 
@@ -1447,6 +1697,7 @@ mod tests {
         created_body: Mutex<Option<String>>,
         created_labels: Mutex<Vec<String>>,
         commented_body: Mutex<Option<String>>,
+        updated_issue: Mutex<Option<(u64, String, String)>>,
         state_updates: Mutex<Vec<(u64, IssueState)>>,
         assignee_updates: Mutex<Vec<(u64, Vec<String>)>>,
         label_updates: Mutex<Vec<(u64, Vec<String>)>>,
@@ -1454,6 +1705,7 @@ mod tests {
         comments: Mutex<HashMap<u64, Vec<IssueComment>>>,
         labels: Mutex<Vec<Label>>,
         collaborators: Mutex<Vec<User>>,
+        templates: Mutex<Vec<IssueTemplate>>,
     }
 
     fn issue(number: u64, title: &str, state: IssueState, comment_count: u64) -> IssueSummary {
@@ -1464,6 +1716,7 @@ mod tests {
             labels: Vec::new(),
             assignees: Vec::new(),
             author: None,
+            created_at: None,
             updated_at: None,
             comment_count,
         }
@@ -1476,6 +1729,7 @@ mod tests {
             created_body: Mutex::new(None),
             created_labels: Mutex::new(Vec::new()),
             commented_body: Mutex::new(None),
+            updated_issue: Mutex::new(None),
             state_updates: Mutex::new(Vec::new()),
             assignee_updates: Mutex::new(Vec::new()),
             label_updates: Mutex::new(Vec::new()),
@@ -1497,6 +1751,10 @@ mod tests {
                     login: "bob".to_string(),
                 },
             ]),
+            templates: Mutex::new(vec![IssueTemplate {
+                name: "bug report".to_string(),
+                body: "## Expected\n\n## Actual\n".to_string(),
+            }]),
         }
     }
 
@@ -1562,6 +1820,10 @@ mod tests {
             Ok(self.labels.lock().unwrap().clone())
         }
 
+        async fn list_issue_templates(&self, _repo: &Repository) -> Result<Vec<IssueTemplate>> {
+            Ok(self.templates.lock().unwrap().clone())
+        }
+
         async fn list_collaborators(&self, _repo: &Repository) -> Result<Vec<User>> {
             Ok(self.collaborators.lock().unwrap().clone())
         }
@@ -1619,6 +1881,24 @@ mod tests {
                 .find(|issue| issue.number == number)
                 .expect("test issue should exist");
             issue.state = state;
+            Ok(issue.clone())
+        }
+
+        async fn update_issue(
+            &self,
+            _repo: &Repository,
+            number: u64,
+            title: &str,
+            body: &str,
+        ) -> Result<IssueSummary> {
+            *self.updated_issue.lock().unwrap() =
+                Some((number, title.to_string(), body.to_string()));
+            let mut issues = self.issues.lock().unwrap();
+            let issue = issues
+                .iter_mut()
+                .find(|issue| issue.number == number)
+                .expect("test issue should exist");
+            issue.title = title.to_string();
             Ok(issue.clone())
         }
 
@@ -1801,6 +2081,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn colon_command_team_filter_aliases_update_assignee_filter() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::Command;
+        app.input = "me".to_string();
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.filters.assignee, AssigneeFilter::Me);
+
+        app.mode = UiMode::Command;
+        app.input = "unassigned".to_string();
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.filters.assignee, AssigneeFilter::None);
+    }
+
+    #[tokio::test]
+    async fn colon_command_label_and_sort_aliases_update_list_filters() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::Command;
+        app.input = "label bug".to_string();
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.filters.labels, vec!["bug"]);
+
+        app.mode = UiMode::Command;
+        app.input = "sort comments".to_string();
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.filters.sort, IssueSort::Comments);
+    }
+
+    #[tokio::test]
     async fn colon_command_assign_opens_assignee_editor() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/skunkwork".parse().unwrap());
@@ -1844,6 +2180,24 @@ mod tests {
         .await;
 
         assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn tab_completes_command_prefix() {
+        let backend = backend_with_issues(Vec::new());
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::Command;
+        app.input = "sor".to_string();
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.input, "sort updated");
+        assert_eq!(app.mode, UiMode::Command);
     }
 
     #[tokio::test]
@@ -2523,6 +2877,58 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["bug", "docs"]
         );
+        assert_eq!(app.repo_issue_templates[0].name, "bug report");
+    }
+
+    #[tokio::test]
+    async fn new_issue_can_apply_loaded_template() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        open_new_issue(&mut app, &backend).await;
+
+        handle_new_issue_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        assert_eq!(app.input, "bug report");
+        assert_eq!(app.body_input, "## Expected\n\n## Actual\n");
+        assert_eq!(app.status, "Applied issue template");
+    }
+
+    #[tokio::test]
+    async fn edit_issue_updates_title_and_body() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        refresh(&mut app, &backend).await;
+
+        open_issue_editor(&mut app, &backend).await;
+
+        assert_eq!(app.mode, UiMode::IssueEditor);
+        assert_eq!(app.input, "Fix redraw");
+        assert_eq!(app.body_input, "## Body for issue 1");
+
+        app.input = "Fix redraw properly".to_string();
+        app.body_input = "Updated body".to_string();
+        handle_issue_editor_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        assert_eq!(
+            backend.updated_issue.lock().unwrap().as_ref(),
+            Some(&(
+                1,
+                "Fix redraw properly".to_string(),
+                "Updated body".to_string()
+            ))
+        );
+        assert_eq!(app.status, "Updated issue #1");
+        assert_eq!(app.mode, UiMode::Success);
     }
 
     #[tokio::test]

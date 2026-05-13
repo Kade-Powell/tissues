@@ -24,6 +24,7 @@ pub struct IssueSummary {
     pub labels: Vec<Label>,
     pub assignees: Vec<User>,
     pub author: Option<User>,
+    pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
     pub comment_count: u64,
 }
@@ -40,4 +41,10 @@ pub struct IssueDetail {
     pub summary: IssueSummary,
     pub body: String,
     pub comments: Vec<IssueComment>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssueTemplate {
+    pub name: String,
+    pub body: String,
 }

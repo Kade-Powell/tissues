@@ -6,9 +6,11 @@ Worktrack is a Rust terminal app for working through GitHub issues in one reposi
 
 - Browse open, closed, or all issues for a single repository.
 - Filter by issue state, assignee, labels, and search text.
+- Sort by updated time, created time, comment count, or assignee.
 - View the selected issue body and comments in a collapsible tree.
 - Render issue descriptions and comments as Markdown in the detail pane.
-- Create new issues.
+- Create new issues, optionally starting from Markdown issue templates in `.github/ISSUE_TEMPLATE`.
+- Edit issue title and body inline.
 - Add comments to existing issues.
 - Assign issues to yourself, a collaborator, or nobody.
 - Edit labels on existing issues.
@@ -21,6 +23,7 @@ Worktrack is a Rust terminal app for working through GitHub issues in one reposi
 - Notify when new comments mention your authenticated GitHub username.
 - Animate newly arrived issues in the list with a temporary `NEW` row highlight.
 - Animate mentioned issues in the list with a temporary `PING` row highlight.
+- Show issue author, assignees, relative age, mention badges, and stale badges in the list.
 - Show a confirmation after successful writes once issue state has reloaded.
 - Show compact loading indicators for routine actions with contained TachyonFX movement.
 - Use a simple TachyonFX coalesce effect for loading and completion feedback.
@@ -65,11 +68,13 @@ cargo run
 - `k` / `Up`: move to the previous issue.
 - `Enter`: collapse or expand comments in the detail tree.
 - `:`: open command mode at the bottom of the screen.
+- `Tab`: complete the highlighted command suggestion while in command mode.
 - `Space`: toggle users while assigning, then `Enter` submits all selected assignees.
 - `n`: create a new issue with separate title, Markdown body, and labels fields.
 - `x`: close the selected open issue with a required comment, or reopen a closed issue after confirmation.
 - `Tab` / `Shift+Tab`: move between new issue fields.
 - `Enter`: move from title to body, insert body newlines, or add the current label.
+- `Ctrl+T`: apply the next available issue template while creating a new issue.
 - `Ctrl+S`: submit a comment, close with comment, or create the issue from any new issue field.
 - `Ctrl+Enter` or `Ctrl+J`: insert a newline while writing an issue body or comment.
 - `Esc`: cancel the current input or modal.
@@ -82,8 +87,13 @@ Useful commands:
 - `:fs` or `:filter state`: cycle state filter: open, closed, all.
 - `:fa` or `:filter assignee`: choose an assignee filter: any, me, unassigned, or a collaborator.
 - `:s <text>` or `:search <text>`: search issue titles.
+- `:me`: filter to issues assigned to you.
+- `:unassigned`: filter to unassigned issues.
+- `:label <name>`: filter to a label. Use `:label any` to clear label filters.
+- `:sort`, `:sort updated`, `:sort created`, `:sort comments`, or `:sort assignee`: change issue ordering.
 - `:assign`: assign the selected issue to yourself, nobody, or collaborators.
 - `:labels`: edit labels on the selected issue.
+- `:edit`: edit the selected issue title and Markdown body.
 - `:comment`: comment on the selected issue.
 - `:new`: create a new issue.
 - `:close`: close or reopen the selected issue.

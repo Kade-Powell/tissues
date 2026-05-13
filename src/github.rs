@@ -5,8 +5,8 @@ use color_eyre::eyre::{Result, WrapErr, eyre};
 use octocrab::{Octocrab, models, params};
 
 use crate::{
-    app::{AssigneeFilter, IssueFilters, IssueStateFilter},
-    domain::{IssueComment, IssueDetail, IssueState, IssueSummary, Label, User},
+    app::{AssigneeFilter, IssueFilters, IssueSort, IssueStateFilter},
+    domain::{IssueComment, IssueDetail, IssueState, IssueSummary, IssueTemplate, Label, User},
     repo::Repository,
 };
 
@@ -21,6 +21,7 @@ pub trait IssueBackend {
     async fn get_issue(&self, repo: &Repository, number: u64) -> Result<IssueDetail>;
     async fn list_comments(&self, repo: &Repository, number: u64) -> Result<Vec<IssueComment>>;
     async fn list_labels(&self, repo: &Repository) -> Result<Vec<Label>>;
+    async fn list_issue_templates(&self, repo: &Repository) -> Result<Vec<IssueTemplate>>;
     async fn list_collaborators(&self, repo: &Repository) -> Result<Vec<User>>;
     async fn create_issue(
         &self,
@@ -36,6 +37,13 @@ pub trait IssueBackend {
         repo: &Repository,
         number: u64,
         state: IssueState,
+    ) -> Result<IssueSummary>;
+    async fn update_issue(
+        &self,
+        repo: &Repository,
+        number: u64,
+        title: &str,
+        body: &str,
     ) -> Result<IssueSummary>;
     async fn set_issue_assignees(
         &self,
@@ -78,6 +86,27 @@ impl GitHubClient {
             .wrap_err("failed to load authenticated GitHub user")?;
         Ok(user.login)
     }
+
+    async fn load_template_body(
+        &self,
+        repo: &Repository,
+        path: impl Into<String>,
+    ) -> Option<String> {
+        self.crab
+            .repos(&repo.owner, &repo.name)
+            .get_content()
+            .path(path)
+            .send()
+            .await
+            .ok()
+            .and_then(|mut content| {
+                content
+                    .take_items()
+                    .into_iter()
+                    .next()
+                    .and_then(|item| item.decoded_content())
+            })
+    }
 }
 
 #[async_trait]
@@ -103,7 +132,7 @@ impl IssueBackend for GitHubClient {
         let mut request = handler
             .list()
             .state(to_param_state(&filters.state))
-            .sort(params::issues::Sort::Updated)
+            .sort(to_param_sort(&filters.sort))
             .direction(params::Direction::Descending)
             .per_page(100);
 
@@ -191,6 +220,48 @@ impl IssueBackend for GitHubClient {
         Ok(labels)
     }
 
+    async fn list_issue_templates(&self, repo: &Repository) -> Result<Vec<IssueTemplate>> {
+        let mut templates = Vec::new();
+
+        if let Some(content) = self
+            .load_template_body(repo, ".github/ISSUE_TEMPLATE.md")
+            .await
+        {
+            templates.push(IssueTemplate {
+                name: "Issue template".to_string(),
+                body: content,
+            });
+        }
+
+        if let Ok(mut directory) = self
+            .crab
+            .repos(&repo.owner, &repo.name)
+            .get_content()
+            .path(".github/ISSUE_TEMPLATE")
+            .send()
+            .await
+        {
+            let items = directory.take_items();
+            for item in items
+                .into_iter()
+                .filter(|item| item.r#type == "file")
+                .filter(|item| item.name.ends_with(".md") || item.name.ends_with(".markdown"))
+            {
+                let name = item.name.clone();
+                if let Some(body) = self.load_template_body(repo, item.path).await {
+                    templates.push(IssueTemplate {
+                        name: template_name(&name),
+                        body,
+                    });
+                }
+            }
+        }
+
+        templates.sort_by(|left, right| left.name.cmp(&right.name));
+        templates.dedup_by(|left, right| left.name == right.name);
+        Ok(templates)
+    }
+
     async fn list_collaborators(&self, repo: &Repository) -> Result<Vec<User>> {
         let page = self
             .crab
@@ -272,6 +343,26 @@ impl IssueBackend for GitHubClient {
         Ok(issue_summary_from_octocrab(issue))
     }
 
+    async fn update_issue(
+        &self,
+        repo: &Repository,
+        number: u64,
+        title: &str,
+        body: &str,
+    ) -> Result<IssueSummary> {
+        let issue = self
+            .crab
+            .issues(&repo.owner, &repo.name)
+            .update(number)
+            .title(title)
+            .body(body)
+            .send()
+            .await
+            .wrap_err_with(|| format!("failed to update issue #{number}"))?;
+
+        Ok(issue_summary_from_octocrab(issue))
+    }
+
     async fn set_issue_assignees(
         &self,
         repo: &Repository,
@@ -342,6 +433,22 @@ fn to_param_state(state: &IssueStateFilter) -> params::State {
     }
 }
 
+fn to_param_sort(sort: &IssueSort) -> params::issues::Sort {
+    match sort {
+        IssueSort::Updated => params::issues::Sort::Updated,
+        IssueSort::Created => params::issues::Sort::Created,
+        IssueSort::Comments => params::issues::Sort::Comments,
+        IssueSort::Assignee => params::issues::Sort::Updated,
+    }
+}
+
+fn template_name(file_name: &str) -> String {
+    file_name
+        .trim_end_matches(".markdown")
+        .trim_end_matches(".md")
+        .replace(['_', '-'], " ")
+}
+
 fn issue_summary_from_octocrab(issue: models::issues::Issue) -> IssueSummary {
     IssueSummary {
         number: issue.number,
@@ -364,6 +471,7 @@ fn issue_summary_from_octocrab(issue: models::issues::Issue) -> IssueSummary {
         author: Some(User {
             login: issue.user.login,
         }),
+        created_at: Some(issue.created_at),
         updated_at: Some(issue.updated_at),
         comment_count: issue.comments.into(),
     }

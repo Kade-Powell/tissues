@@ -1,5 +1,6 @@
 use std::time::Duration as StdDuration;
 
+use chrono::Utc;
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Margin, Rect},
@@ -17,8 +18,8 @@ use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::{
     app::{
-        App, AssigneeChoice, AssigneeFilter, FlashKind, IssueHighlightKind, IssueStateFilter,
-        NewIssueField, PendingAction, UiMode,
+        App, AssigneeChoice, AssigneeFilter, FlashKind, IssueEditField, IssueHighlightKind,
+        IssueStateFilter, NewIssueField, PendingAction, UiMode,
     },
     domain::{IssueComment, IssueDetail, IssueState, IssueSummary},
 };
@@ -27,6 +28,7 @@ const ISSUE_LIST_PERCENT: u16 = 40;
 const DETAIL_PANEL_PERCENT: u16 = 60;
 const COMMENT_PRIMARY_LABEL: &str = "Submit";
 const NEW_ISSUE_PRIMARY_LABEL: &str = "Create";
+const ISSUE_EDIT_PRIMARY_LABEL: &str = "Save";
 const ASSIGNEE_FILTER_PRIMARY_LABEL: &str = "Apply";
 const ASSIGNEE_EDITOR_PRIMARY_LABEL: &str = "Assign";
 const ISSUE_LABEL_PRIMARY_LABEL: &str = "Save";
@@ -63,6 +65,7 @@ pub enum MouseTarget {
     IssueRow(usize),
     DetailPanel,
     NewIssueField(NewIssueField),
+    IssueEditField(IssueEditField),
     PickerItem(usize),
     PrimaryAction,
     CancelAction,
@@ -192,6 +195,7 @@ pub fn effect_area(app: &App, area: Rect) -> Rect {
         | UiMode::CommentComposer
         | UiMode::CloseComment
         | UiMode::NewIssue
+        | UiMode::IssueEditor
         | UiMode::AssigneeFilter
         | UiMode::AssigneeEditor
         | UiMode::IssueLabelEditor
@@ -245,8 +249,9 @@ fn render_filters(app: &App, area: Rect, buffer: &mut Buffer) {
     };
     let assignee = app.filters.assignee.label();
     let filters = format!(
-        "[State: {state}] [Assignee: {assignee}] [Labels: {labels}] [Search: {}]",
-        app.filters.query
+        "[State: {state}] [Assignee: {assignee}] [Labels: {labels}] [Search: {}] [Sort: {}]",
+        app.filters.query,
+        app.filters.sort.label()
     );
 
     Paragraph::new(filters)
@@ -270,13 +275,14 @@ fn render_body(app: &App, area: Rect, buffer: &mut Buffer) {
         .split(area);
 
     let widths = [
-        Constraint::Length(7),
         Constraint::Length(6),
+        Constraint::Length(5),
         Constraint::Length(9),
-        Constraint::Length(7),
-        Constraint::Min(6),
+        Constraint::Length(4),
+        Constraint::Length(5),
+        Constraint::Min(12),
     ];
-    let header = Row::new(["Number", "State", "Who", "Labels", "Title"])
+    let header = Row::new(["Number", "State", "Team", "Age", "Tags", "Title"])
         .style(Style::new().fg(NOTICE_ACCENT).add_modifier(Modifier::BOLD))
         .bottom_margin(1);
     let rows = app.issues.iter().map(|issue| {
@@ -324,27 +330,48 @@ fn issue_row(
             .collect::<Vec<_>>()
             .join(",")
     };
+    let author = issue
+        .author
+        .as_ref()
+        .map(|author| author.login.as_str())
+        .unwrap_or("unknown");
     let assignees = if issue.assignees.is_empty() {
-        "-".to_string()
+        format!("{author}>-")
     } else {
-        issue
+        let assignees = issue
             .assignees
             .iter()
             .take(2)
             .map(|assignee| assignee.login.as_str())
             .collect::<Vec<_>>()
-            .join(",")
+            .join(",");
+        format!("{author}>{assignees}")
     };
+    let updated = issue
+        .updated_at
+        .map(age_label)
+        .unwrap_or_else(|| "-".to_string());
+    let stale = is_stale(issue);
 
-    let title = if let Some(kind) = highlight.as_ref() {
-        let badge = match kind {
-            IssueHighlightKind::New => "NEW ",
-            IssueHighlightKind::Mention => "PING ",
+    let title = if highlight.is_some() || stale {
+        let stale_badge = stale.then_some("STALE ");
+        let badge = match highlight.as_ref() {
+            Some(IssueHighlightKind::New) => Some("NEW "),
+            Some(IssueHighlightKind::Mention) => Some("PING "),
+            None => None,
         };
-        Cell::from(Line::from(vec![
-            Span::styled(badge, Style::new().fg(NOTICE_ACCENT).bold()),
-            Span::styled(issue.title.clone(), surface_style()),
-        ]))
+        let mut spans = Vec::new();
+        if let Some(badge) = badge {
+            spans.push(Span::styled(badge, Style::new().fg(NOTICE_ACCENT).bold()));
+        }
+        if let Some(stale_badge) = stale_badge {
+            spans.push(Span::styled(
+                stale_badge,
+                Style::new().fg(WARNING_ACCENT).bold(),
+            ));
+        }
+        spans.push(Span::styled(issue.title.clone(), surface_style()));
+        Cell::from(Line::from(spans))
     } else {
         Cell::from(issue.title.clone())
     };
@@ -353,6 +380,11 @@ fn issue_row(
         Cell::from(format!("#{}", issue.number)).style(Style::new().fg(ACTION_ACCENT)),
         Cell::from(state).style(state_style(issue.state.clone())),
         Cell::from(assignees).style(Style::new().fg(DETAIL_ACCENT)),
+        Cell::from(updated).style(if stale {
+            Style::new().fg(WARNING_ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(MUTED_FG)
+        }),
         Cell::from(labels).style(Style::new().fg(LABEL_ACCENT)),
         title,
     ])
@@ -378,6 +410,24 @@ fn issue_row(
     } else {
         row
     }
+}
+
+fn age_label(updated_at: chrono::DateTime<Utc>) -> String {
+    let age = Utc::now().signed_duration_since(updated_at);
+    if age.num_days() >= 1 {
+        format!("{}d", age.num_days())
+    } else if age.num_hours() >= 1 {
+        format!("{}h", age.num_hours())
+    } else {
+        format!("{}m", age.num_minutes().max(0))
+    }
+}
+
+fn is_stale(issue: &IssueSummary) -> bool {
+    issue
+        .updated_at
+        .map(|updated_at| Utc::now().signed_duration_since(updated_at).num_days() >= 14)
+        .unwrap_or(false)
 }
 
 fn state_style(state: IssueState) -> Style {
@@ -407,14 +457,22 @@ fn render_detail(app: &App, area: Rect, buffer: &mut Buffer) {
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "{}\n\nassignees: {}\nlabels: {}\ncomments: {}\n\nPress c to comment, A to assign, l to label, x to close/reopen.",
+            "{}\n\nauthor: {}\nassignees: {}\nlabels: {}\ncomments: {}\nupdated: {}\n\nUse :comment, :assign, :labels, :edit, or x close/reopen.",
             issue.title,
+            issue
+                .author
+                .as_ref()
+                .map_or("unknown", |author| author.login.as_str()),
             empty_label(&assignees),
             empty_label(&labels),
-            issue.comment_count
+            issue.comment_count,
+            issue
+                .updated_at
+                .map(age_label)
+                .unwrap_or_else(|| "-".to_string())
         )
     } else {
-        "No issues loaded. Press r to refresh.".to_string()
+        "No issues loaded. Use :refresh.".to_string()
     };
 
     Paragraph::new(detail)
@@ -518,7 +576,10 @@ fn footer_shortcuts(app: &App) -> &'static str {
         UiMode::CommentComposer => "Ctrl+S submit | Enter newline | Ctrl+J newline | Esc cancel",
         UiMode::CloseComment => "Ctrl+S close | Enter newline | Ctrl+J newline | Esc cancel",
         UiMode::NewIssue => {
-            "Tab/Shift+Tab fields | Ctrl+S create | Enter edit/add label | Ctrl+J newline | Esc cancel"
+            "Tab fields | Ctrl+T template | Ctrl+S create | Enter edit/add label | Ctrl+J newline | Esc cancel"
+        }
+        UiMode::IssueEditor => {
+            "Tab fields | Ctrl+S save | Enter edit/newline | Ctrl+J newline | Esc cancel"
         }
         UiMode::AssigneeFilter => "Enter apply filter | type search | j/k move | Esc cancel",
         UiMode::AssigneeEditor => {
@@ -541,6 +602,7 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         UiMode::CommentComposer => Some("Comment"),
         UiMode::CloseComment => Some("Close Issue"),
         UiMode::NewIssue => Some("New Issue"),
+        UiMode::IssueEditor => Some("Edit Issue"),
         UiMode::AssigneeFilter => Some("Assignee Filter"),
         UiMode::AssigneeEditor => Some("Assign Issue"),
         UiMode::IssueLabelEditor => Some("Edit Labels"),
@@ -552,7 +614,7 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
     };
 
     if let Some(title) = title {
-        let popup = if app.mode == UiMode::NewIssue {
+        let popup = if matches!(app.mode, UiMode::NewIssue | UiMode::IssueEditor) {
             centered_rect(72, 70, area)
         } else {
             centered_rect(72, 55, area)
@@ -560,6 +622,7 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         Clear.render(popup, buffer);
         match app.mode {
             UiMode::NewIssue => render_new_issue_editor(app, popup, buffer),
+            UiMode::IssueEditor => render_issue_editor(app, popup, buffer),
             UiMode::AssigneeFilter | UiMode::AssigneeEditor => {
                 render_assignee_picker(app, title, popup, buffer)
             }
@@ -586,6 +649,10 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
 }
 
 fn render_command_bar(app: &App, area: Rect, buffer: &mut Buffer) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Length(1)])
+        .split(area);
     let mut textarea = textarea_at_end(vec![command_prompt_line(&app.input)]);
     textarea.set_block(modal_block(
         "Command  :fs filter state  :fa filter assignee  :s <text> search  :assign  :labels  :comment",
@@ -593,12 +660,50 @@ fn render_command_bar(app: &App, area: Rect, buffer: &mut Buffer) {
     ));
     textarea.set_style(modal_style());
     set_visible_cursor(&mut textarea);
-    (&textarea).render(area, buffer);
+    (&textarea).render(rows[0], buffer);
+    Paragraph::new(command_suggestions_line(&app.input))
+        .style(Style::new().fg(MUTED_FG))
+        .render(rows[1], buffer);
 }
 
 fn command_prompt_line(input: &str) -> String {
     let command = input.strip_prefix(':').unwrap_or(input);
     format!(":{command}")
+}
+
+fn command_suggestions_line(input: &str) -> String {
+    let command = input.trim().trim_start_matches(':').trim().to_lowercase();
+    let suggestions = [
+        "fs",
+        "fa",
+        "s ",
+        "me",
+        "unassigned",
+        "label ",
+        "sort updated",
+        "sort created",
+        "sort comments",
+        "sort assignee",
+        "edit",
+        "comment",
+        "assign",
+        "labels",
+        "new",
+        "close",
+        "refresh",
+        "quit",
+    ]
+    .into_iter()
+    .filter(|candidate| command.is_empty() || candidate.starts_with(&command))
+    .take(5)
+    .collect::<Vec<_>>()
+    .join("  ");
+
+    if suggestions.is_empty() {
+        "no matching commands".to_string()
+    } else {
+        format!("Tab completes: {suggestions}")
+    }
 }
 
 fn render_loading_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
@@ -732,10 +837,12 @@ fn pending_action_label(action: &PendingAction) -> &'static str {
         PendingAction::Refresh => "Refreshing issues",
         PendingAction::LoadLabels => "Loading labels",
         PendingAction::LoadCollaborators => "Loading collaborators",
+        PendingAction::LoadTemplates => "Loading templates",
         PendingAction::CreateIssue => "Creating issue",
         PendingAction::AddComment => "Adding comment",
         PendingAction::CloseIssue => "Closing issue",
         PendingAction::ReopenIssue => "Reopening issue",
+        PendingAction::UpdateIssue => "Updating issue",
         PendingAction::UpdateAssignees => "Updating assignees",
         PendingAction::UpdateLabels => "Updating labels",
     }
@@ -793,7 +900,7 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(6),
-            Constraint::Length(6),
+            Constraint::Length(7),
             Constraint::Length(3),
         ])
         .split(inner.inner(Margin {
@@ -861,6 +968,7 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
         Line::from(format!("selected: {selected}")),
         input_line,
         Line::from(format!("suggestions: {suggestions}")),
+        Line::from(format!("templates: {}", template_summary(app))),
     ])
     .block(modal_block("Labels", LABEL_ACCENT))
     .style(field_style(
@@ -872,6 +980,59 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
     .render(rows[2], buffer);
 
     render_action_buttons(NEW_ISSUE_PRIMARY_LABEL, rows[3], buffer);
+}
+
+fn render_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
+    let block = modal_block("Edit Issue", ISSUE_ACCENT);
+    let inner = block.inner(area);
+    block.render(area, buffer);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(6),
+            Constraint::Length(3),
+        ])
+        .split(inner.inner(Margin {
+            horizontal: 1,
+            vertical: 0,
+        }));
+
+    let mut title = textarea_at_end(input_lines(&app.input));
+    title.set_block(modal_block("Title", TITLE_ACCENT));
+    title.set_style(modal_style());
+    if app.issue_edit_field == IssueEditField::Title {
+        set_visible_cursor(&mut title);
+    } else {
+        hide_cursor(&mut title);
+    }
+    (&title).render(rows[0], buffer);
+
+    let mut body = textarea_at_end(input_lines(&app.body_input));
+    body.set_block(modal_block("Body (Markdown)", ACTION_ACCENT));
+    body.set_style(modal_style());
+    if app.issue_edit_field == IssueEditField::Body {
+        set_visible_cursor(&mut body);
+    } else {
+        hide_cursor(&mut body);
+    }
+    (&body).render(rows[1], buffer);
+
+    render_action_buttons(ISSUE_EDIT_PRIMARY_LABEL, rows[2], buffer);
+}
+
+fn template_summary(app: &App) -> String {
+    if app.repo_issue_templates.is_empty() {
+        return "none".to_string();
+    }
+
+    app.repo_issue_templates
+        .iter()
+        .take(3)
+        .map(|template| template.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn render_action_buttons(primary: &'static str, area: Rect, buffer: &mut Buffer) {
@@ -978,6 +1139,7 @@ pub fn mouse_target(app: &App, area: Rect, column: u16, row: u16) -> Option<Mous
             point,
         ),
         UiMode::NewIssue => new_issue_mouse_target(area, point),
+        UiMode::IssueEditor => issue_editor_mouse_target(area, point),
         UiMode::AssigneeFilter | UiMode::AssigneeEditor => {
             let item_count = if app.mode == UiMode::AssigneeFilter {
                 app.assignee_filter_choices().len()
@@ -1029,6 +1191,18 @@ fn new_issue_mouse_target(area: Rect, point: Rect) -> Option<MouseTarget> {
     }
 
     action_mouse_target(rows[3], NEW_ISSUE_PRIMARY_LABEL, point)
+}
+
+fn issue_editor_mouse_target(area: Rect, point: Rect) -> Option<MouseTarget> {
+    let rows = issue_editor_rows(area);
+    if intersects(point, rows[0]) {
+        return Some(MouseTarget::IssueEditField(IssueEditField::Title));
+    }
+    if intersects(point, rows[1]) {
+        return Some(MouseTarget::IssueEditField(IssueEditField::Body));
+    }
+
+    action_mouse_target(rows[2], ISSUE_EDIT_PRIMARY_LABEL, point)
 }
 
 fn picker_mouse_target(
@@ -1083,7 +1257,7 @@ fn command_mode_rows(area: Rect) -> std::rc::Rc<[Rect]> {
             Constraint::Length(1),
             Constraint::Length(3),
             Constraint::Min(8),
-            Constraint::Length(3),
+            Constraint::Length(4),
             Constraint::Length(2),
         ])
         .split(area)
@@ -1127,7 +1301,28 @@ fn new_issue_rows(area: Rect) -> std::rc::Rc<[Rect]> {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(6),
-            Constraint::Length(6),
+            Constraint::Length(7),
+            Constraint::Length(3),
+        ])
+        .split(inner)
+}
+
+fn issue_editor_rows(area: Rect) -> std::rc::Rc<[Rect]> {
+    let popup = centered_rect(72, 70, area);
+    let inner = popup.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let inner = inner.inner(Margin {
+        horizontal: 1,
+        vertical: 0,
+    });
+
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(6),
             Constraint::Length(3),
         ])
         .split(inner)
@@ -1206,8 +1401,9 @@ mod tests {
     use super::*;
     use crate::{
         app::App,
-        domain::{IssueState, IssueSummary, Label},
+        domain::{IssueState, IssueSummary, IssueTemplate, Label, User},
     };
+    use chrono::Duration;
     use ratatui::{buffer::Buffer, layout::Rect};
 
     fn issue(number: u64, title: &str, state: IssueState, labels: &[&str]) -> IssueSummary {
@@ -1223,6 +1419,7 @@ mod tests {
                 .collect(),
             assignees: Vec::new(),
             author: None,
+            created_at: None,
             updated_at: None,
             comment_count: 0,
         }
@@ -1247,8 +1444,10 @@ mod tests {
         assert!(rendered.contains("Search: redraw"));
         assert!(rendered.contains("Number"));
         assert!(rendered.contains("State"));
-        assert!(rendered.contains("Who"));
-        assert!(rendered.contains("Labels"));
+        assert!(rendered.contains("Team"));
+        assert!(rendered.contains("Age"));
+        assert!(rendered.contains("Sort: updated"));
+        assert!(rendered.contains("Tags"));
         assert!(rendered.contains("Title"));
         assert!(rendered.contains("#122"));
         assert!(rendered.contains("open"));
@@ -1320,7 +1519,7 @@ mod tests {
     fn renders_command_prompt_above_footer() {
         let mut app = App::new("owner/skunkwork".parse().unwrap());
         app.mode = UiMode::Command;
-        app.input = "filter state".to_string();
+        app.input = "sor".to_string();
 
         let area = Rect::new(0, 0, 120, 28);
         let mut buffer = Buffer::empty(area);
@@ -1329,10 +1528,28 @@ mod tests {
         let command_area = command_bar_area(area);
 
         assert!(rendered.contains("Command"));
-        assert!(rendered.contains(":filter state"));
+        assert!(rendered.contains(":sor"));
+        assert!(rendered.contains("sort updated"));
         assert!(rendered.contains("Enter run"));
-        assert_eq!(command_area.height, 3);
+        assert_eq!(command_area.height, 4);
         assert!(command_area.y > area.height / 2);
+    }
+
+    #[test]
+    fn renders_issue_editor_with_title_and_body_fields() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::IssueEditor;
+        app.input = "Fix redraw".to_string();
+        app.body_input = "## Body".to_string();
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 120, 32));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Edit Issue"));
+        assert!(rendered.contains("Fix redraw"));
+        assert!(rendered.contains("## Body"));
+        assert!(rendered.contains("Save Ctrl+S"));
     }
 
     #[test]
@@ -1344,7 +1561,7 @@ mod tests {
         let target = effect_area(&app, area);
 
         assert_eq!(target, command_bar_area(area));
-        assert_eq!(target.height, 3);
+        assert_eq!(target.height, 4);
         assert!(target.y > area.height / 2);
     }
 
@@ -1382,6 +1599,28 @@ mod tests {
         assert!(rendered.contains("#130"));
         assert!(rendered.contains("PING"));
         assert!(rendered.contains("Ping"));
+    }
+
+    #[test]
+    fn renders_team_metadata_and_stale_badge() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut stale = issue(130, "Needs owner", IssueState::Open, &[]);
+        stale.author = Some(User {
+            login: "alice".to_string(),
+        });
+        stale.assignees = vec![User {
+            login: "bob".to_string(),
+        }];
+        stale.updated_at = Some(Utc::now() - Duration::days(30));
+        app.set_issues(vec![stale]);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 140, 24));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("alice>bob"));
+        assert!(rendered.contains("STALE"));
+        assert!(rendered.contains("30d"));
     }
 
     #[test]
@@ -1439,6 +1678,27 @@ mod tests {
         assert_eq!(
             mouse_target(&app, area, rows[3].x + 22, rows[3].y + 1),
             Some(MouseTarget::CancelAction)
+        );
+    }
+
+    #[test]
+    fn mouse_targets_issue_editor_fields_and_buttons() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::IssueEditor;
+        let area = Rect::new(0, 0, 100, 30);
+        let rows = issue_editor_rows(area);
+
+        assert_eq!(
+            mouse_target(&app, area, rows[0].x + 1, rows[0].y + 1),
+            Some(MouseTarget::IssueEditField(IssueEditField::Title))
+        );
+        assert_eq!(
+            mouse_target(&app, area, rows[1].x + 1, rows[1].y + 1),
+            Some(MouseTarget::IssueEditField(IssueEditField::Body))
+        );
+        assert_eq!(
+            mouse_target(&app, area, rows[2].x + 2, rows[2].y + 1),
+            Some(MouseTarget::PrimaryAction)
         );
     }
 
@@ -1516,6 +1776,10 @@ mod tests {
                 name: "docs".to_string(),
             },
         ]);
+        app.set_repo_issue_templates(vec![IssueTemplate {
+            name: "bug report".to_string(),
+            body: "template".to_string(),
+        }]);
         app.editing_issue_labels = vec!["bug".to_string()];
 
         let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
@@ -1632,6 +1896,10 @@ mod tests {
                 name: "docs".to_string(),
             },
         ]);
+        app.set_repo_issue_templates(vec![IssueTemplate {
+            name: "bug report".to_string(),
+            body: "template".to_string(),
+        }]);
 
         let mut buffer = Buffer::empty(Rect::new(0, 0, 110, 32));
         render(&app, buffer.area, &mut buffer);
@@ -1646,6 +1914,7 @@ mod tests {
         assert!(rendered.contains("selected: bug"));
         assert!(rendered.contains("input: do"));
         assert!(rendered.contains("suggestions: docs"));
+        assert_eq!(template_summary(&app), "bug report");
         assert!(rendered.contains("Create Ctrl+S"));
         assert!(rendered.contains("Cancel Esc"));
     }
