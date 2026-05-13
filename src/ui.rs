@@ -19,6 +19,9 @@ use crate::{
     domain::{IssueComment, IssueDetail, IssueState, IssueSummary},
 };
 
+const ISSUE_LIST_PERCENT: u16 = 40;
+const DETAIL_PANEL_PERCENT: u16 = 60;
+
 #[derive(Default)]
 pub struct WorktrackEffects {
     manager: EffectManager<String>,
@@ -154,14 +157,17 @@ fn render_filters(app: &App, area: Rect, buffer: &mut Buffer) {
 fn render_body(app: &App, area: Rect, buffer: &mut Buffer) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .constraints([
+            Constraint::Percentage(ISSUE_LIST_PERCENT),
+            Constraint::Percentage(DETAIL_PANEL_PERCENT),
+        ])
         .split(area);
 
     let widths = [
-        Constraint::Length(8),
-        Constraint::Length(9),
-        Constraint::Length(16),
-        Constraint::Min(20),
+        Constraint::Length(7),
+        Constraint::Length(7),
+        Constraint::Length(10),
+        Constraint::Min(10),
     ];
     let header = Row::new(["Number", "State", "Labels", "Title"])
         .style(Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
@@ -609,6 +615,20 @@ mod tests {
         assert!(rendered.contains("c comment"));
         assert!(rendered.contains("n new issue"));
         assert!(rendered.contains("x close/reopen"));
+    }
+
+    #[test]
+    fn detail_panel_is_wider_than_issue_list() {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(ISSUE_LIST_PERCENT),
+                Constraint::Percentage(DETAIL_PANEL_PERCENT),
+            ])
+            .split(Rect::new(0, 0, 100, 20));
+
+        assert!(columns[0].width < columns[1].width);
+        assert_eq!(columns[0].width + columns[1].width, 100);
     }
 
     #[test]
