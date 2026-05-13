@@ -354,7 +354,7 @@ async fn handle_mouse_target<B: IssueBackend>(app: &mut App, backend: &B, target
             UiMode::CloseComment => close_issue_with_comment(app, backend).await,
             UiMode::NewIssue => submit_new_issue(app, backend, true).await,
             UiMode::AssigneeFilter | UiMode::AssigneeEditor => {
-                apply_selected_assignee_choice(app, backend).await;
+                submit_assignee_picker(app, backend).await;
             }
             UiMode::IssueLabelEditor => save_issue_labels(app, backend).await,
             UiMode::ConfirmClose => toggle_issue_state(app, backend).await,
@@ -366,7 +366,11 @@ async fn handle_mouse_target<B: IssueBackend>(app: &mut App, backend: &B, target
             app.picker_index = index;
             match app.mode {
                 UiMode::AssigneeFilter | UiMode::AssigneeEditor => {
-                    apply_selected_assignee_choice(app, backend).await;
+                    if app.mode == UiMode::AssigneeFilter {
+                        apply_selected_assignee_filter(app, backend).await;
+                    } else {
+                        toggle_selected_assignee(app);
+                    }
                 }
                 UiMode::IssueLabelEditor => {
                     if let Some(label) = app.issue_label_choices().get(index).cloned() {
@@ -408,6 +412,7 @@ fn cancel_active_screen(app: &mut App) {
         UiMode::AssigneeFilter | UiMode::AssigneeEditor | UiMode::IssueLabelEditor => {
             app.mode = UiMode::Browsing;
             app.input.clear();
+            app.editing_assignees.clear();
             app.editing_issue_labels.clear();
         }
         UiMode::Success | UiMode::Error | UiMode::ConfirmClose => {
@@ -534,7 +539,10 @@ async fn handle_assignee_picker_key<B: IssueBackend>(app: &mut App, backend: &B,
             app.picker_index = 0;
         }
         KeyCode::Enter => {
-            apply_selected_assignee_choice(app, backend).await;
+            submit_assignee_picker(app, backend).await;
+        }
+        KeyCode::Char(' ') if app.mode == UiMode::AssigneeEditor => {
+            toggle_selected_assignee(app);
         }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.input.push(c);
@@ -544,18 +552,37 @@ async fn handle_assignee_picker_key<B: IssueBackend>(app: &mut App, backend: &B,
     }
 }
 
-async fn apply_selected_assignee_choice<B: IssueBackend>(app: &mut App, backend: &B) {
-    let choices = if app.mode == UiMode::AssigneeFilter {
-        app.assignee_filter_choices()
-    } else {
-        app.assignee_assignment_choices()
-    };
+async fn submit_assignee_picker<B: IssueBackend>(app: &mut App, backend: &B) {
+    match app.mode {
+        UiMode::AssigneeFilter => apply_selected_assignee_filter(app, backend).await,
+        UiMode::AssigneeEditor => save_assignee_assignment(app, backend).await,
+        _ => {}
+    }
+}
+
+async fn apply_selected_assignee_filter<B: IssueBackend>(app: &mut App, backend: &B) {
+    let choices = app.assignee_filter_choices();
 
     if let Some(choice) = choices.get(app.picker_index).cloned() {
-        match app.mode {
-            UiMode::AssigneeFilter => apply_assignee_filter(app, backend, choice).await,
-            UiMode::AssigneeEditor => apply_assignee_assignment(app, backend, choice).await,
-            _ => {}
+        apply_assignee_filter(app, backend, choice).await;
+    }
+}
+
+fn toggle_selected_assignee(app: &mut App) {
+    let choices = app.assignee_assignment_choices();
+    if let Some(choice) = choices.get(app.picker_index).cloned() {
+        match choice {
+            AssigneeChoice::Unassigned => app.clear_editing_assignees(),
+            AssigneeChoice::Me => {
+                if let Some(login) = app.viewer_login.clone() {
+                    app.toggle_editing_assignee(&login);
+                } else {
+                    app.flash = Some(FlashKind::Error);
+                    app.set_status("Authenticated GitHub login is unavailable");
+                }
+            }
+            AssigneeChoice::User(login) => app.toggle_editing_assignee(&login),
+            AssigneeChoice::Any => {}
         }
     }
 }
@@ -1075,8 +1102,8 @@ async fn open_assignee_editor<B: IssueBackend>(app: &mut App, backend: &B) {
         Ok(collaborators) => {
             app.finish_action();
             app.set_repo_collaborators(collaborators);
-            app.mode = UiMode::AssigneeEditor;
-            app.set_status("Choose who owns this issue");
+            app.begin_assignee_edit();
+            app.set_status("Space toggles assignees, Enter saves");
         }
         Err(err) => {
             app.finish_action();
@@ -1121,29 +1148,15 @@ async fn apply_assignee_filter<B: IssueBackend>(
     refresh(app, backend).await;
 }
 
-async fn apply_assignee_assignment<B: IssueBackend>(
-    app: &mut App,
-    backend: &B,
-    choice: AssigneeChoice,
-) {
+async fn save_assignee_assignment<B: IssueBackend>(app: &mut App, backend: &B) {
     let Some(issue) = app.selected_issue() else {
         app.mode = UiMode::Browsing;
         return;
     };
     let number = issue.number;
-    let assignees = match choice {
-        AssigneeChoice::Unassigned => Vec::new(),
-        AssigneeChoice::Me => {
-            let Some(login) = app.viewer_login.clone() else {
-                app.flash = Some(FlashKind::Error);
-                app.set_status("Authenticated GitHub login is unavailable");
-                return;
-            };
-            vec![login]
-        }
-        AssigneeChoice::User(login) => vec![login],
-        AssigneeChoice::Any => return,
-    };
+    let mut assignees = app.editing_assignees.clone();
+    assignees.sort();
+    assignees.dedup();
 
     app.begin_action(
         PendingAction::UpdateAssignees,
@@ -1607,6 +1620,12 @@ mod tests {
         handle_assignee_picker_key(
             &mut app,
             &backend,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        )
+        .await;
+        handle_assignee_picker_key(
+            &mut app,
+            &backend,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
         )
         .await;
@@ -1620,6 +1639,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn assignee_editor_space_toggles_users_and_enter_submits_all() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        refresh(&mut app, &backend).await;
+        open_assignee_editor(&mut app, &backend).await;
+        app.picker_index = 2;
+
+        handle_assignee_picker_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        )
+        .await;
+        app.picker_index = 3;
+        handle_assignee_picker_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        )
+        .await;
+
+        assert!(backend.assignee_updates.lock().unwrap().is_empty());
+        assert_eq!(
+            app.editing_assignees,
+            vec!["alice".to_string(), "bob".to_string()]
+        );
+
+        handle_assignee_picker_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(
+            *backend.assignee_updates.lock().unwrap(),
+            vec![(1, vec!["alice".to_string(), "bob".to_string()])]
+        );
+        assert_eq!(app.status, "Updated assignees for issue #1");
+        assert_eq!(app.mode, UiMode::Success);
+    }
+
+    #[tokio::test]
     async fn mouse_click_assigns_issue_to_collaborator() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/skunkwork".parse().unwrap());
@@ -1627,6 +1689,7 @@ mod tests {
         open_assignee_editor(&mut app, &backend).await;
 
         handle_mouse_target(&mut app, &backend, ui::MouseTarget::PickerItem(2)).await;
+        handle_mouse_target(&mut app, &backend, ui::MouseTarget::PrimaryAction).await;
 
         assert_eq!(
             *backend.assignee_updates.lock().unwrap(),

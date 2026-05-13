@@ -69,6 +69,7 @@ cargo run
 - `f`: cycle state filter: open, closed, all.
 - `a`: choose an assignee filter: any, me, unassigned, or a collaborator.
 - `A`: assign the selected issue to yourself, nobody, or a collaborator.
+- `Space`: toggle users while assigning, then `Enter` submits all selected assignees.
 - `l`: edit labels on the selected issue.
 - `c`: comment on the selected issue.
 - `n`: create a new issue with separate title, Markdown body, and labels fields.

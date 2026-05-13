@@ -563,7 +563,9 @@ fn footer_shortcuts(app: &App) -> &'static str {
             "Tab/Shift+Tab fields | Ctrl+S create | Enter edit/add label | Ctrl+J newline | Esc cancel"
         }
         UiMode::AssigneeFilter => "Enter apply filter | type search | j/k move | Esc cancel",
-        UiMode::AssigneeEditor => "Enter assign | type search | j/k move | Esc cancel",
+        UiMode::AssigneeEditor => {
+            "Space toggle assignee | Enter save | type search | j/k move | Esc cancel"
+        }
         UiMode::IssueLabelEditor => {
             "Enter toggle label | Ctrl+S save | type search | j/k move | Esc cancel"
         }
@@ -647,26 +649,20 @@ fn render_assignee_picker(app: &App, title: &'static str, area: Rect, buffer: &m
     } else {
         app.assignee_assignment_choices()
     };
-    let current = app
-        .selected_issue()
-        .map(|issue| {
-            issue
-                .assignees
-                .iter()
-                .map(|assignee| assignee.login.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_default();
     let mut lines = vec![
         Line::from(format!("search: {}", app.input)),
         Line::from(format!(
-            "current: {}",
+            "{}: {}",
+            if app.mode == UiMode::AssigneeFilter {
+                "current filter"
+            } else {
+                "selected"
+            },
             if app.mode == UiMode::AssigneeFilter {
                 app.filters.assignee.label()
             } else {
-                empty_label(&current).to_string()
-            }
+                empty_label(&app.editing_assignees.join(", ")).to_string()
+            },
         )),
         Line::raw(""),
     ];
@@ -736,28 +732,19 @@ fn assignee_choice_is_active(app: &App, choice: &AssigneeChoice) -> bool {
         (UiMode::AssigneeFilter, AssigneeChoice::User(login)) => {
             app.filters.assignee == AssigneeFilter::User(login.clone())
         }
-        (UiMode::AssigneeEditor, AssigneeChoice::Unassigned) => app
-            .selected_issue()
-            .is_some_and(|issue| issue.assignees.is_empty()),
+        (UiMode::AssigneeEditor, AssigneeChoice::Unassigned) => app.editing_assignees.is_empty(),
         (UiMode::AssigneeEditor, AssigneeChoice::Me) => {
             let Some(login) = app.viewer_login.as_ref() else {
                 return false;
             };
-            app.selected_issue().is_some_and(|issue| {
-                issue
-                    .assignees
-                    .iter()
-                    .any(|assignee| &assignee.login == login)
-            })
+            app.editing_assignees
+                .iter()
+                .any(|assignee| assignee == login)
         }
-        (UiMode::AssigneeEditor, AssigneeChoice::User(login)) => {
-            app.selected_issue().is_some_and(|issue| {
-                issue
-                    .assignees
-                    .iter()
-                    .any(|assignee| assignee.login == *login)
-            })
-        }
+        (UiMode::AssigneeEditor, AssigneeChoice::User(login)) => app
+            .editing_assignees
+            .iter()
+            .any(|assignee| assignee == login),
         _ => false,
     }
 }
@@ -914,7 +901,7 @@ fn render_new_issue_editor(app: &App, area: Rect, buffer: &mut Buffer) {
 fn render_action_buttons(primary: &'static str, area: Rect, buffer: &mut Buffer) {
     let buttons = Line::from(vec![
         Span::styled(
-            format!(" {primary} Ctrl+S "),
+            primary_button_text(primary),
             Style::new()
                 .fg(ACTION_ACCENT)
                 .add_modifier(Modifier::BOLD)
@@ -1187,7 +1174,15 @@ fn action_mouse_target(area: Rect, primary: &'static str, point: Rect) -> Option
 }
 
 fn primary_button_width(primary: &'static str) -> u16 {
-    format!(" {primary} Ctrl+S ").len() as u16
+    primary_button_text(primary).len() as u16
+}
+
+fn primary_button_text(primary: &'static str) -> String {
+    let shortcut = match primary {
+        ASSIGNEE_FILTER_PRIMARY_LABEL | ASSIGNEE_EDITOR_PRIMARY_LABEL => "Enter",
+        _ => "Ctrl+S",
+    };
+    format!(" {primary} {shortcut} ")
 }
 
 fn intersects(point: Rect, area: Rect) -> bool {
@@ -1466,7 +1461,7 @@ mod tests {
         assert!(rendered.contains("Assign Issue"));
         assert!(rendered.contains("unassigned"));
         assert!(rendered.contains("alice"));
-        assert!(rendered.contains("Assign Ctrl+S"));
+        assert!(rendered.contains("Assign Enter"));
     }
 
     #[test]

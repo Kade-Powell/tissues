@@ -151,6 +151,7 @@ pub struct App {
     pub repo_labels: Vec<Label>,
     pub repo_collaborators: Vec<User>,
     pub picker_index: usize,
+    pub editing_assignees: Vec<String>,
     pub editing_issue_labels: Vec<String>,
     pub selected_detail: Option<IssueDetail>,
     pub comments_expanded: bool,
@@ -179,6 +180,7 @@ impl App {
             repo_labels: Vec::new(),
             repo_collaborators: Vec::new(),
             picker_index: 0,
+            editing_assignees: Vec::new(),
             editing_issue_labels: Vec::new(),
             selected_detail: None,
             comments_expanded: true,
@@ -369,6 +371,42 @@ impl App {
 
     pub fn assignee_assignment_choices(&self) -> Vec<AssigneeChoice> {
         self.assignee_choices(false)
+    }
+
+    pub fn begin_assignee_edit(&mut self) {
+        self.input.clear();
+        self.picker_index = 0;
+        self.editing_assignees = self
+            .selected_issue()
+            .map(|issue| {
+                issue
+                    .assignees
+                    .iter()
+                    .map(|assignee| assignee.login.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.editing_assignees.sort();
+        self.editing_assignees.dedup();
+        self.mode = UiMode::AssigneeEditor;
+    }
+
+    pub fn toggle_editing_assignee(&mut self, login: &str) {
+        if let Some(index) = self
+            .editing_assignees
+            .iter()
+            .position(|selected| selected == login)
+        {
+            self.editing_assignees.remove(index);
+        } else {
+            self.editing_assignees.push(login.to_string());
+            self.editing_assignees.sort();
+            self.editing_assignees.dedup();
+        }
+    }
+
+    pub fn clear_editing_assignees(&mut self) {
+        self.editing_assignees.clear();
     }
 
     pub fn begin_issue_label_edit(&mut self) {
@@ -695,6 +733,16 @@ mod tests {
         app.toggle_editing_issue_label("bug");
 
         assert_eq!(app.editing_issue_labels, vec!["docs"]);
+    }
+
+    #[test]
+    fn toggles_selected_assignees_for_editing() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.toggle_editing_assignee("alice");
+        app.toggle_editing_assignee("bob");
+        app.toggle_editing_assignee("alice");
+
+        assert_eq!(app.editing_assignees, vec!["bob"]);
     }
 
     #[test]
