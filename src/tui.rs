@@ -48,6 +48,9 @@ async fn handle_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) 
         UiMode::CommentComposer => handle_comment_key(app, backend, key).await,
         UiMode::NewIssue => handle_new_issue_key(app, backend, key).await,
         UiMode::ConfirmClose => handle_confirm_key(app, backend, key).await,
+        UiMode::Success => {
+            app.mode = UiMode::Browsing;
+        }
         UiMode::Error => {
             if key.code == KeyCode::Esc {
                 app.mode = UiMode::Browsing;
@@ -224,6 +227,7 @@ async fn refresh_after_action<B: IssueBackend>(
             app.mode = UiMode::Browsing;
             match load_selected_detail(app, backend).await {
                 Ok(()) => {
+                    app.mode = UiMode::Success;
                     app.flash = Some(FlashKind::Success);
                     app.set_status(success_status);
                 }
@@ -562,6 +566,7 @@ mod tests {
         );
         assert_eq!(app.selected_issue().unwrap().comment_count, 2);
         assert_eq!(app.status, "Commented on issue #1");
+        assert_eq!(app.mode, UiMode::Success);
         assert_eq!(app.flash, Some(FlashKind::Success));
     }
 
@@ -585,7 +590,26 @@ mod tests {
         assert_eq!(*backend.created_labels.lock().unwrap(), vec!["docs"]);
         assert_eq!(app.selected_issue().unwrap().number, 2);
         assert_eq!(app.status, "Created issue #2");
+        assert_eq!(app.mode, UiMode::Success);
         assert_eq!(app.flash, Some(FlashKind::Success));
+    }
+
+    #[tokio::test]
+    async fn success_confirmation_dismisses_to_browsing() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::Success;
+        app.set_status("Commented on issue #1");
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.mode, UiMode::Browsing);
+        assert_eq!(app.status, "Commented on issue #1");
     }
 
     #[tokio::test]

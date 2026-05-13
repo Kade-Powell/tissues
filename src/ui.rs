@@ -308,6 +308,7 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         UiMode::CommentComposer => Some("Comment"),
         UiMode::NewIssue => Some("New Issue"),
         UiMode::ConfirmClose => Some("Confirm"),
+        UiMode::Success => Some("Done"),
         UiMode::Error => Some("Error"),
         _ => None,
     };
@@ -323,6 +324,11 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
                 .render(popup, buffer),
             UiMode::Error => Paragraph::new(app.status.clone())
                 .block(Block::bordered().title(title))
+                .wrap(Wrap { trim: false })
+                .render(popup, buffer),
+            UiMode::Success => Paragraph::new(format!("{}\n\nState reloaded.", app.status))
+                .block(Block::bordered().title(title))
+                .style(Style::new().fg(Color::Green))
                 .wrap(Wrap { trim: false })
                 .render(popup, buffer),
             _ => render_text_editor(app, title, popup, buffer),
@@ -611,6 +617,23 @@ mod tests {
         let textarea = textarea_at_end(input_lines("first\nsecond"));
 
         assert_eq!(textarea.cursor(), (1, 6));
+    }
+
+    #[test]
+    fn renders_success_confirmation_over_reloaded_state() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_issues(vec![issue(122, "Fix login redraw", IssueState::Open, &[])]);
+        app.mode = UiMode::Success;
+        app.set_status("Commented on issue #122");
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 110, 32));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Fix login redraw"));
+        assert!(rendered.contains("Done"));
+        assert!(rendered.contains("Commented on issue #122"));
+        assert!(rendered.contains("State reloaded."));
     }
 
     #[test]

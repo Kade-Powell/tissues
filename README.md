@@ -12,6 +12,7 @@ Worktrack is a Rust terminal app for working through GitHub issues in one reposi
 - Add comments to existing issues.
 - Close and reopen issues.
 - Refresh issue data without leaving the terminal.
+- Show a confirmation after successful writes once issue state has reloaded.
 - Use your existing `gh` login instead of storing a token in the app.
 
 ## Requirements

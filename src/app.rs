@@ -55,6 +55,7 @@ pub enum UiMode {
     CommentComposer,
     NewIssue,
     ConfirmClose,
+    Success,
     Loading,
     Error,
 }
