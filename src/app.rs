@@ -70,6 +70,7 @@ pub enum NewIssueField {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PendingAction {
     Refresh,
+    LoadLabels,
     CreateIssue,
     AddComment,
     CloseIssue,
@@ -170,6 +171,17 @@ impl App {
 
     pub fn set_status(&mut self, status: impl Into<String>) {
         self.status = status.into();
+    }
+
+    pub fn begin_action(&mut self, action: PendingAction, status: impl Into<String>) {
+        self.pending_action = Some(action);
+        self.mode = UiMode::Loading;
+        self.flash = Some(FlashKind::Refresh);
+        self.set_status(status);
+    }
+
+    pub fn finish_action(&mut self) {
+        self.pending_action = None;
     }
 
     pub fn set_selected_detail(&mut self, detail: IssueDetail) {
@@ -371,6 +383,21 @@ mod tests {
         assert!(app.body_input.is_empty());
         assert!(app.label_input.is_empty());
         assert!(app.new_issue_labels.is_empty());
+    }
+
+    #[test]
+    fn tracks_pending_action_for_loading_feedback() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+
+        app.begin_action(PendingAction::AddComment, "Adding comment");
+
+        assert_eq!(app.mode, UiMode::Loading);
+        assert_eq!(app.pending_action, Some(PendingAction::AddComment));
+        assert_eq!(app.status, "Adding comment");
+        assert_eq!(app.flash, Some(FlashKind::Refresh));
+
+        app.finish_action();
+        assert_eq!(app.pending_action, None);
     }
 
     #[test]

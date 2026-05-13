@@ -11,11 +11,11 @@ use ratatui::{
     },
 };
 use ratatui_textarea::{CursorMove, TextArea};
-use tachyonfx::{EffectManager, Interpolation, fx};
+use tachyonfx::{EffectManager, Interpolation, Motion, fx, fx::RepeatMode};
 use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::{
-    app::{App, FlashKind, IssueStateFilter, NewIssueField, UiMode},
+    app::{App, FlashKind, IssueStateFilter, NewIssueField, PendingAction, UiMode},
     domain::{IssueComment, IssueDetail, IssueState, IssueSummary},
 };
 
@@ -26,23 +26,48 @@ pub struct WorktrackEffects {
 
 impl WorktrackEffects {
     pub fn trigger_refresh(&mut self) {
+        self.trigger_loading();
+    }
+
+    pub fn trigger_loading(&mut self) {
         self.manager.add_unique_effect(
-            "refresh",
-            fx::fade_to_fg(Color::Cyan, (450, Interpolation::SineInOut)),
+            "loading",
+            fx::parallel(&[
+                fx::sweep_in(
+                    Motion::LeftToRight,
+                    18,
+                    2,
+                    Color::Blue,
+                    (850, Interpolation::SineInOut),
+                ),
+                fx::repeat(
+                    fx::ping_pong(fx::hsl_shift_fg(
+                        [24.0, 18.0, 8.0],
+                        (420, Interpolation::SineInOut),
+                    )),
+                    RepeatMode::Times(3),
+                ),
+            ]),
         );
     }
 
     pub fn trigger_success(&mut self) {
         self.manager.add_unique_effect(
             "success",
-            fx::fade_to_fg(Color::Green, (350, Interpolation::SineOut)),
+            fx::parallel(&[
+                fx::coalesce_from(Style::new().fg(Color::Green), (420, Interpolation::SineOut)),
+                fx::fade_to_fg(Color::Green, (350, Interpolation::SineOut)),
+            ]),
         );
     }
 
     pub fn trigger_error(&mut self) {
         self.manager.add_unique_effect(
             "error",
-            fx::fade_to_fg(Color::Red, (350, Interpolation::SineOut)),
+            fx::parallel(&[
+                fx::dissolve_to(Style::new().fg(Color::Red), (360, Interpolation::SineOut)),
+                fx::fade_to_fg(Color::Red, (350, Interpolation::SineOut)),
+            ]),
         );
     }
 
@@ -309,6 +334,7 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         UiMode::NewIssue => Some("New Issue"),
         UiMode::ConfirmClose => Some("Confirm"),
         UiMode::Success => Some("Done"),
+        UiMode::Loading => Some("Working"),
         UiMode::Error => Some("Error"),
         _ => None,
     };
@@ -318,6 +344,7 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         Clear.render(popup, buffer);
         match app.mode {
             UiMode::NewIssue => render_new_issue_editor(app, popup, buffer),
+            UiMode::Loading => render_loading_overlay(app, popup, buffer),
             UiMode::ConfirmClose => Paragraph::new("Press y to confirm, Esc to cancel")
                 .block(Block::bordered().title(title))
                 .wrap(Wrap { trim: false })
@@ -333,6 +360,32 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
                 .render(popup, buffer),
             _ => render_text_editor(app, title, popup, buffer),
         }
+    }
+}
+
+fn render_loading_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
+    let title = app
+        .pending_action
+        .as_ref()
+        .map(pending_action_label)
+        .unwrap_or("Working");
+    let body = format!("{title}\n\n{}\n\n[>>>>>>>>>>>>>>>>>>>>]", app.status);
+
+    Paragraph::new(body)
+        .block(Block::bordered().title("Working"))
+        .style(Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .wrap(Wrap { trim: false })
+        .render(area, buffer);
+}
+
+fn pending_action_label(action: &PendingAction) -> &'static str {
+    match action {
+        PendingAction::Refresh => "Refreshing issues",
+        PendingAction::LoadLabels => "Loading labels",
+        PendingAction::CreateIssue => "Creating issue",
+        PendingAction::AddComment => "Adding comment",
+        PendingAction::CloseIssue => "Closing issue",
+        PendingAction::ReopenIssue => "Reopening issue",
     }
 }
 
@@ -564,6 +617,29 @@ mod tests {
 
         effects.trigger_refresh();
         assert!(effects.has_effects());
+    }
+
+    #[test]
+    fn creates_loading_effects() {
+        let mut effects = WorktrackEffects::default();
+
+        effects.trigger_loading();
+
+        assert!(effects.has_effects());
+    }
+
+    #[test]
+    fn renders_loading_overlay_for_pending_actions() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.begin_action(PendingAction::CreateIssue, "Creating issue");
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Working"));
+        assert!(rendered.contains("Creating issue"));
+        assert!(rendered.contains("[>>>>>>>>>>>>>>>>>>>>]"));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::DefaultTerminal;
 
 use crate::{
-    app::{App, FlashKind, IssueStateFilter, NewIssueField, UiMode},
+    app::{App, FlashKind, IssueStateFilter, NewIssueField, PendingAction, UiMode},
     domain::IssueState,
     github::IssueBackend,
     ui::{self, WorktrackEffects},
@@ -25,20 +25,94 @@ pub async fn run<B: IssueBackend>(
         last_frame = Instant::now();
         ui::trigger_flash_effect(app, &mut effects);
 
-        terminal.draw(|frame| {
-            let area = frame.area();
-            ui::render(app, area, frame.buffer_mut());
-            effects.process(elapsed, frame.buffer_mut(), area);
-        })?;
+        draw_app(terminal, app, &mut effects, elapsed)?;
 
         if event::poll(Duration::from_millis(33))?
             && let Event::Key(key) = event::read()?
         {
+            if let Some((action, status)) = loading_preview(app, key) {
+                let mut preview = app.clone();
+                preview.begin_action(action, status);
+                ui::trigger_flash_effect(&mut preview, &mut effects);
+                draw_app(terminal, &preview, &mut effects, last_frame.elapsed())?;
+            }
             handle_key(app, backend, key).await;
         }
     }
 
     Ok(())
+}
+
+fn draw_app(
+    terminal: &mut DefaultTerminal,
+    app: &App,
+    effects: &mut WorktrackEffects,
+    elapsed: Duration,
+) -> Result<()> {
+    terminal.draw(|frame| {
+        let area = frame.area();
+        ui::render(app, area, frame.buffer_mut());
+        effects.process(elapsed, frame.buffer_mut(), area);
+    })?;
+    Ok(())
+}
+
+fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> {
+    match app.mode {
+        UiMode::Browsing => match key.code {
+            KeyCode::Char('r') | KeyCode::Char('f') => {
+                Some((PendingAction::Refresh, "Refreshing issues".to_string()))
+            }
+            KeyCode::Char('n') => Some((
+                PendingAction::LoadLabels,
+                "Loading repository labels".to_string(),
+            )),
+            _ => None,
+        },
+        UiMode::Search if key.code == KeyCode::Enter => {
+            Some((PendingAction::Refresh, "Refreshing issues".to_string()))
+        }
+        UiMode::CommentComposer
+            if key.code == KeyCode::Enter
+                && !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !app.input.trim().is_empty() =>
+        {
+            app.selected_issue().map(|issue| {
+                (
+                    PendingAction::AddComment,
+                    format!("Adding comment to #{}", issue.number),
+                )
+            })
+        }
+        UiMode::NewIssue
+            if (key.code == KeyCode::Enter
+                || key.code == KeyCode::Char('s')
+                    && key.modifiers.contains(KeyModifiers::CONTROL))
+                && (app.new_issue_field != NewIssueField::Labels
+                    || app.label_input.trim().is_empty())
+                && !app.input.trim().is_empty() =>
+        {
+            Some((PendingAction::CreateIssue, "Creating issue".to_string()))
+        }
+        UiMode::ConfirmClose
+            if key.code == KeyCode::Enter || matches!(key.code, KeyCode::Char('y')) =>
+        {
+            app.selected_issue().map(|issue| {
+                (
+                    pending_state_action(issue.state.clone()),
+                    format!("Updating issue #{}", issue.number),
+                )
+            })
+        }
+        _ => None,
+    }
+}
+
+fn pending_state_action(state: IssueState) -> PendingAction {
+    match state {
+        IssueState::Open => PendingAction::CloseIssue,
+        IssueState::Closed => PendingAction::ReopenIssue,
+    }
 }
 
 async fn handle_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
@@ -181,8 +255,7 @@ async fn handle_confirm_key<B: IssueBackend>(app: &mut App, backend: &B, key: Ke
 }
 
 pub async fn refresh<B: IssueBackend>(app: &mut App, backend: &B) {
-    app.mode = UiMode::Loading;
-    app.flash = Some(FlashKind::Refresh);
+    app.begin_action(PendingAction::Refresh, "Refreshing issues");
     match backend.list_issues(&app.repo, &app.filters).await {
         Ok(issues) => {
             app.set_issues(issues);
@@ -197,14 +270,19 @@ pub async fn refresh<B: IssueBackend>(app: &mut App, backend: &B) {
                 }
             );
             match load_selected_detail(app, backend).await {
-                Ok(()) => app.set_status(loaded_status),
+                Ok(()) => {
+                    app.finish_action();
+                    app.set_status(loaded_status);
+                }
                 Err(err) => {
+                    app.finish_action();
                     app.flash = Some(FlashKind::Error);
                     app.set_status(format!("{loaded_status}; detail failed: {err:#}"));
                 }
             }
         }
         Err(err) => {
+            app.finish_action();
             app.mode = UiMode::Browsing;
             app.flash = Some(FlashKind::Error);
             app.set_status(format!("Refresh failed: {err:#}"));
@@ -227,17 +305,20 @@ async fn refresh_after_action<B: IssueBackend>(
             app.mode = UiMode::Browsing;
             match load_selected_detail(app, backend).await {
                 Ok(()) => {
+                    app.finish_action();
                     app.mode = UiMode::Success;
                     app.flash = Some(FlashKind::Success);
                     app.set_status(success_status);
                 }
                 Err(err) => {
+                    app.finish_action();
                     app.flash = Some(FlashKind::Error);
                     app.set_status(format!("{success_status}; detail refresh failed: {err:#}"));
                 }
             }
         }
         Err(err) => {
+            app.finish_action();
             app.mode = UiMode::Browsing;
             app.flash = Some(FlashKind::Error);
             app.set_status(format!("{success_status}; refresh failed: {err:#}"));
@@ -259,6 +340,10 @@ async fn submit_comment<B: IssueBackend>(app: &mut App, backend: &B) {
         return;
     }
 
+    app.begin_action(
+        PendingAction::AddComment,
+        format!("Adding comment to #{number}"),
+    );
     match backend.add_comment(&app.repo, number, &body).await {
         Ok(_) => {
             app.input.clear();
@@ -271,6 +356,8 @@ async fn submit_comment<B: IssueBackend>(app: &mut App, backend: &B) {
             .await;
         }
         Err(err) => {
+            app.finish_action();
+            app.mode = UiMode::Browsing;
             app.flash = Some(FlashKind::Error);
             app.set_status(format!("Comment failed: {err:#}"));
         }
@@ -295,6 +382,7 @@ async fn submit_new_issue<B: IssueBackend>(app: &mut App, backend: &B) {
         return;
     }
 
+    app.begin_action(PendingAction::CreateIssue, "Creating issue");
     match backend
         .create_issue(&app.repo, &title, &body, &labels)
         .await
@@ -314,6 +402,8 @@ async fn submit_new_issue<B: IssueBackend>(app: &mut App, backend: &B) {
             .await;
         }
         Err(err) => {
+            app.finish_action();
+            app.mode = UiMode::NewIssue;
             app.flash = Some(FlashKind::Error);
             app.set_status(format!("Create failed: {err:#}"));
         }
@@ -322,13 +412,17 @@ async fn submit_new_issue<B: IssueBackend>(app: &mut App, backend: &B) {
 
 async fn open_new_issue<B: IssueBackend>(app: &mut App, backend: &B) {
     app.start_new_issue();
-    app.set_status("Loading repository labels");
+    app.begin_action(PendingAction::LoadLabels, "Loading repository labels");
     match backend.list_labels(&app.repo).await {
         Ok(labels) => {
+            app.finish_action();
+            app.mode = UiMode::NewIssue;
             app.set_repo_labels(labels);
             app.set_status("New issue: Tab fields, Enter creates, Ctrl+S creates");
         }
         Err(err) => {
+            app.finish_action();
+            app.mode = UiMode::NewIssue;
             app.set_repo_labels(Vec::new());
             app.flash = Some(FlashKind::Error);
             app.set_status(format!("Labels unavailable: {err:#}; creating still works"));
@@ -372,7 +466,12 @@ async fn toggle_issue_state<B: IssueBackend>(app: &mut App, backend: &B) {
         IssueState::Open => IssueState::Closed,
         IssueState::Closed => IssueState::Open,
     };
+    let pending_action = match next_state {
+        IssueState::Open => PendingAction::ReopenIssue,
+        IssueState::Closed => PendingAction::CloseIssue,
+    };
 
+    app.begin_action(pending_action, format!("Updating issue #{number}"));
     match backend.set_issue_state(&app.repo, number, next_state).await {
         Ok(_) => {
             refresh_after_action(
@@ -384,6 +483,7 @@ async fn toggle_issue_state<B: IssueBackend>(app: &mut App, backend: &B) {
             .await;
         }
         Err(err) => {
+            app.finish_action();
             app.mode = UiMode::Browsing;
             app.flash = Some(FlashKind::Error);
             app.set_status(format!("Update failed: {err:#}"));
@@ -610,6 +710,36 @@ mod tests {
 
         assert_eq!(app.mode, UiMode::Browsing);
         assert_eq!(app.status, "Commented on issue #1");
+    }
+
+    #[test]
+    fn predicts_loading_preview_for_network_actions() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.set_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+
+        assert_eq!(
+            loading_preview(&app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+            Some((PendingAction::Refresh, "Refreshing issues".to_string()))
+        );
+
+        app.mode = UiMode::CommentComposer;
+        app.input = "done".to_string();
+        assert_eq!(
+            loading_preview(&app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some((
+                PendingAction::AddComment,
+                "Adding comment to #1".to_string()
+            ))
+        );
+
+        app.mode = UiMode::NewIssue;
+        app.input = "New task".to_string();
+        app.new_issue_field = NewIssueField::Labels;
+        app.label_input = "bug".to_string();
+        assert_eq!(
+            loading_preview(&app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            None
+        );
     }
 
     #[tokio::test]
