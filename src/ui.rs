@@ -78,7 +78,10 @@ pub struct WorktrackEffects {
 
 impl WorktrackEffects {
     pub fn trigger_startup_loading(&mut self) {
-        self.add_coalesce_effect("startup-loading");
+        self.manager.add_unique_effect(
+            "startup-loading",
+            fx::fade_from_fg(DIM_FG, (500, Interpolation::SineOut)),
+        );
     }
 
     pub fn trigger_refresh(&mut self) {
@@ -86,16 +89,16 @@ impl WorktrackEffects {
     }
 
     pub fn trigger_success(&mut self) {
-        self.add_coalesce_effect("success");
+        self.manager.add_unique_effect(
+            "success",
+            fx::fade_to_fg(OPEN_ACCENT, (260, Interpolation::SineOut)),
+        );
     }
 
     pub fn trigger_error(&mut self) {
         self.manager.add_unique_effect(
             "error",
-            fx::parallel(&[
-                fx::dissolve_to(Style::new().fg(ERROR_ACCENT), (360, Interpolation::SineOut)),
-                fx::fade_to_fg(ERROR_ACCENT, (350, Interpolation::SineOut)),
-            ]),
+            fx::fade_to_fg(ERROR_ACCENT, (350, Interpolation::SineOut)),
         );
     }
 
@@ -1992,6 +1995,25 @@ mod tests {
         assert!(rendered.contains("Notes"));
         assert!(rendered.contains("first item"));
         assert!(rendered.contains("second item"));
+    }
+
+    #[test]
+    fn renders_plain_issue_description_without_extra_prefix_character() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let summary = issue(19, "A new thing", IssueState::Open, &[]);
+        app.set_issues(vec![summary.clone()]);
+        app.set_selected_detail(crate::domain::IssueDetail {
+            summary,
+            body: "oohh fancy".to_string(),
+            comments: Vec::new(),
+        });
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 120, 24));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("oohh fancy"));
+        assert!(!rendered.contains("doohh fancy"));
     }
 
     #[test]
