@@ -53,6 +53,7 @@ pub enum UiMode {
     FilterEditor,
     Search,
     CommentComposer,
+    CloseComment,
     NewIssue,
     ConfirmClose,
     Success,

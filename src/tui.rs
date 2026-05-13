@@ -138,16 +138,23 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
         UiMode::Search if key.code == KeyCode::Enter => {
             Some((PendingAction::Refresh, "Refreshing issues".to_string()))
         }
-        UiMode::CommentComposer
+        UiMode::CommentComposer | UiMode::CloseComment
             if key.code == KeyCode::Char('s')
                 && key.modifiers.contains(KeyModifiers::CONTROL)
                 && !app.input.trim().is_empty() =>
         {
             app.selected_issue().map(|issue| {
-                (
-                    PendingAction::AddComment,
-                    format!("Adding comment to #{}", issue.number),
-                )
+                let action = if app.mode == UiMode::CloseComment {
+                    PendingAction::CloseIssue
+                } else {
+                    PendingAction::AddComment
+                };
+                let status = if app.mode == UiMode::CloseComment {
+                    format!("Closing issue #{}", issue.number)
+                } else {
+                    format!("Adding comment to #{}", issue.number)
+                };
+                (action, status)
             })
         }
         UiMode::NewIssue if should_submit_new_issue(app, key) && !app.input.trim().is_empty() => {
@@ -189,6 +196,7 @@ async fn handle_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) 
         UiMode::Browsing => handle_browsing_key(app, backend, key).await,
         UiMode::Search => handle_search_key(app, backend, key).await,
         UiMode::CommentComposer => handle_comment_key(app, backend, key).await,
+        UiMode::CloseComment => handle_close_comment_key(app, backend, key).await,
         UiMode::NewIssue => handle_new_issue_key(app, backend, key).await,
         UiMode::ConfirmClose => handle_confirm_key(app, backend, key).await,
         UiMode::Success => {
@@ -237,7 +245,17 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
         }
         KeyCode::Char('n') => open_new_issue(app, backend).await,
         KeyCode::Char('x') if app.selected_issue().is_some() => {
-            app.mode = UiMode::ConfirmClose;
+            match app.selected_issue().map(|issue| issue.state.clone()) {
+                Some(IssueState::Open) => {
+                    app.input.clear();
+                    app.mode = UiMode::CloseComment;
+                    app.set_status("Closing requires a comment, Enter adds lines, Ctrl+S closes");
+                }
+                Some(IssueState::Closed) => {
+                    app.mode = UiMode::ConfirmClose;
+                }
+                None => {}
+            }
         }
         _ => {}
     }
@@ -269,6 +287,28 @@ async fn handle_comment_key<B: IssueBackend>(app: &mut App, backend: &B, key: Ke
         KeyCode::Enter => app.input.push('\n'),
         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             submit_comment(app, backend).await;
+        }
+        KeyCode::Backspace => {
+            app.input.pop();
+        }
+        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.input.push('\n');
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push(c),
+        _ => {}
+    }
+}
+
+async fn handle_close_comment_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.mode = UiMode::Browsing;
+            app.input.clear();
+        }
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push('\n'),
+        KeyCode::Enter => app.input.push('\n'),
+        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            close_issue_with_comment(app, backend).await;
         }
         KeyCode::Backspace => {
             app.input.pop();
@@ -515,6 +555,55 @@ async fn submit_comment<B: IssueBackend>(app: &mut App, backend: &B) {
     }
 }
 
+async fn close_issue_with_comment<B: IssueBackend>(app: &mut App, backend: &B) {
+    let body = app.input.trim().to_string();
+    let Some(issue) = app.selected_issue() else {
+        app.mode = UiMode::Browsing;
+        return;
+    };
+    let number = issue.number;
+
+    if body.is_empty() {
+        app.set_status("Close comment cannot be empty");
+        app.flash = Some(FlashKind::Error);
+        return;
+    }
+
+    app.begin_action(
+        PendingAction::CloseIssue,
+        format!("Closing issue #{number}"),
+    );
+    match backend.add_comment(&app.repo, number, &body).await {
+        Ok(_) => match backend
+            .set_issue_state(&app.repo, number, IssueState::Closed)
+            .await
+        {
+            Ok(_) => {
+                app.input.clear();
+                refresh_after_action(
+                    app,
+                    backend,
+                    Some(number),
+                    format!("Closed issue #{number} with comment"),
+                )
+                .await;
+            }
+            Err(err) => {
+                app.finish_action();
+                app.mode = UiMode::Browsing;
+                app.flash = Some(FlashKind::Error);
+                app.set_status(format!("Close failed after comment: {err:#}"));
+            }
+        },
+        Err(err) => {
+            app.finish_action();
+            app.mode = UiMode::CloseComment;
+            app.flash = Some(FlashKind::Error);
+            app.set_status(format!("Close comment failed: {err:#}"));
+        }
+    }
+}
+
 async fn submit_new_issue<B: IssueBackend>(app: &mut App, backend: &B, force_create: bool) {
     if app.new_issue_field == NewIssueField::Labels && !app.label_input.trim().is_empty() {
         if !app.accept_first_label_suggestion() {
@@ -682,6 +771,7 @@ mod tests {
         created_body: Mutex<Option<String>>,
         created_labels: Mutex<Vec<String>>,
         commented_body: Mutex<Option<String>>,
+        state_updates: Mutex<Vec<(u64, IssueState)>>,
         issues: Mutex<Vec<IssueSummary>>,
         labels: Mutex<Vec<Label>>,
     }
@@ -706,6 +796,7 @@ mod tests {
             created_body: Mutex::new(None),
             created_labels: Mutex::new(Vec::new()),
             commented_body: Mutex::new(None),
+            state_updates: Mutex::new(Vec::new()),
             issues: Mutex::new(issues),
             labels: Mutex::new(vec![
                 Label {
@@ -795,10 +886,20 @@ mod tests {
         async fn set_issue_state(
             &self,
             _repo: &Repository,
-            _number: u64,
-            _state: IssueState,
+            number: u64,
+            state: IssueState,
         ) -> Result<IssueSummary> {
-            unreachable!("not used by these tests")
+            self.state_updates
+                .lock()
+                .unwrap()
+                .push((number, state.clone()));
+            let mut issues = self.issues.lock().unwrap();
+            let issue = issues
+                .iter_mut()
+                .find(|issue| issue.number == number)
+                .expect("test issue should exist");
+            issue.state = state;
+            Ok(issue.clone())
         }
     }
 
@@ -890,6 +991,16 @@ mod tests {
                 PendingAction::AddComment,
                 "Adding comment to #1".to_string()
             ))
+        );
+
+        app.mode = UiMode::CloseComment;
+        app.input = "closing notes".to_string();
+        assert_eq!(
+            loading_preview(
+                &app,
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
+            ),
+            Some((PendingAction::CloseIssue, "Closing issue #1".to_string()))
         );
 
         app.mode = UiMode::NewIssue;
@@ -1092,6 +1203,73 @@ mod tests {
             Some("line one\nl")
         );
         assert_eq!(app.mode, UiMode::Success);
+    }
+
+    #[tokio::test]
+    async fn closing_open_issue_requires_comment_and_refreshes_state() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        refresh(&mut app, &backend).await;
+
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.mode, UiMode::CloseComment);
+        assert_eq!(
+            app.status,
+            "Closing requires a comment, Enter adds lines, Ctrl+S closes"
+        );
+
+        handle_close_comment_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        assert_eq!(app.mode, UiMode::CloseComment);
+        assert_eq!(app.status, "Close comment cannot be empty");
+        assert!(backend.state_updates.lock().unwrap().is_empty());
+
+        app.input = "Closing after verifying the fix".to_string();
+        handle_close_comment_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        assert_eq!(
+            backend.commented_body.lock().unwrap().as_deref(),
+            Some("Closing after verifying the fix")
+        );
+        assert_eq!(
+            *backend.state_updates.lock().unwrap(),
+            vec![(1, IssueState::Closed)]
+        );
+        assert_eq!(app.selected_issue().unwrap().state, IssueState::Closed);
+        assert_eq!(app.status, "Closed issue #1 with comment");
+        assert_eq!(app.mode, UiMode::Success);
+    }
+
+    #[tokio::test]
+    async fn reopening_closed_issue_keeps_confirmation_flow() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Closed, 1)]);
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        refresh(&mut app, &backend).await;
+
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.mode, UiMode::ConfirmClose);
     }
 
     #[tokio::test]

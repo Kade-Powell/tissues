@@ -341,6 +341,7 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
     let title = match app.mode {
         UiMode::Search => Some("Search"),
         UiMode::CommentComposer => Some("Comment"),
+        UiMode::CloseComment => Some("Close Issue"),
         UiMode::NewIssue => Some("New Issue"),
         UiMode::ConfirmClose => Some("Confirm"),
         UiMode::Success => Some("Done"),
@@ -355,7 +356,7 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         match app.mode {
             UiMode::NewIssue => render_new_issue_editor(app, popup, buffer),
             UiMode::Loading => render_loading_overlay(app, popup, buffer),
-            UiMode::ConfirmClose => Paragraph::new("Press y to confirm, Esc to cancel")
+            UiMode::ConfirmClose => Paragraph::new("Press y to reopen, Esc to cancel")
                 .block(Block::bordered().title(title))
                 .wrap(Wrap { trim: false })
                 .render(popup, buffer),
@@ -403,12 +404,14 @@ fn render_text_editor(app: &App, title: &'static str, area: Rect, buffer: &mut B
     let mut textarea = textarea_at_end(input_lines(&app.input));
     textarea.set_block(Block::bordered().title(match app.mode {
         UiMode::CommentComposer => "Comment Body",
+        UiMode::CloseComment => "Closing Comment",
         UiMode::NewIssue => "New Issue: title | body",
         UiMode::Search => "Search Issues",
         _ => title,
     }));
     textarea.set_placeholder_text(match app.mode {
         UiMode::CommentComposer => "Write a comment",
+        UiMode::CloseComment => "Required comment before closing",
         UiMode::NewIssue => "Title | optional body",
         UiMode::Search => "Search issue titles",
         _ => "",
@@ -679,6 +682,20 @@ mod tests {
 
         assert!(rendered.contains("Comment Body"));
         assert!(rendered.contains("Looks good"));
+    }
+
+    #[test]
+    fn renders_close_comment_as_required_text_editor() {
+        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        app.mode = UiMode::CloseComment;
+        app.input = "Closing after verification".to_string();
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Closing Comment"));
+        assert!(rendered.contains("Closing after verification"));
     }
 
     #[test]
