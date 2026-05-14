@@ -92,6 +92,7 @@ fn release_planner_uses_conventional_commits() {
     assert!(planner.contains("BREAKING[- ]CHANGE"));
     assert!(planner.contains("VERSION_TAG_OVERRIDE"));
     assert!(planner.contains("tag_exists"));
+    assert!(planner.contains("rstrip(\"\\n\")"));
     assert!(planner.contains("match.group(\"type\") == \"feat\""));
     assert!(planner.contains("return \"patch\""));
     assert!(planner.contains("release-notes.md"));
