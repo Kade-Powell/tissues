@@ -13,7 +13,7 @@ if command -v watchexec >/dev/null 2>&1; then
 fi
 
 cat >&2 <<'EOF'
-watchexec is required for tissue TUI reloads.
+watchexec is required for tissues TUI reloads.
 
 Install it, then rerun this command:
 
@@ -21,7 +21,7 @@ Install it, then rerun this command:
 
 Then start the interactive TUI in this normal terminal:
 
-  ./scripts/dev-tui owner/tissue
+  ./scripts/dev-tui owner/tissues
 
 Keep bacon in a different terminal for checks. Do not run the full TUI inside bacon.
 EOF

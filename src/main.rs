@@ -5,10 +5,10 @@ use crossterm::{
     execute,
 };
 use std::io::stdout;
-use tissue::{app::App, github::GitHubClient, repo, tui};
+use tissues::{app::App, github::GitHubClient, repo, tui};
 
 #[derive(Debug, Parser)]
-#[command(name = "tissue")]
+#[command(name = "tissues")]
 #[command(version)]
 #[command(about = "A Ratatui issue tracker for one GitHub repository")]
 struct Args {

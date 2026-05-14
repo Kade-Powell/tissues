@@ -1,4 +1,4 @@
 #!/usr/bin/env sh
 printf '%s\n' \
   'Interactive TUI runs are disabled inside bacon.' \
-  'Use ./scripts/dev-tui owner/tissue in a separate terminal.'
+  'Use ./scripts/dev-tui owner/tissues in a separate terminal.'

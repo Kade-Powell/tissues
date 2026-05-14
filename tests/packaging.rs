@@ -1,12 +1,12 @@
 use std::fs;
 
 #[test]
-fn package_name_is_registry_safe_while_binary_stays_tissue() {
+fn package_and_binary_use_public_repo_name() {
     let manifest = fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
 
-    assert!(manifest.contains("name = \"tissue-cli\""));
-    assert!(manifest.contains("[lib]\nname = \"tissue\""));
-    assert!(manifest.contains("[[bin]]\nname = \"tissue\""));
+    assert!(manifest.contains("name = \"tissues\""));
+    assert!(manifest.contains("[lib]\nname = \"tissues\""));
+    assert!(manifest.contains("[[bin]]\nname = \"tissues\""));
 }
 
 #[test]

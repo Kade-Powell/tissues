@@ -136,11 +136,11 @@ mod tests {
 
     #[test]
     fn parses_owner_and_repo() {
-        let repo: Repository = "owner/tissue".parse().unwrap();
+        let repo: Repository = "owner/tissues".parse().unwrap();
 
         assert_eq!(repo.owner, "owner");
-        assert_eq!(repo.name, "tissue");
-        assert_eq!(repo.to_string(), "owner/tissue");
+        assert_eq!(repo.name, "tissues");
+        assert_eq!(repo.to_string(), "owner/tissues");
     }
 
     #[test]
@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn rejects_missing_owner() {
         assert_eq!(
-            "/tissue".parse::<Repository>().unwrap_err(),
+            "/tissues".parse::<Repository>().unwrap_err(),
             RepoParseError::MissingOwner
         );
     }
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn rejects_extra_separator() {
         assert_eq!(
-            "owner/tissue/extra".parse::<Repository>().unwrap_err(),
+            "owner/tissues/extra".parse::<Repository>().unwrap_err(),
             RepoParseError::ExtraSeparator
         );
     }

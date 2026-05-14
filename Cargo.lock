@@ -3086,8 +3086,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "tissue-cli"
-version = "0.1.0"
+name = "tissues"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",

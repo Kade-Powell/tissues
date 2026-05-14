@@ -1,6 +1,6 @@
-# tissue
+# tissues
 
-tissue is a Rust terminal app for working through GitHub issues in one repository at a time. It uses Ratatui for the interface, TachyonFX for terminal animations, Octocrab for GitHub API calls, and the GitHub CLI for authentication.
+tissues is a Rust terminal app for working through GitHub issues in one repository at a time. It uses Ratatui for the interface, TachyonFX for terminal animations, Octocrab for GitHub API calls, and the GitHub CLI for authentication.
 
 ## Features
 
@@ -56,35 +56,35 @@ Install from crates.io:
 
 ```bash
 # Latest
-cargo install tissue-cli --locked
+cargo install tissues --locked
 
 # Specific version
-cargo install tissue-cli --version "0.1.0" --locked
+cargo install tissues --version "0.2.0" --locked
 ```
 
 Validate:
 
 ```bash
-tissue --version
-tissue --help
+tissues --version
+tissues --help
 ```
 
 Open a specific repository:
 
 ```bash
-tissue owner/tissue
+tissues owner/tissues
 ```
 
 GitHub remote URLs work too:
 
 ```bash
-tissue git@github.com:Kade-Powell/tissues.git
+tissues git@github.com:Kade-Powell/tissues.git
 ```
 
 Or run from source:
 
 ```bash
-cargo run -- owner/tissue
+cargo run -- owner/tissues
 ```
 
 Or run inside a GitHub checkout and let `gh repo view` infer the repository:
@@ -134,7 +134,7 @@ Useful commands:
 - `:close`: close or reopen the selected issue.
 - `:quit`: quit.
 
-While browsing, tissue automatically reloads issues every 5 seconds. If the refreshed list contains issue numbers that were not already visible, or new comments, new issue descriptions, or updated issue bodies mention your authenticated GitHub username, the footer shows the notification, the terminal bell rings, and macOS plays the system notification sound when available.
+While browsing, tissues automatically reloads issues every 5 seconds. If the refreshed list contains issue numbers that were not already visible, or new comments, new issue descriptions, or updated issue bodies mention your authenticated GitHub username, the footer shows the notification, the terminal bell rings, and macOS plays the system notification sound when available.
 
 ## Development
 
@@ -156,17 +156,17 @@ This watches the project and runs `cargo check --all-targets` after changes. Ins
 Run the interactive TUI in a separate terminal:
 
 ```bash
-cargo run -- owner/tissue
+cargo run -- owner/tissues
 ```
 
 For restart-on-change development of the actual TUI, install `watchexec` and run the helper script in a normal terminal:
 
 ```bash
 cargo install watchexec-cli
-./scripts/dev-tui owner/tissue
+./scripts/dev-tui owner/tissues
 ```
 
-Do not run the full tissue TUI as a bacon job. Bacon is also a terminal UI, and nesting tissue inside it can leave the terminal alternate screen, mouse capture, or formatting in a bad state. Bacon's `run` and `run-long` jobs are intentionally overridden to print a reminder instead of launching tissue. The included `smoke` job intentionally runs only `cargo run -- --help`.
+Do not run the full tissues TUI as a bacon job. Bacon is also a terminal UI, and nesting tissues inside it can leave the terminal alternate screen, mouse capture, or formatting in a bad state. Bacon's `run` and `run-long` jobs are intentionally overridden to print a reminder instead of launching tissues. The included `smoke` job intentionally runs only `cargo run -- --help`.
 
 Run the checks used for this project:
 
@@ -176,7 +176,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-Releases are driven by Conventional Commit messages on `main`. Breaking changes create a major release, `feat:` creates a minor release, and any other Conventional Commit type creates a patch release. The release workflow commits the package version, tags `vX.Y.Z`, creates the GitHub release, and publishes `tissue-cli` to crates.io with `CRATES_IO_TOKEN`.
+Releases are driven by Conventional Commit messages on `main`. Breaking changes create a major release, `feat:` creates a minor release, and any other Conventional Commit type creates a patch release. The release workflow commits the package version, tags `vX.Y.Z`, creates the GitHub release, and publishes `tissues` to crates.io with `CRATES_IO_TOKEN`.
 
 The core code is split by responsibility:
 

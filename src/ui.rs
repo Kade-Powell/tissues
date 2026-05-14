@@ -1793,7 +1793,7 @@ mod tests {
 
     #[test]
     fn renders_main_screen_with_filters_and_actions() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_issues(vec![
             issue(122, "Fix login redraw", IssueState::Open, &["bug"]),
             issue(101, "Clarify setup", IssueState::Closed, &["docs"]),
@@ -1804,7 +1804,7 @@ mod tests {
         render(&app, buffer.area, &mut buffer);
         let rendered = buffer_to_string(&buffer);
 
-        assert!(rendered.contains("owner/tissue"));
+        assert!(rendered.contains("owner/tissues"));
         assert!(rendered.contains("State: open"));
         assert!(rendered.contains("Assignee: any"));
         assert!(rendered.contains("Search: redraw"));
@@ -1828,7 +1828,7 @@ mod tests {
 
     #[test]
     fn main_screen_uses_terminal_default_background() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_issues(vec![
             issue(122, "Fix login redraw", IssueState::Open, &["bug"]),
             issue(101, "Clarify setup", IssueState::Closed, &["docs"]),
@@ -1842,7 +1842,7 @@ mod tests {
 
     #[test]
     fn modal_screens_use_terminal_default_background() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.start_new_issue();
         app.input = "Add terminal theme support".to_string();
         app.body_input = "Keep the user's terminal palette visible.".to_string();
@@ -1855,7 +1855,7 @@ mod tests {
 
     #[test]
     fn footer_shortcuts_follow_active_screen() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
 
         assert!(footer_shortcuts(&app).contains(": commands"));
         assert!(footer_shortcuts(&app).contains("n new"));
@@ -1883,7 +1883,7 @@ mod tests {
 
     #[test]
     fn renders_command_prompt_above_footer() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::Command;
         app.input = "sor".to_string();
 
@@ -1903,7 +1903,7 @@ mod tests {
 
     #[test]
     fn renders_issue_editor_with_title_and_body_fields() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::IssueEditor;
         app.input = "Fix redraw".to_string();
         app.body_input = "## Body".to_string();
@@ -1920,7 +1920,7 @@ mod tests {
 
     #[test]
     fn command_effect_area_uses_bottom_prompt() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::Command;
 
         let area = Rect::new(0, 0, 120, 40);
@@ -1933,7 +1933,7 @@ mod tests {
 
     #[test]
     fn renders_new_issue_highlight_in_issue_list() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_issues(vec![
             issue(122, "Fix login redraw", IssueState::Open, &["bug"]),
             issue(130, "Fresh", IssueState::Open, &[]),
@@ -1951,7 +1951,7 @@ mod tests {
 
     #[test]
     fn renders_mention_highlight_in_issue_list() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_issues(vec![
             issue(122, "Fix login redraw", IssueState::Open, &["bug"]),
             issue(130, "Ping", IssueState::Open, &[]),
@@ -1969,7 +1969,7 @@ mod tests {
 
     #[test]
     fn renders_team_metadata_and_stale_badge() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         let mut stale = issue(130, "Needs owner", IssueState::Open, &[]);
         stale.author = Some(User {
             login: "alice".to_string(),
@@ -1991,7 +1991,7 @@ mod tests {
 
     #[test]
     fn browsing_renders_issue_list_without_detail_panel() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_issues(vec![issue(
             122,
             "Fix login redraw",
@@ -2011,7 +2011,7 @@ mod tests {
 
     #[test]
     fn detail_mode_renders_issue_list_and_loaded_detail_panel() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         let summary = issue(122, "Fix login redraw", IssueState::Open, &["bug"]);
         app.set_issues(vec![summary.clone()]);
         app.mode = UiMode::IssueDetail;
@@ -2033,7 +2033,7 @@ mod tests {
 
     #[test]
     fn mouse_targets_issue_rows_and_detail_panel() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_issues(vec![
             issue(1, "Fix redraw", IssueState::Open, &[]),
             issue(2, "Add mouse", IssueState::Open, &[]),
@@ -2063,7 +2063,7 @@ mod tests {
 
     #[test]
     fn mouse_targets_new_issue_fields_and_buttons() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::NewIssue;
         let area = Rect::new(0, 0, 100, 30);
         let rows = new_issue_rows(area);
@@ -2092,7 +2092,7 @@ mod tests {
 
     #[test]
     fn mouse_targets_issue_editor_fields_and_buttons() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::IssueEditor;
         let area = Rect::new(0, 0, 100, 30);
         let rows = issue_editor_rows(area);
@@ -2113,7 +2113,7 @@ mod tests {
 
     #[test]
     fn mouse_targets_picker_rows_and_buttons() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::AssigneeEditor;
         app.set_repo_collaborators(vec![crate::domain::User {
             login: "alice".to_string(),
@@ -2157,7 +2157,7 @@ mod tests {
 
     #[test]
     fn renders_assignee_picker_with_collaborators() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::AssigneeEditor;
         app.set_repo_collaborators(vec![crate::domain::User {
             login: "alice".to_string(),
@@ -2175,7 +2175,7 @@ mod tests {
 
     #[test]
     fn renders_issue_label_editor_with_selected_labels() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::IssueLabelEditor;
         app.set_repo_labels(vec![
             Label {
@@ -2221,7 +2221,7 @@ mod tests {
 
     #[test]
     fn loading_effects_are_targeted_to_modal_area() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.begin_action(PendingAction::Refresh, "Refreshing issues");
 
         let area = Rect::new(0, 0, 120, 40);
@@ -2233,7 +2233,7 @@ mod tests {
 
     #[test]
     fn browsing_refresh_effect_targets_issue_list() {
-        let app = App::new("owner/tissue".parse().unwrap());
+        let app = App::new("owner/tissues".parse().unwrap());
         let area = Rect::new(0, 0, 120, 40);
 
         let target = effect_area(&app, area);
@@ -2244,7 +2244,7 @@ mod tests {
 
     #[test]
     fn renders_loading_overlay_for_pending_actions() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.begin_action(PendingAction::CreateIssue, "Creating issue");
 
         let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
@@ -2258,7 +2258,7 @@ mod tests {
 
     #[test]
     fn renders_loading_overlay_with_throbber_indicator() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.begin_action(PendingAction::Refresh, "Refreshing issues");
         app.activity_frame = 2;
 
@@ -2272,7 +2272,7 @@ mod tests {
 
     #[test]
     fn detail_tree_scrolls_long_descriptions() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         let summary = issue(19, "Long detail", IssueState::Open, &[]);
         let body = (1..=24)
             .map(|line| format!("line {line:02}"))
@@ -2297,7 +2297,7 @@ mod tests {
 
     #[test]
     fn renders_comment_composer_as_text_editor() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::CommentComposer;
         app.input = "Looks good @a".to_string();
         app.set_repo_collaborators(vec![crate::domain::User {
@@ -2317,7 +2317,7 @@ mod tests {
 
     #[test]
     fn renders_close_comment_as_required_text_editor() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::CloseComment;
         app.input = "Closing after verification".to_string();
 
@@ -2333,7 +2333,7 @@ mod tests {
 
     #[test]
     fn renders_new_issue_as_separate_title_body_and_label_fields() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.start_new_issue();
         app.input = "Add label picker".to_string();
         app.body_input = "## Details\n\nUse markdown".to_string();
@@ -2373,7 +2373,7 @@ mod tests {
 
     #[test]
     fn renders_body_mention_suggestions_in_new_issue_and_issue_editors() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_repo_collaborators(vec![crate::domain::User {
             login: "alice".to_string(),
         }]);
@@ -2403,7 +2403,7 @@ mod tests {
 
     #[test]
     fn renders_success_confirmation_over_reloaded_state() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_issues(vec![issue(122, "Fix login redraw", IssueState::Open, &[])]);
         app.mode = UiMode::Success;
         app.set_status("Commented on issue #122");
@@ -2419,7 +2419,7 @@ mod tests {
 
     #[test]
     fn renders_issue_detail_as_markdown_tree_with_comments() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         let summary = issue(122, "Fix login redraw", IssueState::Open, &["bug"]);
         app.set_issues(vec![summary.clone()]);
         app.mode = UiMode::IssueDetail;
@@ -2449,7 +2449,7 @@ mod tests {
 
     #[test]
     fn renders_multiline_markdown_issue_description() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         let summary = issue(122, "Fix multiline body", IssueState::Open, &["bug"]);
         app.set_issues(vec![summary.clone()]);
         app.mode = UiMode::IssueDetail;
@@ -2472,7 +2472,7 @@ mod tests {
 
     #[test]
     fn renders_plain_issue_description_without_extra_prefix_character() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         let summary = issue(19, "A new thing", IssueState::Open, &[]);
         app.set_issues(vec![summary.clone()]);
         app.mode = UiMode::IssueDetail;
@@ -2492,7 +2492,7 @@ mod tests {
 
     #[test]
     fn collapses_comment_bodies_in_detail_tree() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         let summary = issue(122, "Fix login redraw", IssueState::Open, &["bug"]);
         app.set_issues(vec![summary.clone()]);
         app.mode = UiMode::IssueDetail;
@@ -2519,7 +2519,7 @@ mod tests {
 
     #[test]
     fn wraps_long_comment_lines_inside_detail_panel() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         let summary = issue(122, "Fix login redraw", IssueState::Open, &["bug"]);
         app.set_issues(vec![summary.clone()]);
         app.mode = UiMode::IssueDetail;

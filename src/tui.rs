@@ -33,7 +33,7 @@ pub async fn run<B: IssueBackend>(
 ) -> Result<()> {
     let mut effects = TissueEffects::default();
     let mut realm = TissueRealm::new(app)?;
-    app.begin_action(PendingAction::Refresh, "Starting tissue");
+    app.begin_action(PendingAction::Refresh, "Starting tissues");
     effects.trigger_startup_loading();
     draw_app(
         terminal,
@@ -156,7 +156,7 @@ fn draw_app(
     terminal.draw(|frame| {
         let area = frame.area();
         realm.render(app, frame, area);
-        let effect_area = if app.status == "Starting tissue" {
+        let effect_area = if app.status == "Starting tissues" {
             area
         } else {
             ui::effect_area(app, area)
@@ -2256,7 +2256,7 @@ mod tests {
     #[tokio::test]
     async fn submit_comment_refreshes_issue_state_and_preserves_action_status() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
         app.input = "done".to_string();
         app.mode = UiMode::CommentComposer;
@@ -2278,7 +2278,7 @@ mod tests {
     #[tokio::test]
     async fn submit_new_issue_refreshes_and_selects_created_issue() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
         app.start_new_issue();
         app.input = "New task".to_string();
@@ -2302,7 +2302,7 @@ mod tests {
     #[tokio::test]
     async fn assignee_filter_picker_applies_collaborator_filter() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
 
         open_assignee_filter(&mut app, &backend).await;
         app.input = "ali".to_string();
@@ -2324,7 +2324,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_filter_state_cycles_state_filter() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
 
         handle_key(
             &mut app,
@@ -2348,7 +2348,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_fs_filters_state_and_animates_list_update() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::Command;
         app.input = "fs".to_string();
 
@@ -2368,7 +2368,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_search_alias_updates_query_and_animates_list() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::Command;
         app.input = "s redraw".to_string();
 
@@ -2388,7 +2388,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_team_filter_aliases_update_assignee_filter() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::Command;
         app.input = "me".to_string();
 
@@ -2416,7 +2416,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_label_and_sort_aliases_update_list_filters() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::Command;
         app.input = "label bug".to_string();
 
@@ -2444,7 +2444,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_all_and_clear_reset_list_filters() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.filters.state = IssueStateFilter::Closed;
         app.filters.assignee = AssigneeFilter::Me;
         app.filters.labels = vec!["bug".to_string()];
@@ -2493,7 +2493,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_assign_opens_assignee_editor() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         handle_key(
@@ -2517,7 +2517,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_quit_sets_quit_flag() {
         let backend = backend_with_issues(Vec::new());
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
 
         handle_key(
             &mut app,
@@ -2539,7 +2539,7 @@ mod tests {
     #[tokio::test]
     async fn tab_completes_command_prefix() {
         let backend = backend_with_issues(Vec::new());
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::Command;
         app.input = "sor".to_string();
 
@@ -2560,7 +2560,7 @@ mod tests {
             issue(1, "Fix redraw", IssueState::Open, 0),
             issue(2, "Needs review", IssueState::Open, 0),
         ]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
         app.highlight_mentioned_issues(vec![2]);
         app.input = ":ping".to_string();
@@ -2576,7 +2576,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_accepts_optional_leading_colon() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
 
         app.mode = UiMode::Command;
         app.input = ":filter state".to_string();
@@ -2593,7 +2593,7 @@ mod tests {
     #[tokio::test]
     async fn browsing_shortcuts_do_not_open_command_only_actions() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
 
         for code in [
@@ -2618,7 +2618,7 @@ mod tests {
     #[tokio::test]
     async fn assignee_editor_assigns_issue_to_collaborator() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
         open_assignee_editor(&mut app, &backend).await;
         app.picker_index = 2;
@@ -2647,7 +2647,7 @@ mod tests {
     #[tokio::test]
     async fn assignee_editor_space_toggles_users_and_enter_submits_all() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
         open_assignee_editor(&mut app, &backend).await;
         app.picker_index = 2;
@@ -2690,7 +2690,7 @@ mod tests {
     #[tokio::test]
     async fn mouse_click_assigns_issue_to_collaborator() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
         open_assignee_editor(&mut app, &backend).await;
 
@@ -2708,7 +2708,7 @@ mod tests {
     #[tokio::test]
     async fn label_editor_toggles_and_saves_issue_labels() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
         open_issue_label_editor(&mut app, &backend).await;
 
@@ -2748,7 +2748,7 @@ mod tests {
     #[tokio::test]
     async fn mouse_click_toggles_label_and_save_button_updates_labels() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
         open_issue_label_editor(&mut app, &backend).await;
 
@@ -2766,7 +2766,7 @@ mod tests {
     #[tokio::test]
     async fn created_issue_is_shown_even_when_immediate_list_is_stale() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         refresh_after_action(
@@ -2788,7 +2788,7 @@ mod tests {
     #[tokio::test]
     async fn success_confirmation_dismisses_to_browsing() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::Success;
         app.set_status("Commented on issue #1");
 
@@ -2809,7 +2809,7 @@ mod tests {
             issue(1, "Fix redraw", IssueState::Open, 1),
             issue(2, "Add mouse", IssueState::Open, 0),
         ]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         handle_mouse_target(&mut app, &backend, ui::MouseTarget::IssueRow(1)).await;
@@ -2825,7 +2825,7 @@ mod tests {
             issue(1, "Fix redraw", IssueState::Open, 1),
             issue(2, "Add mouse", IssueState::Open, 0),
         ]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
         handle_key(
             &mut app,
@@ -2855,7 +2855,7 @@ mod tests {
 
     #[test]
     fn predicts_loading_preview_for_network_actions() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
 
         assert_eq!(
@@ -2958,7 +2958,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_loads_issue_list_without_selected_detail() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
 
         refresh(&mut app, &backend).await;
 
@@ -2973,7 +2973,7 @@ mod tests {
             issue(1, "Fix redraw", IssueState::Open, 1),
             issue(2, "Add tree", IssueState::Open, 0),
         ]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
         app.select_issue_number(1);
 
@@ -3002,7 +3002,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert(1, vec![comment("Initial note")]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_viewer_login("kpowel");
         refresh(&mut app, &backend).await;
 
@@ -3026,7 +3026,7 @@ mod tests {
     #[tokio::test]
     async fn auto_refresh_notifies_when_new_issue_body_mentions_viewer() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 0)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_viewer_login("kpowel");
         refresh(&mut app, &backend).await;
 
@@ -3054,7 +3054,7 @@ mod tests {
         let mut first = issue(1, "Fix redraw", IssueState::Open, 0);
         first.updated_at = Some(chrono::Utc::now() - chrono::Duration::minutes(5));
         let backend = backend_with_issues(vec![first.clone()]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_viewer_login("kpowel");
         refresh(&mut app, &backend).await;
 
@@ -3080,7 +3080,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert(1, vec![comment("@kpowel old note")]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_viewer_login("kpowel");
         refresh(&mut app, &backend).await;
 
@@ -3104,7 +3104,7 @@ mod tests {
     #[tokio::test]
     async fn auto_refresh_keeps_quiet_status_when_no_new_issues_arrive() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         let outcome = auto_refresh(&mut app, &backend).await;
@@ -3117,7 +3117,7 @@ mod tests {
 
     #[test]
     fn auto_refresh_only_runs_while_browsing() {
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         assert!(can_auto_refresh(&app));
 
         app.mode = UiMode::CommentComposer;
@@ -3147,7 +3147,7 @@ mod tests {
             issue(1, "Fix redraw", IssueState::Open, 1),
             issue(2, "Add tree", IssueState::Open, 0),
         ]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         handle_browsing_key(
@@ -3165,7 +3165,7 @@ mod tests {
     #[tokio::test]
     async fn enter_loads_detail_and_escape_starts_return_to_issue_list() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         handle_key(
@@ -3197,7 +3197,7 @@ mod tests {
     #[tokio::test]
     async fn enter_toggles_comment_tree_in_detail_mode() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         app.mode = UiMode::IssueDetail;
         app.set_selected_detail(IssueDetail {
@@ -3219,7 +3219,7 @@ mod tests {
     #[tokio::test]
     async fn composer_ctrl_enter_inserts_markdown_newline() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::CommentComposer;
         app.input = "**first**".to_string();
 
@@ -3237,7 +3237,7 @@ mod tests {
     #[tokio::test]
     async fn comment_enter_inserts_newline_and_ctrl_s_submits() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
         app.mode = UiMode::CommentComposer;
         app.input = "line one".to_string();
@@ -3284,7 +3284,7 @@ mod tests {
     #[tokio::test]
     async fn tab_completes_comment_and_close_comment_mentions() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_repo_collaborators(vec![User {
             login: "alice".to_string(),
         }]);
@@ -3313,7 +3313,7 @@ mod tests {
     #[tokio::test]
     async fn comment_editor_inserts_and_deletes_at_cursor() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::CommentComposer;
         app.input = "abcd".to_string();
 
@@ -3335,7 +3335,7 @@ mod tests {
     #[tokio::test]
     async fn mention_completion_uses_cursor_position() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_repo_collaborators(vec![
             User {
                 login: "alice".to_string(),
@@ -3368,7 +3368,7 @@ mod tests {
     #[tokio::test]
     async fn closing_open_issue_requires_comment_and_refreshes_state() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         handle_browsing_key(
@@ -3419,7 +3419,7 @@ mod tests {
     #[tokio::test]
     async fn reopening_closed_issue_keeps_confirmation_flow() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Closed, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         handle_browsing_key(
@@ -3435,7 +3435,7 @@ mod tests {
     #[tokio::test]
     async fn opening_new_issue_loads_repo_labels() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
 
         open_new_issue(&mut app, &backend).await;
 
@@ -3453,7 +3453,7 @@ mod tests {
     #[tokio::test]
     async fn new_issue_can_apply_loaded_template() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         open_new_issue(&mut app, &backend).await;
 
         handle_new_issue_key(
@@ -3471,7 +3471,7 @@ mod tests {
     #[tokio::test]
     async fn edit_issue_updates_title_and_body() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         open_issue_editor(&mut app, &backend).await;
@@ -3504,7 +3504,7 @@ mod tests {
     #[tokio::test]
     async fn new_issue_form_keeps_title_body_and_label_fields_separate() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         open_new_issue(&mut app, &backend).await;
 
         handle_new_issue_key(
@@ -3560,7 +3560,7 @@ mod tests {
     #[tokio::test]
     async fn tab_completes_mentions_in_new_issue_and_issue_edit_bodies() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_repo_collaborators(vec![User {
             login: "alice".to_string(),
         }]);
@@ -3593,7 +3593,7 @@ mod tests {
     #[tokio::test]
     async fn body_enter_inserts_newline_and_ctrl_s_submits_new_issue() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         open_new_issue(&mut app, &backend).await;
         app.set_input_text("New task");
         app.new_issue_field = NewIssueField::Body;
@@ -3632,7 +3632,7 @@ mod tests {
     #[tokio::test]
     async fn issue_body_editor_inserts_newline_at_cursor() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         app.mode = UiMode::IssueEditor;
         app.issue_edit_field = IssueEditField::Body;
         app.body_input = "one two".to_string();
@@ -3658,7 +3658,7 @@ mod tests {
     #[tokio::test]
     async fn ctrl_s_accepts_pending_label_text_before_creating_issue() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/tissue".parse().unwrap());
+        let mut app = App::new("owner/tissues".parse().unwrap());
         open_new_issue(&mut app, &backend).await;
         app.input = "New task".to_string();
         app.new_issue_field = NewIssueField::Labels;

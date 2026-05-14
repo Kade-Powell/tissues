@@ -40,7 +40,7 @@ def update_lockfile(version: str) -> None:
         if stripped == "[[package]]":
             in_tissue = False
             continue
-        if stripped == 'name = "tissue-cli"':
+        if stripped == 'name = "tissues"':
             in_tissue = True
             continue
         if in_tissue and stripped.startswith("version") and "=" in stripped:
@@ -49,7 +49,7 @@ def update_lockfile(version: str) -> None:
             break
 
     if not updated:
-        raise SystemExit("tissue-cli package entry not found in Cargo.lock")
+        raise SystemExit("tissues package entry not found in Cargo.lock")
 
     path.write_text("\n".join(lines) + "\n")
 

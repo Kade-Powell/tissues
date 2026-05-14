@@ -151,11 +151,11 @@ jobs:
           {
             echo "Publish request tag: ${VERSION_TAG}"
             if [[ "${{ inputs.dry_run && 'true' || 'false' }}" == "true" ]]; then
-              echo "Verified tissue-cli ${VERSION} crates.io publish with dry-run."
+              echo "Verified tissues ${VERSION} crates.io publish with dry-run."
             else
-              echo "Published tissue-cli ${VERSION} to crates.io."
+              echo "Published tissues ${VERSION} to crates.io."
             fi
             echo
             echo "Install with:"
-            echo "cargo install tissue-cli --version \"${VERSION}\" --locked"
+            echo "cargo install tissues --version \"${VERSION}\" --locked"
           } >> "$GITHUB_STEP_SUMMARY"
