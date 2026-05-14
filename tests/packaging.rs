@@ -36,7 +36,7 @@ fn ci_workflow_checks_format_tests_package_and_actions() {
     let workflow = fs::read_to_string(".github/workflows/ci.yaml").expect("read CI workflow");
 
     assert!(workflow.contains("pull_request:"));
-    assert!(workflow.contains("runs-on: comcast-ubuntu-latest"));
+    assert!(workflow.contains("runs-on: ubuntu-latest"));
     assert!(workflow.contains("rustup component add rustfmt"));
     assert!(workflow.contains("cargo fmt --check"));
     assert!(workflow.contains("cargo test"));
@@ -45,9 +45,33 @@ fn ci_workflow_checks_format_tests_package_and_actions() {
 }
 
 #[test]
-fn actionlint_knows_internal_runner_labels() {
-    let config = fs::read_to_string(".github/actionlint.yaml").expect("read actionlint config");
+fn release_workflow_publishes_from_public_github_actions() {
+    let workflow = fs::read_to_string(".github/workflows/cd.yaml").expect("read release workflow");
 
-    assert!(config.contains("self-hosted-runner:"));
-    assert!(config.contains("comcast-ubuntu-latest"));
+    assert!(workflow.contains("release:"));
+    assert!(workflow.contains("types: [published]"));
+    assert!(workflow.contains("./.github/workflows/publish-cli-crates-io.yaml"));
+    assert!(workflow.contains("version_tag: ${{ github.event.release.tag_name }}"));
+    assert!(workflow.contains("runner_label: ubuntu-latest"));
+    assert!(workflow.contains("CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}"));
+    assert!(!fs::exists(".github/workflows/cd-stable.yaml").expect("check cd-stable workflow"));
+}
+
+#[test]
+fn package_metadata_points_at_public_repository() {
+    let manifest = fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+
+    assert!(manifest.contains("repository = \"https://github.com/Kade-Powell/tissues\""));
+}
+
+#[test]
+fn workflows_do_not_reference_internal_infra() {
+    for entry in fs::read_dir(".github/workflows").expect("read workflows directory") {
+        let path = entry.expect("read workflow entry").path();
+        let workflow = fs::read_to_string(&path).expect("read workflow");
+
+        assert!(!workflow.contains("comcast-ubuntu-latest"), "{path:?}");
+        assert!(!workflow.contains("comcast-zorrillo"), "{path:?}");
+        assert!(!workflow.contains("gha-reusable-workflows"), "{path:?}");
+    }
 }

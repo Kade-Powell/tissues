@@ -12,7 +12,7 @@ permissions:
 jobs:
   rust:
     name: Rust checks
-    runs-on: comcast-ubuntu-latest
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,7 +37,7 @@ jobs:
 
   workflows:
     name: GitHub Actions lint
-    runs-on: comcast-ubuntu-latest
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4

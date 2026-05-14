@@ -78,7 +78,7 @@ tissue owner/tissue
 GitHub remote URLs work too:
 
 ```bash
-tissue git@github.com:comcast-zorrillo/tissue.git
+tissue git@github.com:Kade-Powell/tissues.git
 ```
 
 Or run from source:

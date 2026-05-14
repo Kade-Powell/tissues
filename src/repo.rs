@@ -145,24 +145,22 @@ mod tests {
 
     #[test]
     fn parses_github_ssh_remote_url() {
-        let repo: Repository = "git@github.com:comcast-zorrillo/tissue.git"
-            .parse()
-            .unwrap();
+        let repo: Repository = "git@github.com:Kade-Powell/tissues.git".parse().unwrap();
 
-        assert_eq!(repo.owner, "comcast-zorrillo");
-        assert_eq!(repo.name, "tissue");
-        assert_eq!(repo.to_string(), "comcast-zorrillo/tissue");
+        assert_eq!(repo.owner, "Kade-Powell");
+        assert_eq!(repo.name, "tissues");
+        assert_eq!(repo.to_string(), "Kade-Powell/tissues");
     }
 
     #[test]
     fn parses_github_https_remote_url() {
-        let repo: Repository = "https://github.com/comcast-zorrillo/tissue.git"
+        let repo: Repository = "https://github.com/Kade-Powell/tissues.git"
             .parse()
             .unwrap();
 
-        assert_eq!(repo.owner, "comcast-zorrillo");
-        assert_eq!(repo.name, "tissue");
-        assert_eq!(repo.to_string(), "comcast-zorrillo/tissue");
+        assert_eq!(repo.owner, "Kade-Powell");
+        assert_eq!(repo.name, "tissues");
+        assert_eq!(repo.to_string(), "Kade-Powell/tissues");
     }
 
     #[test]

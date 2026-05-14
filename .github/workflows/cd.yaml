@@ -1,33 +1,20 @@
-name: CD
+name: Publish Release
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "src/**"
-      - "scripts/**"
-      - ".github/workflows/cd.yaml"
-      - ".github/workflows/publish-cli-crates-io.yaml"
+  release:
+    types: [published]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  tag-and-release:
-    uses: comcast-zorrillo/gha-reusable-workflows/.github/workflows/tag-and-release.yaml@v0.0.3-tag-and-release
-    with:
-      prerelease: true
-
   publish-cli-crates-io:
-    needs: tag-and-release
     uses: ./.github/workflows/publish-cli-crates-io.yaml
     with:
-      version_tag: ${{ needs.tag-and-release.outputs.version-tag }}
-      runner_label: comcast-ubuntu-latest
+      version_tag: ${{ github.event.release.tag_name }}
+      runner_label: ubuntu-latest
       timeout_minutes: 20
       allow_existing: false
+      dry_run: false
     secrets:
       CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
