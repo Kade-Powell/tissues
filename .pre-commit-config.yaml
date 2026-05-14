@@ -1,12 +1,25 @@
 default_install_hook_types:
   - pre-commit
   - commit-msg
+  - pre-push
 
 repos:
   - repo: local
     hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --check
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
       - id: conventional-commit
         name: conventional commit message
         entry: python3 .github/scripts/check-conventional-commit.py
         language: system
         stages: [commit-msg]
+      - id: rust-quick-checks
+        name: rust quick checks
+        entry: bash -c 'cargo fmt --check && cargo test --test packaging'
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

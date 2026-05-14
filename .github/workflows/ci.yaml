@@ -52,6 +52,15 @@ jobs:
       - name: Install rustfmt
         run: rustup component add rustfmt
 
+      - name: Install prek
+        run: python3 -m pip install --user prek
+
+      - name: Run prek pre-commit hooks
+        run: ~/.local/bin/prek run --all-files
+
+      - name: Run prek pre-push hooks
+        run: ~/.local/bin/prek run --all-files --hook-stage pre-push
+
       - name: Check formatting
         run: cargo fmt --check
 

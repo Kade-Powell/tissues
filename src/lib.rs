@@ -1,4 +1,6 @@
 pub mod app;
+pub mod cache;
+pub mod config;
 pub mod domain;
 pub mod github;
 pub mod message;

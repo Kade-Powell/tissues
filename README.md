@@ -180,15 +180,18 @@ Install the local git hooks with `prek` before committing:
 
 ```bash
 prek install
+prek install --hook-type pre-push
 ```
 
-The commit-message hook enforces Conventional Commits, which also drive the release workflow.
+The commit-message hook enforces Conventional Commits, and the pre-push hook runs the quick formatting and packaging checks. Conventional Commit messages also drive the release workflow.
 
 Releases are driven by Conventional Commit messages on `main`. Breaking changes create a major release, `feat:` creates a minor release, and any other Conventional Commit type creates a patch release. The release workflow commits the package version, tags `vX.Y.Z`, creates the GitHub release, and publishes `tissues` to crates.io with `CRATES_IO_TOKEN`.
 
 The core code is split by responsibility:
 
 - `src/app.rs`: UI state, filters, selection, and modes.
+- `src/cache.rs`: local issue list and detail cache.
+- `src/config.rs`: built-in and user-defined saved views.
 - `src/domain.rs`: issue, comment, label, and user models.
 - `src/github.rs`: Octocrab adapter and `gh auth token` integration.
 - `src/repo.rs`: repository parsing and `gh repo view` inference.
@@ -197,4 +200,4 @@ The core code is split by responsibility:
 
 ## Current Scope
 
-This is a v1 focused issue tracker. It intentionally does not include multi-repo inboxes, project board sync, pull request review workflows, offline write queues, or custom token storage.
+This is a v1 focused issue tracker. It intentionally does not include multi-repo inboxes, project board sync, pull request review workflows, or custom token storage.

@@ -311,8 +311,15 @@ pub(crate) fn render_filters(app: &App, area: Rect, buffer: &mut Buffer) {
         app.filters.labels.join(", ")
     };
     let assignee = app.filters.assignee.label();
+    let view = app.active_view.as_deref().unwrap_or("custom");
+    let triage = if app.triage_mode { "on" } else { "off" };
+    let pending = if app.pending_writes.is_empty() {
+        String::new()
+    } else {
+        format!(" [Writes: {}]", app.pending_writes.len())
+    };
     let filters = format!(
-        "[State: {state}] [Assignee: {assignee}] [Labels: {labels}] [Search: {}] [Sort: {}]",
+        "[View: {view}] [Triage: {triage}] [State: {state}] [Assignee: {assignee}] [Labels: {labels}] [Search: {}] [Sort: {}]{pending}",
         app.filters.query,
         app.filters.sort.label()
     );
@@ -824,37 +831,50 @@ pub(crate) fn render_footer(app: &App, area: Rect, buffer: &mut Buffer) {
         .render(area, buffer);
 }
 
-fn footer_shortcuts(app: &App) -> &'static str {
+fn footer_shortcuts(app: &App) -> String {
     match app.mode {
-        UiMode::Browsing => ": commands | n new | x close | j/k move | Enter open | q quit",
-        UiMode::IssueDetail => "Esc list | Enter fold | j/k scroll | PgUp/PgDn detail | : commands",
-        UiMode::IssueDetailClosing => "Returning to list",
-        UiMode::Command => "Enter run | Tab complete | Arrows edit | Esc cancel",
-        UiMode::Search => "Enter search | Arrows edit | Esc cancel",
+        UiMode::Browsing if app.triage_mode => {
+            "triage | a assign me | l labels | c comment | x close | s skip | t exit".to_string()
+        }
+        UiMode::Browsing => {
+            ": commands | t triage | n new | x close | j/k move | Enter open | q quit".to_string()
+        }
+        UiMode::IssueDetail => {
+            "Esc list | Enter fold | j/k scroll | PgUp/PgDn detail | : commands".to_string()
+        }
+        UiMode::IssueDetailClosing => "Returning to list".to_string(),
+        UiMode::Command => "Enter run | Tab complete | Arrows edit | Esc cancel".to_string(),
+        UiMode::Search => "Enter search | Arrows edit | Esc cancel".to_string(),
         UiMode::CommentComposer => {
             "Ctrl+S submit | Tab @mention | Arrows edit | Enter/Ctrl+J newline | Esc cancel"
+                .to_string()
         }
         UiMode::CloseComment => {
             "Ctrl+S close | Tab @mention | Arrows edit | Enter/Ctrl+J newline | Esc cancel"
+                .to_string()
         }
         UiMode::NewIssue => {
             "Tab fields/@mention | Arrows edit | Ctrl+T template | Ctrl+S create | Esc cancel"
+                .to_string()
         }
         UiMode::IssueEditor => {
             "Tab fields/@mention | Arrows edit | Ctrl+S save | Enter/Ctrl+J newline | Esc cancel"
+                .to_string()
         }
-        UiMode::AssigneeFilter => "Enter apply filter | type search | j/k move | Esc cancel",
+        UiMode::AssigneeFilter => {
+            "Enter apply filter | type search | j/k move | Esc cancel".to_string()
+        }
         UiMode::AssigneeEditor => {
-            "Space toggle assignee | Enter save | type search | j/k move | Esc cancel"
+            "Space toggle assignee | Enter save | type search | j/k move | Esc cancel".to_string()
         }
         UiMode::IssueLabelEditor => {
-            "Enter toggle label | Ctrl+S save | type search | j/k move | Esc cancel"
+            "Enter toggle label | Ctrl+S save | type search | j/k move | Esc cancel".to_string()
         }
-        UiMode::ConfirmClose => "y/Enter reopen | Esc cancel",
-        UiMode::Success => "Any key continue",
-        UiMode::Loading => "Working",
-        UiMode::Error => "Esc dismiss",
-        UiMode::FilterEditor => "Esc cancel",
+        UiMode::ConfirmClose => "y/Enter reopen | Esc cancel".to_string(),
+        UiMode::Success => "Any key continue".to_string(),
+        UiMode::Loading => "Working".to_string(),
+        UiMode::Error => "Esc dismiss".to_string(),
+        UiMode::FilterEditor => "Esc cancel".to_string(),
     }
 }
 
@@ -948,12 +968,18 @@ fn command_cursor_position(app: &App) -> (u16, u16) {
 
 fn command_suggestions_line(input: &str) -> String {
     let command = input.trim().trim_start_matches(':').trim().to_lowercase();
-    let suggestions = [
+    let mut suggestions = [
         "fs",
         "fa",
         "s ",
         "me",
         "unassigned",
+        "@me",
+        "@none",
+        "view mine",
+        "view untriaged",
+        "view bugs",
+        "triage",
         "label ",
         "sort updated",
         "sort created",
@@ -973,16 +999,61 @@ fn command_suggestions_line(input: &str) -> String {
         "quit",
     ]
     .into_iter()
-    .filter(|candidate| command.is_empty() || candidate.starts_with(&command))
-    .take(5)
-    .collect::<Vec<_>>()
-    .join("  ");
+    .enumerate()
+    .filter_map(|(index, candidate)| {
+        command_match_score(candidate, &command).map(|score| (score, index, candidate))
+    })
+    .collect::<Vec<_>>();
+    suggestions.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.len().cmp(&right.2.len()))
+            .then_with(|| left.2.cmp(right.2))
+    });
+    let suggestions = suggestions
+        .into_iter()
+        .take(5)
+        .map(|(_, _, candidate)| candidate)
+        .collect::<Vec<_>>()
+        .join("  ");
 
     if suggestions.is_empty() {
         "no matching commands".to_string()
     } else {
         format!("Tab completes: {suggestions}")
     }
+}
+
+fn command_match_score(candidate: &str, command: &str) -> Option<usize> {
+    if command.is_empty() {
+        return Some(0);
+    }
+    if candidate.starts_with(command) {
+        return Some(0);
+    }
+    if !fuzzy_subsequence(candidate, command) {
+        return None;
+    }
+    Some(1 + candidate.len().saturating_sub(command.len()))
+}
+
+fn fuzzy_subsequence(candidate: &str, query: &str) -> bool {
+    let mut remaining = query.chars();
+    let Some(mut needle) = remaining.next() else {
+        return true;
+    };
+
+    for character in candidate.chars() {
+        if character == needle {
+            let Some(next) = remaining.next() else {
+                return true;
+            };
+            needle = next;
+        }
+    }
+
+    false
 }
 
 fn render_loading_overlay(app: &App, area: Rect, buffer: &mut Buffer) {

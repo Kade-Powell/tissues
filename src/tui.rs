@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use chrono::Utc;
 use color_eyre::eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::DefaultTerminal;
@@ -15,7 +16,9 @@ use crate::{
         App, AssigneeChoice, AssigneeFilter, FlashKind, IssueEditField, IssueSort,
         IssueStateFilter, NewIssueField, PendingAction, TextCursorMove, UiMode,
     },
-    domain::{IssueComment, IssueState, IssueSummary},
+    cache::IssueCache,
+    config::AppConfig,
+    domain::{IssueComment, IssueState, IssueSummary, User},
     github::IssueBackend,
     message::TissueMsg,
     realm::TissueRealm,
@@ -33,6 +36,8 @@ pub async fn run<B: IssueBackend>(
 ) -> Result<()> {
     let mut effects = TissueEffects::default();
     let mut realm = TissueRealm::new(app)?;
+    app.set_saved_views(AppConfig::load().views);
+    load_cached_issues(app);
     app.begin_action(PendingAction::Refresh, "Starting tissues");
     effects.trigger_startup_loading();
     draw_app(
@@ -177,7 +182,11 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
         },
         UiMode::Command if key.code == KeyCode::Enter => {
             let command = normalized_command(&app.input);
-            if is_refresh_command(&command) || is_filter_state_command(&command) {
+            if is_refresh_command(&command)
+                || is_filter_state_command(&command)
+                || saved_view_command(&command).is_some()
+                || assignee_direct_filter_command(&command).is_some()
+            {
                 Some((PendingAction::Refresh, "Refreshing issues".to_string()))
             } else if is_filter_assignee_command(&command) {
                 Some((
@@ -366,6 +375,17 @@ async fn handle_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) 
 async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('t') => app.toggle_triage_mode(),
+        KeyCode::Char('s') if app.triage_mode => app.skip_triage_issue(),
+        KeyCode::Char('a') if app.triage_mode && app.selected_issue().is_some() => {
+            assign_selected_issue_to_viewer(app, backend).await;
+        }
+        KeyCode::Char('l') if app.triage_mode && app.selected_issue().is_some() => {
+            open_issue_label_editor(app, backend).await;
+        }
+        KeyCode::Char('c') if app.triage_mode && app.selected_issue().is_some() => {
+            open_comment_composer(app, backend).await;
+        }
         KeyCode::Char('j') | KeyCode::Down => {
             app.select_next();
         }
@@ -614,6 +634,32 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
     let command = normalized_command(&app.input);
     app.clear_input();
 
+    if let Some(number) = issue_jump_command(&command) {
+        app.select_issue_number(number);
+        open_selected_detail(app, backend).await;
+        return;
+    }
+
+    if let Some(login) = assignee_direct_filter_command(&command) {
+        app.filters.assignee = login;
+        app.active_view = None;
+        app.mode = UiMode::Browsing;
+        refresh(app, backend).await;
+        return;
+    }
+
+    if let Some(view_name) = saved_view_command(&command) {
+        if app.apply_saved_view(view_name) {
+            app.mode = UiMode::Browsing;
+            refresh(app, backend).await;
+        } else {
+            app.mode = UiMode::Browsing;
+            app.flash = Some(FlashKind::Error);
+            app.set_status(format!("Unknown view: {view_name}"));
+        }
+        return;
+    }
+
     match command.as_str() {
         "" => {
             app.mode = UiMode::Browsing;
@@ -644,16 +690,19 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
         }
         "me" | "mine" => {
             app.filters.assignee = AssigneeFilter::Me;
+            app.active_view = None;
             app.mode = UiMode::Browsing;
             refresh(app, backend).await;
         }
         "unassigned" | "none" => {
             app.filters.assignee = AssigneeFilter::None;
+            app.active_view = None;
             app.mode = UiMode::Browsing;
             refresh(app, backend).await;
         }
         "any" | "all assignees" => {
             app.filters.assignee = AssigneeFilter::Any;
+            app.active_view = None;
             app.mode = UiMode::Browsing;
             refresh(app, backend).await;
         }
@@ -664,6 +713,7 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
         }
         command if sort_command(command).is_some() => {
             app.filters.sort = sort_command(command).expect("sort command checked");
+            app.active_view = None;
             app.mode = UiMode::Browsing;
             refresh(app, backend).await;
         }
@@ -674,6 +724,7 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
             } else {
                 app.filters.labels = vec![label];
             }
+            app.active_view = None;
             app.mode = UiMode::Browsing;
             refresh(app, backend).await;
         }
@@ -683,6 +734,19 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
             refresh(app, backend).await;
         }
         "n" | "new" | "new issue" => open_new_issue(app, backend).await,
+        "t" | "triage" => {
+            app.toggle_triage_mode();
+            app.mode = UiMode::Browsing;
+        }
+        "views" => {
+            app.mode = UiMode::Browsing;
+            let names = app.saved_view_names();
+            if names.is_empty() {
+                app.set_status("No saved views configured");
+            } else {
+                app.set_status(format!("Saved views: {}", names.join(", ")));
+            }
+        }
         "c" | "comment" if app.selected_issue().is_some() => {
             open_comment_composer(app, backend).await;
         }
@@ -717,6 +781,32 @@ fn complete_command(app: &mut App) {
     }
 }
 
+fn issue_jump_command(command: &str) -> Option<u64> {
+    command
+        .strip_prefix('#')
+        .unwrap_or(command)
+        .parse::<u64>()
+        .ok()
+}
+
+fn assignee_direct_filter_command(command: &str) -> Option<AssigneeFilter> {
+    let assignee = command.strip_prefix('@')?;
+    match assignee {
+        "me" => Some(AssigneeFilter::Me),
+        "none" | "unassigned" => Some(AssigneeFilter::None),
+        "" => None,
+        login => Some(AssigneeFilter::User(login.to_string())),
+    }
+}
+
+fn saved_view_command(command: &str) -> Option<&str> {
+    command
+        .strip_prefix("view ")
+        .or_else(|| command.strip_prefix("v "))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+}
+
 async fn jump_to_first_mention<B: IssueBackend>(app: &mut App, backend: &B) {
     let Some(number) = app.first_mentioned_issue_number() else {
         app.mode = UiMode::Browsing;
@@ -732,12 +822,18 @@ async fn jump_to_first_mention<B: IssueBackend>(app: &mut App, backend: &B) {
 
 fn command_suggestions(input: &str) -> Vec<String> {
     let command = normalized_command(input);
-    let commands = [
+    let mut suggestions = [
         "fs",
         "fa",
         "s ",
         "me",
         "unassigned",
+        "@me",
+        "@none",
+        "view mine",
+        "view untriaged",
+        "view bugs",
+        "triage",
         "label ",
         "sort updated",
         "sort created",
@@ -755,14 +851,58 @@ fn command_suggestions(input: &str) -> Vec<String> {
         "mentions",
         "refresh",
         "quit",
-    ];
+    ]
+    .into_iter()
+    .enumerate()
+    .filter_map(|(index, candidate)| {
+        command_match_score(candidate, &command).map(|score| (score, index, candidate))
+    })
+    .collect::<Vec<_>>();
 
-    commands
+    suggestions.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.len().cmp(&right.2.len()))
+            .then_with(|| left.2.cmp(right.2))
+    });
+
+    suggestions
         .into_iter()
-        .filter(|candidate| command.is_empty() || candidate.starts_with(&command))
         .take(5)
-        .map(ToOwned::to_owned)
+        .map(|(_, _, candidate)| candidate.to_owned())
         .collect()
+}
+
+fn command_match_score(candidate: &str, command: &str) -> Option<usize> {
+    if command.is_empty() {
+        return Some(0);
+    }
+    if candidate.starts_with(command) {
+        return Some(0);
+    }
+    if !fuzzy_subsequence(candidate, command) {
+        return None;
+    }
+    Some(1 + candidate.len().saturating_sub(command.len()))
+}
+
+fn fuzzy_subsequence(candidate: &str, query: &str) -> bool {
+    let mut remaining = query.chars();
+    let Some(mut needle) = remaining.next() else {
+        return true;
+    };
+
+    for character in candidate.chars() {
+        if character == needle {
+            let Some(next) = remaining.next() else {
+                return true;
+            };
+            needle = next;
+        }
+    }
+
+    false
 }
 
 fn sort_command(command: &str) -> Option<IssueSort> {
@@ -1110,6 +1250,7 @@ pub async fn refresh<B: IssueBackend>(app: &mut App, backend: &B) {
     match backend.list_issues(&app.repo, &app.filters).await {
         Ok(issues) => {
             app.set_issues(issues);
+            save_cached_issues(app);
             app.mode = UiMode::Browsing;
             let loaded_status = format!(
                 "Loaded {} {} issues",
@@ -1162,6 +1303,7 @@ async fn auto_refresh<B: IssueBackend>(app: &mut App, backend: &B) -> AutoRefres
             let mention_status = mention_notice(&issues, &mention_issue_numbers);
 
             app.set_issues(issues);
+            save_cached_issues(app);
             if let Some(number) = selected_issue_number {
                 app.select_issue_number(number);
             }
@@ -1342,6 +1484,7 @@ async fn refresh_after_action<B: IssueBackend>(
     match backend.list_issues(&app.repo, &app.filters).await {
         Ok(issues) => {
             app.set_issues(issues);
+            save_cached_issues(app);
             if let Some(issue) = optimistic_issue
                 && should_keep_optimistic_issue(app, &issue)
                 && !app.issues.iter().any(|item| item.number == issue.number)
@@ -1374,6 +1517,47 @@ async fn refresh_after_action<B: IssueBackend>(
             app.set_status(format!("{success_status}; refresh failed: {err:#}"));
         }
     }
+}
+
+fn load_cached_issues(app: &mut App) {
+    let Some(cache) = IssueCache::for_repo(&app.repo) else {
+        return;
+    };
+    let Ok(Some(issues)) = cache.load_issues(&app.filters) else {
+        return;
+    };
+
+    app.set_issues(issues);
+    app.set_status("Loaded cached issues; refreshing");
+}
+
+fn save_cached_issues(app: &App) {
+    let Some(cache) = IssueCache::for_repo(&app.repo) else {
+        return;
+    };
+    let _ = cache.save_issues(&app.filters, &app.issues);
+}
+
+fn load_cached_selected_detail(app: &mut App, number: u64) -> bool {
+    let Some(cache) = IssueCache::for_repo(&app.repo) else {
+        return false;
+    };
+    let Ok(Some(detail)) = cache.load_detail(number) else {
+        return false;
+    };
+
+    app.set_selected_detail(detail);
+    true
+}
+
+fn save_cached_detail(app: &App) {
+    let Some(detail) = app.selected_detail.as_ref() else {
+        return;
+    };
+    let Some(cache) = IssueCache::for_repo(&app.repo) else {
+        return;
+    };
+    let _ = cache.save_detail(detail);
 }
 
 fn should_keep_optimistic_issue(app: &App, issue: &IssueSummary) -> bool {
@@ -1429,6 +1613,16 @@ fn keep_optimistic_comment_visible(app: &mut App, number: u64, comment: IssueCom
     }
 }
 
+fn local_comment(app: &App, body: &str) -> IssueComment {
+    IssueComment {
+        author: app.viewer_login.as_ref().map(|login| User {
+            login: login.clone(),
+        }),
+        body: body.to_string(),
+        created_at: Some(Utc::now()),
+    }
+}
+
 async fn submit_comment<B: IssueBackend>(app: &mut App, backend: &B) {
     let body = app.input.trim().to_string();
     let Some(issue) = app.selected_issue() else {
@@ -1443,6 +1637,10 @@ async fn submit_comment<B: IssueBackend>(app: &mut App, backend: &B) {
         return;
     }
 
+    let previous_issues = app.issues.clone();
+    let previous_detail = app.selected_detail.clone();
+    let optimistic_comment = local_comment(app, &body);
+    app.apply_optimistic_comment(number, optimistic_comment.clone());
     app.begin_action(
         PendingAction::AddComment,
         format!("Adding comment to #{number}"),
@@ -1461,6 +1659,8 @@ async fn submit_comment<B: IssueBackend>(app: &mut App, backend: &B) {
             .await;
         }
         Err(err) => {
+            app.issues = previous_issues;
+            app.selected_detail = previous_detail;
             app.finish_action();
             app.mode = UiMode::Browsing;
             app.flash = Some(FlashKind::Error);
@@ -1483,12 +1683,17 @@ async fn close_issue_with_comment<B: IssueBackend>(app: &mut App, backend: &B) {
         return;
     }
 
+    let previous_issues = app.issues.clone();
+    let previous_detail = app.selected_detail.clone();
+    let optimistic_comment = local_comment(app, &body);
+    app.apply_optimistic_comment(number, optimistic_comment);
+    app.apply_optimistic_state(number, IssueState::Closed);
     app.begin_action(
         PendingAction::CloseIssue,
         format!("Closing issue #{number}"),
     );
     match backend.add_comment(&app.repo, number, &body).await {
-        Ok(_) => match backend
+        Ok(comment) => match backend
             .set_issue_state(&app.repo, number, IssueState::Closed)
             .await
         {
@@ -1500,11 +1705,13 @@ async fn close_issue_with_comment<B: IssueBackend>(app: &mut App, backend: &B) {
                     Some(number),
                     format!("Closed issue #{number} with comment"),
                     None,
-                    None,
+                    Some(comment),
                 )
                 .await;
             }
             Err(err) => {
+                app.issues = previous_issues;
+                app.selected_detail = previous_detail;
                 app.finish_action();
                 app.mode = UiMode::Browsing;
                 app.flash = Some(FlashKind::Error);
@@ -1512,6 +1719,8 @@ async fn close_issue_with_comment<B: IssueBackend>(app: &mut App, backend: &B) {
             }
         },
         Err(err) => {
+            app.issues = previous_issues;
+            app.selected_detail = previous_detail;
             app.finish_action();
             app.mode = UiMode::CloseComment;
             app.flash = Some(FlashKind::Error);
@@ -1758,6 +1967,7 @@ async fn apply_assignee_filter<B: IssueBackend>(
         AssigneeChoice::Unassigned => AssigneeFilter::None,
         AssigneeChoice::User(login) => AssigneeFilter::User(login),
     };
+    app.active_view = None;
     app.clear_input();
     app.mode = UiMode::Browsing;
     refresh(app, backend).await;
@@ -1773,6 +1983,9 @@ async fn save_assignee_assignment<B: IssueBackend>(app: &mut App, backend: &B) {
     assignees.sort();
     assignees.dedup();
 
+    let previous_issues = app.issues.clone();
+    let previous_detail = app.selected_detail.clone();
+    app.apply_optimistic_assignees(number, assignees.clone());
     app.begin_action(
         PendingAction::UpdateAssignees,
         format!("Updating issue #{number}"),
@@ -1793,6 +2006,8 @@ async fn save_assignee_assignment<B: IssueBackend>(app: &mut App, backend: &B) {
             .await;
         }
         Err(err) => {
+            app.issues = previous_issues;
+            app.selected_detail = previous_detail;
             app.finish_action();
             app.flash = Some(FlashKind::Error);
             app.mode = UiMode::Browsing;
@@ -1809,6 +2024,9 @@ async fn save_issue_labels<B: IssueBackend>(app: &mut App, backend: &B) {
     let number = issue.number;
     let labels = app.editing_issue_labels.clone();
 
+    let previous_issues = app.issues.clone();
+    let previous_detail = app.selected_detail.clone();
+    app.apply_optimistic_labels(number, labels.clone());
     app.begin_action(
         PendingAction::UpdateLabels,
         format!("Updating labels for #{number}"),
@@ -1826,6 +2044,8 @@ async fn save_issue_labels<B: IssueBackend>(app: &mut App, backend: &B) {
             .await;
         }
         Err(err) => {
+            app.issues = previous_issues;
+            app.selected_detail = previous_detail;
             app.finish_action();
             app.flash = Some(FlashKind::Error);
             app.mode = UiMode::IssueLabelEditor;
@@ -1898,6 +2118,9 @@ async fn toggle_issue_state<B: IssueBackend>(app: &mut App, backend: &B) {
         IssueState::Closed => PendingAction::CloseIssue,
     };
 
+    let previous_issues = app.issues.clone();
+    let previous_detail = app.selected_detail.clone();
+    app.apply_optimistic_state(number, next_state.clone());
     app.begin_action(pending_action, format!("Updating issue #{number}"));
     match backend.set_issue_state(&app.repo, number, next_state).await {
         Ok(_) => {
@@ -1912,10 +2135,57 @@ async fn toggle_issue_state<B: IssueBackend>(app: &mut App, backend: &B) {
             .await;
         }
         Err(err) => {
+            app.issues = previous_issues;
+            app.selected_detail = previous_detail;
             app.finish_action();
             app.mode = UiMode::Browsing;
             app.flash = Some(FlashKind::Error);
             app.set_status(format!("Update failed: {err:#}"));
+        }
+    }
+}
+
+async fn assign_selected_issue_to_viewer<B: IssueBackend>(app: &mut App, backend: &B) {
+    let Some(number) = app.selected_issue().map(|issue| issue.number) else {
+        app.mode = UiMode::Browsing;
+        return;
+    };
+    let Some(login) = app.viewer_login.clone() else {
+        app.flash = Some(FlashKind::Error);
+        app.set_status("Authenticated GitHub login is unavailable");
+        return;
+    };
+
+    let assignees = vec![login];
+    let previous_issues = app.issues.clone();
+    let previous_detail = app.selected_detail.clone();
+    app.apply_optimistic_assignees(number, assignees.clone());
+    app.begin_action(
+        PendingAction::UpdateAssignees,
+        format!("Assigning issue #{number}"),
+    );
+    match backend
+        .set_issue_assignees(&app.repo, number, &assignees)
+        .await
+    {
+        Ok(_) => {
+            refresh_after_action(
+                app,
+                backend,
+                Some(number),
+                format!("Assigned issue #{number}"),
+                None,
+                None,
+            )
+            .await;
+        }
+        Err(err) => {
+            app.issues = previous_issues;
+            app.selected_detail = previous_detail;
+            app.finish_action();
+            app.mode = UiMode::Browsing;
+            app.flash = Some(FlashKind::Error);
+            app.set_status(format!("Assign failed: {err:#}"));
         }
     }
 }
@@ -1938,6 +2208,7 @@ async fn open_selected_detail<B: IssueBackend>(app: &mut App, backend: &B) {
         return;
     }
 
+    let had_cached_detail = load_cached_selected_detail(app, number);
     app.begin_action(PendingAction::Refresh, format!("Loading issue #{number}"));
     match load_selected_detail(app, backend).await {
         Ok(()) => {
@@ -1948,9 +2219,16 @@ async fn open_selected_detail<B: IssueBackend>(app: &mut App, backend: &B) {
         }
         Err(err) => {
             app.finish_action();
-            app.mode = UiMode::Browsing;
             app.flash = Some(FlashKind::Error);
-            app.set_status(format!("Detail load failed: {err:#}"));
+            if had_cached_detail {
+                app.mode = UiMode::IssueDetail;
+                app.set_status(format!(
+                    "Showing cached issue #{number}; refresh failed: {err:#}"
+                ));
+            } else {
+                app.mode = UiMode::Browsing;
+                app.set_status(format!("Detail load failed: {err:#}"));
+            }
         }
     }
 }
@@ -1969,6 +2247,7 @@ async fn load_selected_detail<B: IssueBackend>(app: &mut App, backend: &B) -> Re
 
     let detail = backend.get_issue(&app.repo, number).await?;
     app.set_selected_detail(detail);
+    save_cached_detail(app);
     Ok(())
 }
 
@@ -2571,6 +2850,100 @@ mod tests {
         assert_eq!(app.selected_issue().unwrap().number, 2);
         assert_eq!(app.selected_detail.as_ref().unwrap().summary.number, 2);
         assert_eq!(app.mode, UiMode::IssueDetail);
+    }
+
+    #[test]
+    fn command_palette_uses_fuzzy_suggestions() {
+        assert_eq!(
+            command_suggestions("sco").first().map(String::as_str),
+            Some("sort comments")
+        );
+        assert_eq!(
+            command_suggestions("cm").first().map(String::as_str),
+            Some("comment")
+        );
+    }
+
+    #[tokio::test]
+    async fn colon_command_issue_number_jumps_to_detail() {
+        let backend = backend_with_issues(vec![
+            issue(1, "Fix redraw", IssueState::Open, 0),
+            issue(2, "Needs review", IssueState::Open, 0),
+        ]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        refresh(&mut app, &backend).await;
+        app.mode = UiMode::Command;
+        app.input = "#2".to_string();
+
+        run_command(&mut app, &backend).await;
+
+        assert_eq!(app.selected_issue().unwrap().number, 2);
+        assert_eq!(app.selected_detail.as_ref().unwrap().summary.number, 2);
+        assert_eq!(app.mode, UiMode::IssueDetail);
+    }
+
+    #[tokio::test]
+    async fn colon_command_applies_saved_view() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 0)]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_saved_views(vec![crate::config::SavedView {
+            name: "mine".to_string(),
+            filters: IssueFilters {
+                state: IssueStateFilter::Open,
+                assignee: AssigneeFilter::Me,
+                labels: Vec::new(),
+                query: String::new(),
+                sort: IssueSort::Updated,
+            },
+        }]);
+        app.mode = UiMode::Command;
+        app.input = "view mine".to_string();
+
+        run_command(&mut app, &backend).await;
+
+        assert_eq!(app.active_view.as_deref(), Some("mine"));
+        assert_eq!(app.filters.assignee, AssigneeFilter::Me);
+        assert_eq!(app.mode, UiMode::Browsing);
+        assert_eq!(*backend.list_calls.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn triage_shortcuts_skip_assign_label_and_comment() {
+        let backend = backend_with_issues(vec![
+            issue(1, "Fix redraw", IssueState::Open, 0),
+            issue(2, "Needs review", IssueState::Open, 0),
+        ]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_viewer_login("kpowel");
+        refresh(&mut app, &backend).await;
+
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+        )
+        .await;
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+        )
+        .await;
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+        )
+        .await;
+
+        assert!(app.triage_mode);
+        assert_eq!(app.selected_issue().unwrap().number, 2);
+        assert_eq!(
+            *backend.assignee_updates.lock().unwrap(),
+            vec![(2, vec!["kpowel".to_string()])]
+        );
+        assert_eq!(app.selected_issue().unwrap().assignees[0].login, "kpowel");
+        assert_eq!(app.mode, UiMode::Success);
     }
 
     #[tokio::test]

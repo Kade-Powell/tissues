@@ -1,11 +1,14 @@
 use std::cmp::Ordering;
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
+    config::SavedView,
     domain::{IssueDetail, IssueSummary, IssueTemplate, Label, User},
     repo::Repository,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum IssueStateFilter {
     Open,
     Closed,
@@ -22,7 +25,7 @@ impl IssueStateFilter {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum IssueSort {
     Updated,
     Created,
@@ -41,7 +44,7 @@ impl IssueSort {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AssigneeFilter {
     Any,
     Me,
@@ -60,7 +63,7 @@ impl AssigneeFilter {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct IssueFilters {
     pub state: IssueStateFilter,
     pub assignee: AssigneeFilter,
@@ -212,6 +215,10 @@ pub struct App {
     pub flash: Option<FlashKind>,
     pub viewer_login: Option<String>,
     pub issue_highlights: Vec<IssueHighlight>,
+    pub saved_views: Vec<SavedView>,
+    pub active_view: Option<String>,
+    pub triage_mode: bool,
+    pub pending_writes: Vec<String>,
     pub new_issue_animation_frame: u8,
     pub activity_frame: u8,
     pub detail_scroll: u16,
@@ -249,6 +256,10 @@ impl App {
             flash: None,
             viewer_login: None,
             issue_highlights: Vec::new(),
+            saved_views: Vec::new(),
+            active_view: None,
+            triage_mode: false,
+            pending_writes: Vec::new(),
             new_issue_animation_frame: 0,
             activity_frame: 0,
             detail_scroll: 0,
@@ -324,6 +335,7 @@ impl App {
     }
 
     pub fn cycle_state_filter(&mut self) {
+        self.active_view = None;
         self.filters.state = match self.filters.state {
             IssueStateFilter::Open => IssueStateFilter::Closed,
             IssueStateFilter::Closed => IssueStateFilter::All,
@@ -332,6 +344,7 @@ impl App {
     }
 
     pub fn cycle_sort(&mut self) {
+        self.active_view = None;
         self.filters.sort = match self.filters.sort {
             IssueSort::Updated => IssueSort::Created,
             IssueSort::Created => IssueSort::Comments,
@@ -342,10 +355,12 @@ impl App {
     }
 
     pub fn set_query(&mut self, query: impl Into<String>) {
+        self.active_view = None;
         self.filters.query = query.into();
     }
 
     pub fn clear_filters(&mut self) {
+        self.active_view = None;
         let sort = self.filters.sort.clone();
         self.filters = IssueFilters {
             state: IssueStateFilter::All,
@@ -367,6 +382,16 @@ impl App {
 
     pub fn finish_action(&mut self) {
         self.pending_action = None;
+    }
+
+    pub fn begin_pending_write(&mut self, label: impl Into<String>) {
+        self.pending_writes.push(label.into());
+    }
+
+    pub fn finish_pending_write(&mut self, label: &str) {
+        if let Some(index) = self.pending_writes.iter().position(|item| item == label) {
+            self.pending_writes.remove(index);
+        }
     }
 
     pub fn set_viewer_login(&mut self, login: impl Into<String>) {
@@ -464,6 +489,118 @@ impl App {
 
     pub fn toggle_comments(&mut self) {
         self.comments_expanded = !self.comments_expanded;
+    }
+
+    pub fn set_saved_views(&mut self, views: Vec<SavedView>) {
+        self.saved_views = views;
+    }
+
+    pub fn saved_view_names(&self) -> Vec<String> {
+        self.saved_views
+            .iter()
+            .map(|view| view.name.clone())
+            .collect()
+    }
+
+    pub fn apply_saved_view(&mut self, name: &str) -> bool {
+        let Some(view) = self
+            .saved_views
+            .iter()
+            .find(|view| view.name.eq_ignore_ascii_case(name))
+            .cloned()
+        else {
+            return false;
+        };
+
+        self.filters = view.filters;
+        self.active_view = Some(view.name);
+        true
+    }
+
+    pub fn toggle_triage_mode(&mut self) {
+        self.triage_mode = !self.triage_mode;
+        if self.triage_mode {
+            self.set_status("Triage queue on");
+        } else {
+            self.set_status("Triage queue off");
+        }
+    }
+
+    pub fn skip_triage_issue(&mut self) {
+        let skipped = self.selected_issue().map(|issue| issue.number);
+        self.select_next();
+        if let Some(number) = skipped {
+            self.set_status(format!("Skipped issue #{number}"));
+        }
+    }
+
+    pub fn apply_optimistic_comment(&mut self, number: u64, comment: crate::domain::IssueComment) {
+        let mut next_count = None;
+        if let Some(detail) = self
+            .selected_detail
+            .as_mut()
+            .filter(|detail| detail.summary.number == number)
+        {
+            if !detail.comments.iter().any(|item| item == &comment) {
+                detail.comments.push(comment);
+            }
+            detail.summary.comment_count = detail
+                .summary
+                .comment_count
+                .max(detail.comments.len() as u64);
+            next_count = Some(detail.summary.comment_count);
+        }
+
+        if let Some(issue) = self.issues.iter_mut().find(|issue| issue.number == number) {
+            issue.comment_count = next_count.unwrap_or(issue.comment_count.saturating_add(1));
+        }
+    }
+
+    pub fn apply_optimistic_state(&mut self, number: u64, state: crate::domain::IssueState) {
+        if let Some(issue) = self.issues.iter_mut().find(|issue| issue.number == number) {
+            issue.state = state.clone();
+        }
+        if let Some(detail) = self
+            .selected_detail
+            .as_mut()
+            .filter(|detail| detail.summary.number == number)
+        {
+            detail.summary.state = state;
+        }
+    }
+
+    pub fn apply_optimistic_assignees(&mut self, number: u64, assignees: Vec<String>) {
+        let assignees = assignees
+            .into_iter()
+            .map(|login| User { login })
+            .collect::<Vec<_>>();
+        if let Some(issue) = self.issues.iter_mut().find(|issue| issue.number == number) {
+            issue.assignees = assignees.clone();
+        }
+        if let Some(detail) = self
+            .selected_detail
+            .as_mut()
+            .filter(|detail| detail.summary.number == number)
+        {
+            detail.summary.assignees = assignees;
+        }
+    }
+
+    pub fn apply_optimistic_labels(&mut self, number: u64, labels: Vec<String>) {
+        let labels = labels
+            .into_iter()
+            .map(|name| Label { name })
+            .collect::<Vec<_>>();
+        if let Some(issue) = self.issues.iter_mut().find(|issue| issue.number == number) {
+            issue.labels = labels.clone();
+        }
+        if let Some(detail) = self
+            .selected_detail
+            .as_mut()
+            .filter(|detail| detail.summary.number == number)
+        {
+            detail.summary.labels = labels;
+        }
     }
 
     pub fn start_new_issue(&mut self) {
@@ -1373,5 +1510,77 @@ mod tests {
             app.issue_highlight_kind(2),
             Some(IssueHighlightKind::Mention)
         );
+    }
+
+    #[test]
+    fn applies_named_saved_views_to_filters() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.filters.state = IssueStateFilter::Closed;
+        app.set_saved_views(vec![crate::config::SavedView {
+            name: "mine".to_string(),
+            filters: IssueFilters {
+                state: IssueStateFilter::Open,
+                assignee: AssigneeFilter::Me,
+                labels: vec!["bug".to_string()],
+                query: "panic".to_string(),
+                sort: IssueSort::Comments,
+            },
+        }]);
+
+        assert!(app.apply_saved_view("mine"));
+
+        assert_eq!(app.active_view.as_deref(), Some("mine"));
+        assert_eq!(app.filters.state, IssueStateFilter::Open);
+        assert_eq!(app.filters.assignee, AssigneeFilter::Me);
+        assert_eq!(app.filters.labels, vec!["bug"]);
+        assert_eq!(app.filters.query, "panic");
+        assert_eq!(app.filters.sort, IssueSort::Comments);
+    }
+
+    #[test]
+    fn triage_mode_toggles_and_skips_selected_issue() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_issues(vec![issue(1, "one"), issue(2, "two")]);
+
+        app.toggle_triage_mode();
+        app.skip_triage_issue();
+
+        assert!(app.triage_mode);
+        assert_eq!(app.selected_issue().unwrap().number, 2);
+        assert_eq!(app.status, "Skipped issue #1");
+    }
+
+    #[test]
+    fn optimistic_updates_keep_visible_issue_state_current() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_issues(vec![issue(1, "one")]);
+        app.set_selected_detail(crate::domain::IssueDetail {
+            summary: issue(1, "one"),
+            body: "Body".to_string(),
+            comments: Vec::new(),
+        });
+
+        app.apply_optimistic_comment(
+            1,
+            crate::domain::IssueComment {
+                author: Some(User {
+                    login: "kpowel".to_string(),
+                }),
+                body: "queued".to_string(),
+                created_at: None,
+            },
+        );
+        app.apply_optimistic_state(1, crate::domain::IssueState::Closed);
+        app.apply_optimistic_assignees(1, vec!["kpowel".to_string()]);
+        app.apply_optimistic_labels(1, vec!["bug".to_string()]);
+
+        let issue = app.selected_issue().unwrap();
+        assert_eq!(issue.comment_count, 1);
+        assert_eq!(issue.state, crate::domain::IssueState::Closed);
+        assert_eq!(issue.assignees[0].login, "kpowel");
+        assert_eq!(issue.labels[0].name, "bug");
+        let detail = app.selected_detail.as_ref().unwrap();
+        assert_eq!(detail.comments[0].body, "queued");
+        assert_eq!(detail.summary.state, crate::domain::IssueState::Closed);
     }
 }

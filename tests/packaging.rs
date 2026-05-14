@@ -44,6 +44,8 @@ fn ci_workflow_checks_format_tests_package_and_actions() {
     assert!(workflow.contains("rustup component add rustfmt"));
     assert!(workflow.contains("cargo fmt --check"));
     assert!(workflow.contains("cargo test"));
+    assert!(workflow.contains("prek run --all-files"));
+    assert!(workflow.contains("prek run --all-files --hook-stage pre-push"));
     assert!(workflow.contains("cargo publish --dry-run --allow-dirty"));
     assert!(workflow.contains("raven-actions/actionlint@v2"));
 }
@@ -56,7 +58,10 @@ fn prek_enforces_conventional_commit_messages() {
         .expect("read conventional commit checker");
 
     assert!(config.contains("commit-msg"));
+    assert!(config.contains("pre-push"));
     assert!(config.contains("check-conventional-commit.py"));
+    assert!(config.contains("cargo fmt --check"));
+    assert!(config.contains("cargo test --test packaging"));
     assert!(checker.contains("ALLOWED_TYPES"));
     assert!(checker.contains("HEADER_RE"));
 }
