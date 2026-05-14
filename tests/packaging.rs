@@ -36,6 +36,7 @@ fn ci_workflow_checks_format_tests_package_and_actions() {
     let workflow = fs::read_to_string(".github/workflows/ci.yaml").expect("read CI workflow");
 
     assert!(workflow.contains("pull_request:"));
+    assert!(workflow.contains("runs-on: comcast-ubuntu-latest"));
     assert!(workflow.contains("cargo fmt --check"));
     assert!(workflow.contains("cargo test"));
     assert!(workflow.contains("cargo publish --dry-run --allow-dirty"));

@@ -20,7 +20,7 @@ jobs:
     uses: ./.github/workflows/publish-cli-crates-io.yaml
     with:
       version_tag: ${{ needs.stable-tag.outputs.new_tag }}
-      runner_label: ubuntu-latest
+      runner_label: comcast-ubuntu-latest
       timeout_minutes: 20
       allow_existing: true
     secrets:

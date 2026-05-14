@@ -11,7 +11,7 @@ on:
         description: "GitHub runner label"
         type: string
         required: false
-        default: ubuntu-latest
+        default: comcast-ubuntu-latest
       timeout_minutes:
         description: "Job timeout in minutes"
         type: number
@@ -40,7 +40,7 @@ on:
         description: "GitHub runner label"
         type: string
         required: false
-        default: ubuntu-latest
+        default: comcast-ubuntu-latest
       timeout_minutes:
         description: "Job timeout in minutes"
         type: number
@@ -62,7 +62,7 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ${{ inputs.runner_label || 'ubuntu-latest' }}
+    runs-on: ${{ inputs.runner_label || 'comcast-ubuntu-latest' }}
     timeout-minutes: ${{ inputs.timeout_minutes || 20 }}
     steps:
       - name: Checkout
