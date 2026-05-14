@@ -1,20 +1,113 @@
-name: Publish Release
+name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Plan the next release and dry-run crates.io publishing"
+        type: boolean
+        required: false
+        default: true
+      allow_existing:
+        description: "Treat already-published crates.io version as success"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
 
 jobs:
+  create-release:
+    name: Create release tag
+    runs-on: ubuntu-latest
+    outputs:
+      allow_existing: ${{ steps.mode.outputs.allow_existing }}
+      dry_run: ${{ steps.mode.outputs.dry_run }}
+      should_publish: ${{ steps.plan.outputs.should_release }}
+      version_tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - name: Resolve release mode
+        id: mode
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "dry_run=${{ inputs.dry_run && 'true' || 'false' }}" >> "$GITHUB_OUTPUT"
+            echo "allow_existing=${{ inputs.allow_existing && 'true' || 'false' }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+            echo "allow_existing=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Plan release
+        id: plan
+        run: python3 .github/scripts/plan-release.py
+
+      - name: Update package version
+        if: steps.plan.outputs.should_release == 'true' && steps.mode.outputs.dry_run != 'true'
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/set-cargo-version.py "${{ steps.plan.outputs.version }}"
+          cargo check --locked
+          cargo test
+
+      - name: Commit release version and tag
+        if: steps.plan.outputs.should_release == 'true' && steps.mode.outputs.dry_run != 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- Cargo.toml Cargo.lock; then
+            git add Cargo.toml Cargo.lock
+            git commit -m "chore(release): ${{ steps.plan.outputs.tag }} [skip ci]"
+          fi
+          git tag -a "${{ steps.plan.outputs.tag }}" -m "${{ steps.plan.outputs.tag }}"
+          git push --follow-tags origin HEAD:main
+
+      - name: Create GitHub release
+        if: steps.plan.outputs.should_release == 'true' && steps.mode.outputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.plan.outputs.tag }}" \
+            --title "${{ steps.plan.outputs.tag }}" \
+            --notes-file release-notes.md \
+            --target "${{ steps.plan.outputs.tag }}"
+
+      - name: Summarize skipped release
+        if: steps.plan.outputs.should_release != 'true'
+        run: echo "No release-worthy Conventional Commit messages found since the latest v* tag." >> "$GITHUB_STEP_SUMMARY"
+
   publish-cli-crates-io:
+    needs: create-release
+    if: needs.create-release.outputs.should_publish == 'true'
     uses: ./.github/workflows/publish-cli-crates-io.yaml
     with:
-      version_tag: ${{ github.event.release.tag_name }}
+      version_tag: ${{ needs.create-release.outputs.version_tag }}
+      checkout_ref: ${{ needs.create-release.outputs.dry_run == 'true' && github.sha || needs.create-release.outputs.version_tag }}
       runner_label: ubuntu-latest
       timeout_minutes: 20
-      allow_existing: false
-      dry_run: false
+      allow_existing: ${{ needs.create-release.outputs.allow_existing == 'true' }}
+      dry_run: ${{ needs.create-release.outputs.dry_run == 'true' }}
     secrets:
       CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}

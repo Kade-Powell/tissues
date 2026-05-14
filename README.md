@@ -176,6 +176,8 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
+Releases are driven by Conventional Commit messages on `main`. Breaking changes create a major release, `feat:` creates a minor release, and any other Conventional Commit type creates a patch release. The release workflow commits the package version, tags `vX.Y.Z`, creates the GitHub release, and publishes `tissue-cli` to crates.io with `CRATES_IO_TOKEN`.
+
 The core code is split by responsibility:
 
 - `src/app.rs`: UI state, filters, selection, and modes.

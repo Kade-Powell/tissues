@@ -7,6 +7,11 @@ on:
         description: "Release version tag from caller workflow"
         type: string
         required: true
+      checkout_ref:
+        description: "Git ref to check out before publishing"
+        type: string
+        required: false
+        default: ""
       runner_label:
         description: "GitHub runner label"
         type: string
@@ -29,33 +34,7 @@ on:
         default: false
     secrets:
       CRATES_IO_TOKEN:
-        required: true
-  workflow_dispatch:
-    inputs:
-      version_tag:
-        description: "Release version tag"
-        type: string
         required: false
-      runner_label:
-        description: "GitHub runner label"
-        type: string
-        required: false
-        default: ubuntu-latest
-      timeout_minutes:
-        description: "Job timeout in minutes"
-        type: number
-        required: false
-        default: 20
-      allow_existing:
-        description: "Treat already-published version as success"
-        type: boolean
-        required: false
-        default: false
-      dry_run:
-        description: "Verify package publishing without uploading to crates.io"
-        type: boolean
-        required: false
-        default: true
 
 permissions:
   contents: read
@@ -67,6 +46,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref || github.ref }}
 
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -132,11 +113,6 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
           set -euo pipefail
-          if [[ "$DRY_RUN" != "true" && "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            echo "Manual workflow_dispatch publishes must use dry_run=true."
-            exit 1
-          fi
-
           if [[ "$DRY_RUN" != "true" && -z "${CARGO_REGISTRY_TOKEN}" ]]; then
             echo "A crates.io token is required. Configure CRATES_IO_TOKEN or CARGO_REGISTRY_TOKEN."
             exit 1

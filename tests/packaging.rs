@@ -22,13 +22,15 @@ fn package_is_configured_for_public_crates_io() {
 }
 
 #[test]
-fn crates_io_workflow_supports_manual_dry_run() {
+fn crates_io_workflow_is_reusable_publish_step() {
     let workflow = fs::read_to_string(".github/workflows/publish-cli-crates-io.yaml")
         .expect("read crates.io publish workflow");
 
+    assert!(workflow.contains("workflow_call:"));
+    assert!(!workflow.contains("workflow_dispatch:"));
+    assert!(workflow.contains("checkout_ref:"));
     assert!(workflow.contains("dry_run:"));
     assert!(workflow.contains("cargo publish --dry-run --allow-dirty"));
-    assert!(workflow.contains("Manual workflow_dispatch publishes must use dry_run=true."));
 }
 
 #[test]
@@ -48,13 +50,31 @@ fn ci_workflow_checks_format_tests_package_and_actions() {
 fn release_workflow_publishes_from_public_github_actions() {
     let workflow = fs::read_to_string(".github/workflows/cd.yaml").expect("read release workflow");
 
-    assert!(workflow.contains("release:"));
-    assert!(workflow.contains("types: [published]"));
+    assert!(workflow.contains("push:"));
+    assert!(workflow.contains("workflow_dispatch:"));
+    assert!(workflow.contains("python3 .github/scripts/plan-release.py"));
+    assert!(workflow.contains("python3 .github/scripts/set-cargo-version.py"));
+    assert!(workflow.contains("cargo test"));
+    assert!(workflow.contains("chore(release): ${{ steps.plan.outputs.tag }} [skip ci]"));
+    assert!(workflow.contains("git tag -a \"${{ steps.plan.outputs.tag }}\""));
+    assert!(workflow.contains("git push --follow-tags origin HEAD:main"));
+    assert!(workflow.contains("gh release create \"${{ steps.plan.outputs.tag }}\""));
     assert!(workflow.contains("./.github/workflows/publish-cli-crates-io.yaml"));
-    assert!(workflow.contains("version_tag: ${{ github.event.release.tag_name }}"));
+    assert!(workflow.contains("version_tag: ${{ needs.create-release.outputs.version_tag }}"));
     assert!(workflow.contains("runner_label: ubuntu-latest"));
     assert!(workflow.contains("CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}"));
     assert!(!fs::exists(".github/workflows/cd-stable.yaml").expect("check cd-stable workflow"));
+}
+
+#[test]
+fn release_planner_uses_conventional_commits() {
+    let planner =
+        fs::read_to_string(".github/scripts/plan-release.py").expect("read release planner");
+
+    assert!(planner.contains("BREAKING[- ]CHANGE"));
+    assert!(planner.contains("match.group(\"type\") == \"feat\""));
+    assert!(planner.contains("return \"patch\""));
+    assert!(planner.contains("release-notes.md"));
 }
 
 #[test]
