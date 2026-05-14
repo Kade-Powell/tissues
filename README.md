@@ -176,6 +176,14 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
+Install the local git hooks with `prek` before committing:
+
+```bash
+prek install
+```
+
+The commit-message hook enforces Conventional Commits, which also drive the release workflow.
+
 Releases are driven by Conventional Commit messages on `main`. Breaking changes create a major release, `feat:` creates a minor release, and any other Conventional Commit type creates a patch release. The release workflow commits the package version, tags `vX.Y.Z`, creates the GitHub release, and publishes `tissues` to crates.io with `CRATES_IO_TOKEN`.
 
 The core code is split by responsibility:

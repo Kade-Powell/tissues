@@ -10,6 +10,32 @@ permissions:
   contents: read
 
 jobs:
+  commits:
+    name: Commit message checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Check Conventional Commit messages
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch origin "${{ github.base_ref }}" --depth=1
+            mapfile -t COMMITS < <(git rev-list --reverse "origin/${{ github.base_ref }}..HEAD")
+          else
+            COMMITS=("${{ github.sha }}")
+          fi
+
+          for sha in "${COMMITS[@]}"; do
+            git log --format=%B -n 1 "$sha" > /tmp/commit-message
+            python3 .github/scripts/check-conventional-commit.py /tmp/commit-message
+          done
+
   rust:
     name: Rust checks
     runs-on: ubuntu-latest

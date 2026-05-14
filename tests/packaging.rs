@@ -38,12 +38,27 @@ fn ci_workflow_checks_format_tests_package_and_actions() {
     let workflow = fs::read_to_string(".github/workflows/ci.yaml").expect("read CI workflow");
 
     assert!(workflow.contains("pull_request:"));
+    assert!(workflow.contains("Commit message checks"));
+    assert!(workflow.contains("check-conventional-commit.py"));
     assert!(workflow.contains("runs-on: ubuntu-latest"));
     assert!(workflow.contains("rustup component add rustfmt"));
     assert!(workflow.contains("cargo fmt --check"));
     assert!(workflow.contains("cargo test"));
     assert!(workflow.contains("cargo publish --dry-run --allow-dirty"));
     assert!(workflow.contains("raven-actions/actionlint@v2"));
+}
+
+#[test]
+fn prek_enforces_conventional_commit_messages() {
+    let config =
+        fs::read_to_string(".pre-commit-config.yaml").expect("read prek/pre-commit config");
+    let checker = fs::read_to_string(".github/scripts/check-conventional-commit.py")
+        .expect("read conventional commit checker");
+
+    assert!(config.contains("commit-msg"));
+    assert!(config.contains("check-conventional-commit.py"));
+    assert!(checker.contains("ALLOWED_TYPES"));
+    assert!(checker.contains("HEADER_RE"));
 }
 
 #[test]
