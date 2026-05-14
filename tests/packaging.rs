@@ -52,6 +52,8 @@ fn release_workflow_publishes_from_public_github_actions() {
 
     assert!(workflow.contains("push:"));
     assert!(workflow.contains("workflow_dispatch:"));
+    assert!(workflow.contains("version_tag:"));
+    assert!(workflow.contains("VERSION_TAG_OVERRIDE:"));
     assert!(workflow.contains("python3 .github/scripts/plan-release.py"));
     assert!(workflow.contains("python3 .github/scripts/set-cargo-version.py"));
     assert!(workflow.contains("cargo test"));
@@ -59,6 +61,7 @@ fn release_workflow_publishes_from_public_github_actions() {
     assert!(workflow.contains("git tag -a \"${{ steps.plan.outputs.tag }}\""));
     assert!(workflow.contains("git push --follow-tags origin HEAD:main"));
     assert!(workflow.contains("gh release create \"${{ steps.plan.outputs.tag }}\""));
+    assert!(!workflow.contains("--target \"${{ steps.plan.outputs.tag }}\""));
     assert!(workflow.contains("./.github/workflows/publish-cli-crates-io.yaml"));
     assert!(workflow.contains("version_tag: ${{ needs.create-release.outputs.version_tag }}"));
     assert!(workflow.contains("runner_label: ubuntu-latest"));
@@ -72,6 +75,8 @@ fn release_planner_uses_conventional_commits() {
         fs::read_to_string(".github/scripts/plan-release.py").expect("read release planner");
 
     assert!(planner.contains("BREAKING[- ]CHANGE"));
+    assert!(planner.contains("VERSION_TAG_OVERRIDE"));
+    assert!(planner.contains("tag_exists"));
     assert!(planner.contains("match.group(\"type\") == \"feat\""));
     assert!(planner.contains("return \"patch\""));
     assert!(planner.contains("release-notes.md"));

@@ -16,6 +16,11 @@ on:
         type: boolean
         required: false
         default: false
+      version_tag:
+        description: "Existing vX.Y.Z tag to release/publish instead of planning from commits"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -32,6 +37,7 @@ jobs:
       allow_existing: ${{ steps.mode.outputs.allow_existing }}
       dry_run: ${{ steps.mode.outputs.dry_run }}
       should_publish: ${{ steps.plan.outputs.should_release }}
+      tag_exists: ${{ steps.plan.outputs.tag_exists }}
       version_tag: ${{ steps.plan.outputs.tag }}
     steps:
       - name: Checkout
@@ -60,10 +66,12 @@ jobs:
 
       - name: Plan release
         id: plan
+        env:
+          VERSION_TAG_OVERRIDE: ${{ github.event_name == 'workflow_dispatch' && inputs.version_tag || '' }}
         run: python3 .github/scripts/plan-release.py
 
       - name: Update package version
-        if: steps.plan.outputs.should_release == 'true' && steps.mode.outputs.dry_run != 'true'
+        if: steps.plan.outputs.should_release == 'true' && steps.plan.outputs.tag_exists != 'true' && steps.mode.outputs.dry_run != 'true'
         run: |
           set -euo pipefail
           python3 .github/scripts/set-cargo-version.py "${{ steps.plan.outputs.version }}"
@@ -71,7 +79,7 @@ jobs:
           cargo test
 
       - name: Commit release version and tag
-        if: steps.plan.outputs.should_release == 'true' && steps.mode.outputs.dry_run != 'true'
+        if: steps.plan.outputs.should_release == 'true' && steps.plan.outputs.tag_exists != 'true' && steps.mode.outputs.dry_run != 'true'
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -89,10 +97,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "${{ steps.plan.outputs.tag }}" \
-            --title "${{ steps.plan.outputs.tag }}" \
-            --notes-file release-notes.md \
-            --target "${{ steps.plan.outputs.tag }}"
+          if gh release view "${{ steps.plan.outputs.tag }}" >/dev/null 2>&1; then
+            echo "GitHub release ${{ steps.plan.outputs.tag }} already exists."
+          else
+            gh release create "${{ steps.plan.outputs.tag }}" \
+              --title "${{ steps.plan.outputs.tag }}" \
+              --notes-file release-notes.md
+          fi
 
       - name: Summarize skipped release
         if: steps.plan.outputs.should_release != 'true'
@@ -104,7 +115,7 @@ jobs:
     uses: ./.github/workflows/publish-cli-crates-io.yaml
     with:
       version_tag: ${{ needs.create-release.outputs.version_tag }}
-      checkout_ref: ${{ needs.create-release.outputs.dry_run == 'true' && github.sha || needs.create-release.outputs.version_tag }}
+      checkout_ref: ${{ needs.create-release.outputs.dry_run == 'true' && needs.create-release.outputs.tag_exists != 'true' && github.sha || needs.create-release.outputs.version_tag }}
       runner_label: ubuntu-latest
       timeout_minutes: 20
       allow_existing: ${{ needs.create-release.outputs.allow_existing == 'true' }}

@@ -92,13 +92,36 @@ def write_output(values: dict[str, str]) -> None:
 
 def write_notes(tag: str, commits: list[dict[str, str]]) -> None:
     lines = [f"# {tag}", "", "## Changes", ""]
-    for commit in commits:
-        lines.append(f"- {commit['subject']} ({commit['sha'][:7]})")
+    if commits:
+        for commit in commits:
+            lines.append(f"- {commit['subject']} ({commit['sha'][:7]})")
+    else:
+        lines.append(f"- Manual release for {tag}")
     Path("release-notes.md").write_text("\n".join(lines) + "\n")
 
 
 def main() -> None:
     subprocess.check_call(["git", "fetch", "--tags", "--force"], stdout=subprocess.DEVNULL)
+
+    tag_override = os.environ.get("VERSION_TAG_OVERRIDE", "").strip()
+    if tag_override:
+        tag = tag_override if tag_override.startswith("v") else f"v{tag_override}"
+        if not TAG_RE.match(tag):
+            raise SystemExit(f"version tag override is not semver: {tag_override}")
+        subprocess.check_call(["git", "rev-parse", "--verify", f"refs/tags/{tag}"])
+        write_notes(tag, [])
+        write_output(
+            {
+                "should_release": "true",
+                "latest_tag": tag,
+                "bump": "manual",
+                "version": tag.removeprefix("v"),
+                "tag": tag,
+                "tag_exists": "true",
+            }
+        )
+        print(f"Planned manual release for existing tag {tag}.")
+        return
 
     latest_tag = latest_version_tag()
     commits = commits_since(latest_tag)
@@ -106,7 +129,7 @@ def main() -> None:
 
     if not bumps:
         print("No Conventional Commit release entries found since latest tag.")
-        write_output({"should_release": "false"})
+        write_output({"should_release": "false", "tag_exists": "false"})
         return
 
     if latest_tag is None:
@@ -125,6 +148,7 @@ def main() -> None:
             "bump": bump,
             "version": version,
             "tag": tag,
+            "tag_exists": "false",
         }
     )
     print(f"Planned {tag} ({bump}) from {len(commits)} commit(s).")
