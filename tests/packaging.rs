@@ -28,4 +28,16 @@ fn crates_io_workflow_supports_manual_dry_run() {
 
     assert!(workflow.contains("dry_run:"));
     assert!(workflow.contains("cargo publish --dry-run --allow-dirty"));
+    assert!(workflow.contains("Manual workflow_dispatch publishes must use dry_run=true."));
+}
+
+#[test]
+fn ci_workflow_checks_format_tests_package_and_actions() {
+    let workflow = fs::read_to_string(".github/workflows/ci.yaml").expect("read CI workflow");
+
+    assert!(workflow.contains("pull_request:"));
+    assert!(workflow.contains("cargo fmt --check"));
+    assert!(workflow.contains("cargo test"));
+    assert!(workflow.contains("cargo publish --dry-run --allow-dirty"));
+    assert!(workflow.contains("raven-actions/actionlint@v2"));
 }
