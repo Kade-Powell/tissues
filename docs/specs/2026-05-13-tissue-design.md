@@ -1,4 +1,4 @@
-# skunkwork Design
+# tissue Design
 
 Date: 2026-05-13
 
@@ -6,7 +6,7 @@ Date: 2026-05-13
 
 Build a Rust terminal app for tracking GitHub issues in one repository at a time. The app should feel like a focused todo list for repository work: show issue state clearly, support filtering, and let the user create issues, comment, close, and reopen issues without opening GitHub in a browser.
 
-The primary example repository is `skunkwork`, but the app should accept any `owner/repo`.
+The primary example repository is `tissue`, but the app should accept any `owner/repo`.
 
 ## Stack
 
@@ -23,8 +23,8 @@ The app will read a token from `gh auth token` and pass it to Octocrab. It will 
 The app supports two launch modes:
 
 ```bash
-skunkwork owner/skunkwork
-skunkwork
+tissue owner/tissue
+tissue
 ```
 
 When an explicit repository is passed, the app validates and stores it as `{ owner, name }`.
@@ -42,7 +42,7 @@ If repo inference fails, the app shows a blocking setup error with the expected 
 The main screen is a focused issue list with state and filters visible at all times.
 
 ```text
-owner/skunkwork                                   open: 12  closed: 4  all: 16
+owner/tissue                                   open: 12  closed: 4  all: 16
 [State: open] [Assignee: me] [Labels: bug, ui] [Search: _]
 
 #122  open    bug        Fix login redraw

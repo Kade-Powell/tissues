@@ -7,9 +7,7 @@ use std::{
 };
 
 use color_eyre::eyre::Result;
-use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::DefaultTerminal;
 
 use crate::{
@@ -19,7 +17,9 @@ use crate::{
     },
     domain::{IssueComment, IssueState, IssueSummary},
     github::IssueBackend,
-    ui::{self, SkunkworkEffects},
+    message::TissueMsg,
+    realm::TissueRealm,
+    ui::{self, TissueEffects},
 };
 
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -31,10 +31,17 @@ pub async fn run<B: IssueBackend>(
     app: &mut App,
     backend: &B,
 ) -> Result<()> {
-    let mut effects = SkunkworkEffects::default();
-    app.begin_action(PendingAction::Refresh, "Starting skunkwork");
+    let mut effects = TissueEffects::default();
+    let mut realm = TissueRealm::new(app)?;
+    app.begin_action(PendingAction::Refresh, "Starting tissue");
     effects.trigger_startup_loading();
-    draw_app(terminal, app, &mut effects, Duration::from_millis(120))?;
+    draw_app(
+        terminal,
+        &mut realm,
+        app,
+        &mut effects,
+        Duration::from_millis(120),
+    )?;
     if let Ok(login) = backend.current_login().await {
         app.set_viewer_login(login);
     }
@@ -47,7 +54,10 @@ pub async fn run<B: IssueBackend>(
         last_frame = Instant::now();
         ui::trigger_flash_effect(app, &mut effects);
 
-        draw_app(terminal, app, &mut effects, elapsed)?;
+        draw_app(terminal, &mut realm, app, &mut effects, elapsed)?;
+        if app.mode == UiMode::IssueDetailClosing && !effects.has_effects() {
+            app.mode = UiMode::Browsing;
+        }
         app.advance_new_issue_animation();
         app.advance_activity_indicator();
 
@@ -60,21 +70,27 @@ pub async fn run<B: IssueBackend>(
             next_auto_refresh = Instant::now() + AUTO_REFRESH_INTERVAL;
         }
 
-        if event::poll(Duration::from_millis(33))? {
-            match event::read()? {
-                Event::Key(key) => {
+        for msg in realm.tick(Duration::from_millis(33))? {
+            match msg {
+                TissueMsg::Key(key) => {
                     if let Some((action, status)) = loading_preview(app, key) {
                         let mut preview = app.clone();
                         preview.begin_action(action, status);
                         ui::trigger_flash_effect(&mut preview, &mut effects);
-                        draw_app(terminal, &preview, &mut effects, last_frame.elapsed())?;
+                        draw_app(
+                            terminal,
+                            &mut realm,
+                            &preview,
+                            &mut effects,
+                            last_frame.elapsed(),
+                        )?;
                     }
                     handle_key(app, backend, key).await;
                 }
-                Event::Mouse(mouse) => {
+                TissueMsg::Mouse(mouse) => {
                     handle_mouse(app, backend, mouse, terminal.size()?.into()).await;
                 }
-                _ => {}
+                TissueMsg::Resize(_, _) | TissueMsg::Tick => {}
             }
         }
     }
@@ -132,14 +148,15 @@ impl AutoRefreshOutcome {
 
 fn draw_app(
     terminal: &mut DefaultTerminal,
+    realm: &mut TissueRealm,
     app: &App,
-    effects: &mut SkunkworkEffects,
+    effects: &mut TissueEffects,
     elapsed: Duration,
 ) -> Result<()> {
     terminal.draw(|frame| {
         let area = frame.area();
-        ui::render(app, area, frame.buffer_mut());
-        let effect_area = if app.status == "Starting skunkwork" {
+        realm.render(app, frame, area);
+        let effect_area = if app.status == "Starting tissue" {
             area
         } else {
             ui::effect_area(app, area)
@@ -319,6 +336,10 @@ fn cursor_movement(key: KeyEvent) -> Option<TextCursorMove> {
 async fn handle_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
     match app.mode {
         UiMode::Browsing => handle_browsing_key(app, backend, key).await,
+        UiMode::IssueDetail => handle_issue_detail_key(app, backend, key).await,
+        UiMode::IssueDetailClosing => {
+            app.mode = UiMode::Browsing;
+        }
         UiMode::Command => handle_command_key(app, backend, key).await,
         UiMode::Search => handle_search_key(app, backend, key).await,
         UiMode::CommentComposer => handle_comment_key(app, backend, key).await,
@@ -346,22 +367,35 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('j') | KeyCode::Down => {
-            let previous = app.selected_issue().map(|issue| issue.number);
             app.select_next();
-            if app.selected_issue().map(|issue| issue.number) != previous {
-                refresh_selected_detail(app, backend).await;
-            }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            let previous = app.selected_issue().map(|issue| issue.number);
             app.select_previous();
-            if app.selected_issue().map(|issue| issue.number) != previous {
-                refresh_selected_detail(app, backend).await;
+        }
+        KeyCode::Enter => open_selected_detail(app, backend).await,
+        KeyCode::Char(':') => open_command_prompt(app),
+        KeyCode::Char('n') => open_new_issue(app, backend).await,
+        KeyCode::Char('x') if app.selected_issue().is_some() => {
+            match app.selected_issue().map(|issue| issue.state.clone()) {
+                Some(IssueState::Open) => open_close_comment(app, backend).await,
+                Some(IssueState::Closed) => {
+                    app.mode = UiMode::ConfirmClose;
+                }
+                None => {}
             }
         }
+        _ => {}
+    }
+}
+
+async fn handle_issue_detail_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => close_issue_detail(app),
+        KeyCode::Enter => app.toggle_comments(),
         KeyCode::PageDown => app.scroll_detail_page_down(),
         KeyCode::PageUp => app.scroll_detail_page_up(),
-        KeyCode::Enter if app.selected_detail.is_some() => app.toggle_comments(),
+        KeyCode::Char('j') | KeyCode::Down => app.scroll_detail_down(),
+        KeyCode::Char('k') | KeyCode::Up => app.scroll_detail_up(),
         KeyCode::Char(':') => open_command_prompt(app),
         KeyCode::Char('n') => open_new_issue(app, backend).await,
         KeyCode::Char('x') if app.selected_issue().is_some() => {
@@ -390,30 +424,30 @@ async fn handle_mouse<B: IssueBackend>(
             }
         }
         MouseEventKind::ScrollDown if app.mode == UiMode::Browsing => {
+            app.select_next();
+        }
+        MouseEventKind::ScrollUp if app.mode == UiMode::Browsing => {
+            app.select_previous();
+        }
+        MouseEventKind::ScrollDown if app.mode == UiMode::IssueDetail => {
             if ui::mouse_target(app, area, mouse.column, mouse.row)
                 == Some(ui::MouseTarget::DetailPanel)
             {
                 app.scroll_detail_down();
                 return;
             }
-            let previous = app.selected_issue().map(|issue| issue.number);
             app.select_next();
-            if app.selected_issue().map(|issue| issue.number) != previous {
-                refresh_selected_detail(app, backend).await;
-            }
+            open_selected_detail(app, backend).await;
         }
-        MouseEventKind::ScrollUp if app.mode == UiMode::Browsing => {
+        MouseEventKind::ScrollUp if app.mode == UiMode::IssueDetail => {
             if ui::mouse_target(app, area, mouse.column, mouse.row)
                 == Some(ui::MouseTarget::DetailPanel)
             {
                 app.scroll_detail_up();
                 return;
             }
-            let previous = app.selected_issue().map(|issue| issue.number);
             app.select_previous();
-            if app.selected_issue().map(|issue| issue.number) != previous {
-                refresh_selected_detail(app, backend).await;
-            }
+            open_selected_detail(app, backend).await;
         }
         _ => {}
     }
@@ -422,13 +456,13 @@ async fn handle_mouse<B: IssueBackend>(
 async fn handle_mouse_target<B: IssueBackend>(app: &mut App, backend: &B, target: ui::MouseTarget) {
     match target {
         ui::MouseTarget::IssueRow(index) if app.mode == UiMode::Browsing => {
-            let previous = app.selected_issue().map(|issue| issue.number);
             app.select_issue_index(index);
-            if app.selected_issue().map(|issue| issue.number) != previous {
-                refresh_selected_detail(app, backend).await;
-            }
         }
-        ui::MouseTarget::DetailPanel if app.mode == UiMode::Browsing => app.toggle_comments(),
+        ui::MouseTarget::IssueRow(index) if app.mode == UiMode::IssueDetail => {
+            app.select_issue_index(index);
+            open_selected_detail(app, backend).await;
+        }
+        ui::MouseTarget::DetailPanel if app.mode == UiMode::IssueDetail => app.toggle_comments(),
         ui::MouseTarget::NewIssueField(field) if app.mode == UiMode::NewIssue => {
             app.new_issue_field = field;
         }
@@ -692,8 +726,7 @@ async fn jump_to_first_mention<B: IssueBackend>(app: &mut App, backend: &B) {
     };
 
     app.select_issue_number(number);
-    refresh_selected_detail(app, backend).await;
-    app.mode = UiMode::Browsing;
+    open_selected_detail(app, backend).await;
     app.set_status(format!("Jumped to mention on issue #{number}"));
 }
 
@@ -1087,18 +1120,9 @@ pub async fn refresh<B: IssueBackend>(app: &mut App, backend: &B) {
                     IssueStateFilter::All => "total",
                 }
             );
-            match load_selected_detail(app, backend).await {
-                Ok(()) => {
-                    app.finish_action();
-                    app.flash = Some(FlashKind::Refresh);
-                    app.set_status(loaded_status);
-                }
-                Err(err) => {
-                    app.finish_action();
-                    app.flash = Some(FlashKind::Error);
-                    app.set_status(format!("{loaded_status}; detail failed: {err:#}"));
-                }
-            }
+            app.finish_action();
+            app.flash = Some(FlashKind::Refresh);
+            app.set_status(loaded_status);
         }
         Err(err) => {
             app.finish_action();
@@ -1144,23 +1168,14 @@ async fn auto_refresh<B: IssueBackend>(app: &mut App, backend: &B) -> AutoRefres
             app.highlight_new_issues(new_issue_numbers.clone());
             app.highlight_mentioned_issues(mention_issue_numbers.clone());
 
-            match load_selected_detail(app, backend).await {
-                Ok(()) => {
-                    app.finish_action();
-                    app.flash = Some(FlashKind::Refresh);
-                    if let Some(status) = new_issue_status {
-                        app.set_status(status);
-                    } else if let Some(status) = mention_status {
-                        app.set_status(status);
-                    } else {
-                        app.set_status("Auto-refreshed; no new issues");
-                    }
-                }
-                Err(err) => {
-                    app.finish_action();
-                    app.flash = Some(FlashKind::Error);
-                    app.set_status(format!("Auto-refresh detail failed: {err:#}"));
-                }
+            app.finish_action();
+            app.flash = Some(FlashKind::Refresh);
+            if let Some(status) = new_issue_status {
+                app.set_status(status);
+            } else if let Some(status) = mention_status {
+                app.set_status(status);
+            } else {
+                app.set_status("Auto-refreshed; no new issues");
             }
 
             AutoRefreshOutcome {
@@ -1337,24 +1352,20 @@ async fn refresh_after_action<B: IssueBackend>(
                 app.select_issue_number(number);
             }
             app.mode = UiMode::Browsing;
-            match load_selected_detail(app, backend).await {
-                Ok(()) => {
-                    if let (Some(number), Some(comment)) =
-                        (selected_issue_number, optimistic_comment)
-                    {
-                        keep_optimistic_comment_visible(app, number, comment);
-                    }
-                    app.finish_action();
-                    app.mode = UiMode::Success;
-                    app.flash = Some(FlashKind::Success);
-                    app.set_status(success_status);
-                }
-                Err(err) => {
-                    app.finish_action();
-                    app.flash = Some(FlashKind::Error);
-                    app.set_status(format!("{success_status}; detail refresh failed: {err:#}"));
-                }
+            if app
+                .selected_detail
+                .as_ref()
+                .is_some_and(|detail| Some(detail.summary.number) == selected_issue_number)
+            {
+                let _ = load_selected_detail(app, backend).await;
             }
+            if let (Some(number), Some(comment)) = (selected_issue_number, optimistic_comment) {
+                keep_optimistic_comment_visible(app, number, comment);
+            }
+            app.finish_action();
+            app.mode = UiMode::Success;
+            app.flash = Some(FlashKind::Success);
+            app.set_status(success_status);
         }
         Err(err) => {
             app.finish_action();
@@ -1909,11 +1920,45 @@ async fn toggle_issue_state<B: IssueBackend>(app: &mut App, backend: &B) {
     }
 }
 
-async fn refresh_selected_detail<B: IssueBackend>(app: &mut App, backend: &B) {
-    if let Err(err) = load_selected_detail(app, backend).await {
-        app.flash = Some(FlashKind::Error);
-        app.set_status(format!("Detail refresh failed: {err:#}"));
+async fn open_selected_detail<B: IssueBackend>(app: &mut App, backend: &B) {
+    let Some(number) = app.selected_issue().map(|issue| issue.number) else {
+        app.clear_selected_detail();
+        app.mode = UiMode::Browsing;
+        return;
+    };
+
+    if app
+        .selected_detail
+        .as_ref()
+        .is_some_and(|detail| detail.summary.number == number)
+    {
+        app.mode = UiMode::IssueDetail;
+        app.flash = Some(FlashKind::DetailOpen);
+        app.set_status(format!("Viewing issue #{number}; Esc returns to list"));
+        return;
     }
+
+    app.begin_action(PendingAction::Refresh, format!("Loading issue #{number}"));
+    match load_selected_detail(app, backend).await {
+        Ok(()) => {
+            app.finish_action();
+            app.mode = UiMode::IssueDetail;
+            app.flash = Some(FlashKind::DetailOpen);
+            app.set_status(format!("Viewing issue #{number}; Esc returns to list"));
+        }
+        Err(err) => {
+            app.finish_action();
+            app.mode = UiMode::Browsing;
+            app.flash = Some(FlashKind::Error);
+            app.set_status(format!("Detail load failed: {err:#}"));
+        }
+    }
+}
+
+fn close_issue_detail(app: &mut App) {
+    app.mode = UiMode::IssueDetailClosing;
+    app.flash = Some(FlashKind::DetailClose);
+    app.set_status("Returned to issue list");
 }
 
 async fn load_selected_detail<B: IssueBackend>(app: &mut App, backend: &B) -> Result<()> {
@@ -2211,7 +2256,7 @@ mod tests {
     #[tokio::test]
     async fn submit_comment_refreshes_issue_state_and_preserves_action_status() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
         app.input = "done".to_string();
         app.mode = UiMode::CommentComposer;
@@ -2227,12 +2272,13 @@ mod tests {
         assert_eq!(app.status, "Commented on issue #1");
         assert_eq!(app.mode, UiMode::Success);
         assert_eq!(app.flash, Some(FlashKind::Success));
+        assert_eq!(*backend.detail_calls.lock().unwrap(), 0);
     }
 
     #[tokio::test]
     async fn submit_new_issue_refreshes_and_selects_created_issue() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
         app.start_new_issue();
         app.input = "New task".to_string();
@@ -2256,7 +2302,7 @@ mod tests {
     #[tokio::test]
     async fn assignee_filter_picker_applies_collaborator_filter() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
 
         open_assignee_filter(&mut app, &backend).await;
         app.input = "ali".to_string();
@@ -2278,7 +2324,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_filter_state_cycles_state_filter() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
 
         handle_key(
             &mut app,
@@ -2302,7 +2348,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_fs_filters_state_and_animates_list_update() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::Command;
         app.input = "fs".to_string();
 
@@ -2322,7 +2368,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_search_alias_updates_query_and_animates_list() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::Command;
         app.input = "s redraw".to_string();
 
@@ -2342,7 +2388,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_team_filter_aliases_update_assignee_filter() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::Command;
         app.input = "me".to_string();
 
@@ -2370,7 +2416,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_label_and_sort_aliases_update_list_filters() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::Command;
         app.input = "label bug".to_string();
 
@@ -2398,7 +2444,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_all_and_clear_reset_list_filters() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.filters.state = IssueStateFilter::Closed;
         app.filters.assignee = AssigneeFilter::Me;
         app.filters.labels = vec!["bug".to_string()];
@@ -2447,7 +2493,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_assign_opens_assignee_editor() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         handle_key(
@@ -2471,7 +2517,7 @@ mod tests {
     #[tokio::test]
     async fn colon_command_quit_sets_quit_flag() {
         let backend = backend_with_issues(Vec::new());
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
 
         handle_key(
             &mut app,
@@ -2493,7 +2539,7 @@ mod tests {
     #[tokio::test]
     async fn tab_completes_command_prefix() {
         let backend = backend_with_issues(Vec::new());
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::Command;
         app.input = "sor".to_string();
 
@@ -2514,7 +2560,7 @@ mod tests {
             issue(1, "Fix redraw", IssueState::Open, 0),
             issue(2, "Needs review", IssueState::Open, 0),
         ]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
         app.highlight_mentioned_issues(vec![2]);
         app.input = ":ping".to_string();
@@ -2524,13 +2570,13 @@ mod tests {
 
         assert_eq!(app.selected_issue().unwrap().number, 2);
         assert_eq!(app.selected_detail.as_ref().unwrap().summary.number, 2);
-        assert_eq!(app.mode, UiMode::Browsing);
+        assert_eq!(app.mode, UiMode::IssueDetail);
     }
 
     #[tokio::test]
     async fn colon_command_accepts_optional_leading_colon() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
 
         app.mode = UiMode::Command;
         app.input = ":filter state".to_string();
@@ -2547,7 +2593,7 @@ mod tests {
     #[tokio::test]
     async fn browsing_shortcuts_do_not_open_command_only_actions() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
 
         for code in [
@@ -2572,7 +2618,7 @@ mod tests {
     #[tokio::test]
     async fn assignee_editor_assigns_issue_to_collaborator() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
         open_assignee_editor(&mut app, &backend).await;
         app.picker_index = 2;
@@ -2601,7 +2647,7 @@ mod tests {
     #[tokio::test]
     async fn assignee_editor_space_toggles_users_and_enter_submits_all() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
         open_assignee_editor(&mut app, &backend).await;
         app.picker_index = 2;
@@ -2644,7 +2690,7 @@ mod tests {
     #[tokio::test]
     async fn mouse_click_assigns_issue_to_collaborator() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
         open_assignee_editor(&mut app, &backend).await;
 
@@ -2662,7 +2708,7 @@ mod tests {
     #[tokio::test]
     async fn label_editor_toggles_and_saves_issue_labels() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
         open_issue_label_editor(&mut app, &backend).await;
 
@@ -2702,7 +2748,7 @@ mod tests {
     #[tokio::test]
     async fn mouse_click_toggles_label_and_save_button_updates_labels() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
         open_issue_label_editor(&mut app, &backend).await;
 
@@ -2720,7 +2766,7 @@ mod tests {
     #[tokio::test]
     async fn created_issue_is_shown_even_when_immediate_list_is_stale() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         refresh_after_action(
@@ -2742,7 +2788,7 @@ mod tests {
     #[tokio::test]
     async fn success_confirmation_dismisses_to_browsing() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::Success;
         app.set_status("Commented on issue #1");
 
@@ -2758,21 +2804,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mouse_click_selects_issue_and_loads_detail() {
+    async fn mouse_click_selects_issue_without_loading_detail() {
         let backend = backend_with_issues(vec![
             issue(1, "Fix redraw", IssueState::Open, 1),
             issue(2, "Add mouse", IssueState::Open, 0),
         ]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         handle_mouse_target(&mut app, &backend, ui::MouseTarget::IssueRow(1)).await;
 
         assert_eq!(app.selected_issue().unwrap().number, 2);
-        assert_eq!(
-            app.selected_detail.as_ref().unwrap().body,
-            "## Body for issue 2"
-        );
+        assert_eq!(*backend.detail_calls.lock().unwrap(), 0);
+        assert!(app.selected_detail.is_none());
     }
 
     #[tokio::test]
@@ -2781,8 +2825,14 @@ mod tests {
             issue(1, "Fix redraw", IssueState::Open, 1),
             issue(2, "Add mouse", IssueState::Open, 0),
         ]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
         let detail_calls = *backend.detail_calls.lock().unwrap();
 
         handle_mouse(
@@ -2805,7 +2855,7 @@ mod tests {
 
     #[test]
     fn predicts_loading_preview_for_network_actions() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
 
         assert_eq!(
@@ -2906,17 +2956,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_loads_selected_issue_detail() {
+    async fn refresh_loads_issue_list_without_selected_detail() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
 
         refresh(&mut app, &backend).await;
 
-        assert_eq!(*backend.detail_calls.lock().unwrap(), 1);
-        assert_eq!(
-            app.selected_detail.as_ref().unwrap().body,
-            "## Body for issue 1"
-        );
+        assert_eq!(*backend.detail_calls.lock().unwrap(), 0);
+        assert!(app.selected_detail.is_none());
+        assert_eq!(app.mode, UiMode::Browsing);
     }
 
     #[tokio::test]
@@ -2925,7 +2973,7 @@ mod tests {
             issue(1, "Fix redraw", IssueState::Open, 1),
             issue(2, "Add tree", IssueState::Open, 0),
         ]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
         app.select_issue_number(1);
 
@@ -2954,7 +3002,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert(1, vec![comment("Initial note")]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_viewer_login("kpowel");
         refresh(&mut app, &backend).await;
 
@@ -2978,7 +3026,7 @@ mod tests {
     #[tokio::test]
     async fn auto_refresh_notifies_when_new_issue_body_mentions_viewer() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 0)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_viewer_login("kpowel");
         refresh(&mut app, &backend).await;
 
@@ -3006,7 +3054,7 @@ mod tests {
         let mut first = issue(1, "Fix redraw", IssueState::Open, 0);
         first.updated_at = Some(chrono::Utc::now() - chrono::Duration::minutes(5));
         let backend = backend_with_issues(vec![first.clone()]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_viewer_login("kpowel");
         refresh(&mut app, &backend).await;
 
@@ -3032,7 +3080,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert(1, vec![comment("@kpowel old note")]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_viewer_login("kpowel");
         refresh(&mut app, &backend).await;
 
@@ -3056,7 +3104,7 @@ mod tests {
     #[tokio::test]
     async fn auto_refresh_keeps_quiet_status_when_no_new_issues_arrive() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         let outcome = auto_refresh(&mut app, &backend).await;
@@ -3069,7 +3117,7 @@ mod tests {
 
     #[test]
     fn auto_refresh_only_runs_while_browsing() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         assert!(can_auto_refresh(&app));
 
         app.mode = UiMode::CommentComposer;
@@ -3094,12 +3142,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn navigating_loads_new_selected_issue_detail() {
+    async fn navigating_issue_list_does_not_load_detail() {
         let backend = backend_with_issues(vec![
             issue(1, "Fix redraw", IssueState::Open, 1),
             issue(2, "Add tree", IssueState::Open, 0),
         ]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         handle_browsing_key(
@@ -3109,22 +3157,56 @@ mod tests {
         )
         .await;
 
-        assert_eq!(*backend.detail_calls.lock().unwrap(), 2);
-        assert_eq!(app.selected_detail.as_ref().unwrap().summary.number, 2);
+        assert_eq!(*backend.detail_calls.lock().unwrap(), 0);
+        assert_eq!(app.selected_issue().unwrap().number, 2);
+        assert!(app.selected_detail.is_none());
     }
 
     #[tokio::test]
-    async fn enter_toggles_comment_tree() {
+    async fn enter_loads_detail_and_escape_starts_return_to_issue_list() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
+        refresh(&mut app, &backend).await;
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(*backend.detail_calls.lock().unwrap(), 1);
+        assert_eq!(app.mode, UiMode::IssueDetail);
+        assert_eq!(app.flash, Some(FlashKind::DetailOpen));
+        assert_eq!(
+            app.selected_detail.as_ref().unwrap().body,
+            "## Body for issue 1"
+        );
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.mode, UiMode::IssueDetailClosing);
+        assert_eq!(app.flash, Some(FlashKind::DetailClose));
+    }
+
+    #[tokio::test]
+    async fn enter_toggles_comment_tree_in_detail_mode() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        app.mode = UiMode::IssueDetail;
         app.set_selected_detail(IssueDetail {
             summary: issue(1, "Fix redraw", IssueState::Open, 1),
             body: "Body".to_string(),
             comments: Vec::new(),
         });
 
-        handle_browsing_key(
+        handle_key(
             &mut app,
             &backend,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
@@ -3137,7 +3219,7 @@ mod tests {
     #[tokio::test]
     async fn composer_ctrl_enter_inserts_markdown_newline() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::CommentComposer;
         app.input = "**first**".to_string();
 
@@ -3155,7 +3237,7 @@ mod tests {
     #[tokio::test]
     async fn comment_enter_inserts_newline_and_ctrl_s_submits() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
         app.mode = UiMode::CommentComposer;
         app.input = "line one".to_string();
@@ -3202,7 +3284,7 @@ mod tests {
     #[tokio::test]
     async fn tab_completes_comment_and_close_comment_mentions() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_repo_collaborators(vec![User {
             login: "alice".to_string(),
         }]);
@@ -3231,7 +3313,7 @@ mod tests {
     #[tokio::test]
     async fn comment_editor_inserts_and_deletes_at_cursor() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::CommentComposer;
         app.input = "abcd".to_string();
 
@@ -3253,7 +3335,7 @@ mod tests {
     #[tokio::test]
     async fn mention_completion_uses_cursor_position() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_repo_collaborators(vec![
             User {
                 login: "alice".to_string(),
@@ -3286,7 +3368,7 @@ mod tests {
     #[tokio::test]
     async fn closing_open_issue_requires_comment_and_refreshes_state() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         handle_browsing_key(
@@ -3337,7 +3419,7 @@ mod tests {
     #[tokio::test]
     async fn reopening_closed_issue_keeps_confirmation_flow() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Closed, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         handle_browsing_key(
@@ -3353,7 +3435,7 @@ mod tests {
     #[tokio::test]
     async fn opening_new_issue_loads_repo_labels() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
 
         open_new_issue(&mut app, &backend).await;
 
@@ -3371,7 +3453,7 @@ mod tests {
     #[tokio::test]
     async fn new_issue_can_apply_loaded_template() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         open_new_issue(&mut app, &backend).await;
 
         handle_new_issue_key(
@@ -3389,7 +3471,7 @@ mod tests {
     #[tokio::test]
     async fn edit_issue_updates_title_and_body() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         refresh(&mut app, &backend).await;
 
         open_issue_editor(&mut app, &backend).await;
@@ -3422,7 +3504,7 @@ mod tests {
     #[tokio::test]
     async fn new_issue_form_keeps_title_body_and_label_fields_separate() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         open_new_issue(&mut app, &backend).await;
 
         handle_new_issue_key(
@@ -3478,7 +3560,7 @@ mod tests {
     #[tokio::test]
     async fn tab_completes_mentions_in_new_issue_and_issue_edit_bodies() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_repo_collaborators(vec![User {
             login: "alice".to_string(),
         }]);
@@ -3511,7 +3593,7 @@ mod tests {
     #[tokio::test]
     async fn body_enter_inserts_newline_and_ctrl_s_submits_new_issue() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         open_new_issue(&mut app, &backend).await;
         app.set_input_text("New task");
         app.new_issue_field = NewIssueField::Body;
@@ -3550,7 +3632,7 @@ mod tests {
     #[tokio::test]
     async fn issue_body_editor_inserts_newline_at_cursor() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::IssueEditor;
         app.issue_edit_field = IssueEditField::Body;
         app.body_input = "one two".to_string();
@@ -3576,7 +3658,7 @@ mod tests {
     #[tokio::test]
     async fn ctrl_s_accepts_pending_label_text_before_creating_issue() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         open_new_issue(&mut app, &backend).await;
         app.input = "New task".to_string();
         app.new_issue_field = NewIssueField::Labels;

@@ -1,6 +1,6 @@
-# skunkwork
+# tissue
 
-skunkwork is a Rust terminal app for working through GitHub issues in one repository at a time. It uses Ratatui for the interface, TachyonFX for terminal animations, Octocrab for GitHub API calls, and the GitHub CLI for authentication.
+tissue is a Rust terminal app for working through GitHub issues in one repository at a time. It uses Ratatui for the interface, TachyonFX for terminal animations, Octocrab for GitHub API calls, and the GitHub CLI for authentication.
 
 ## Features
 
@@ -52,37 +52,39 @@ It does not persist GitHub credentials.
 
 ## Run
 
-Install from the internal Artifactory Cargo registry:
+Install from crates.io:
 
 ```bash
-export CARGO_REGISTRIES_ARTIFACTORY_INDEX="sparse+https://artifactory.comcast.com/artifactory/api/cargo/titan-cargo/index/"
-export CARGO_REGISTRIES_ARTIFACTORY_CREDENTIAL_PROVIDER="cargo:token"
-export CARGO_REGISTRIES_ARTIFACTORY_TOKEN="Bearer <bearer-token>"
-
 # Latest
-cargo install --registry artifactory skunkwork --locked
+cargo install tissue-cli --locked
 
 # Specific version
-cargo install --registry artifactory skunkwork --version "0.1.0" --locked
+cargo install tissue-cli --version "0.1.0" --locked
 ```
 
 Validate:
 
 ```bash
-skunkwork --version
-skunkwork --help
+tissue --version
+tissue --help
 ```
 
 Open a specific repository:
 
 ```bash
-skunkwork owner/skunkwork
+tissue owner/tissue
+```
+
+GitHub remote URLs work too:
+
+```bash
+tissue git@github.com:comcast-zorrillo/tissue.git
 ```
 
 Or run from source:
 
 ```bash
-cargo run -- owner/skunkwork
+cargo run -- owner/tissue
 ```
 
 Or run inside a GitHub checkout and let `gh repo view` infer the repository:
@@ -132,7 +134,7 @@ Useful commands:
 - `:close`: close or reopen the selected issue.
 - `:quit`: quit.
 
-While browsing, skunkwork automatically reloads issues every 5 seconds. If the refreshed list contains issue numbers that were not already visible, or new comments, new issue descriptions, or updated issue bodies mention your authenticated GitHub username, the footer shows the notification, the terminal bell rings, and macOS plays the system notification sound when available.
+While browsing, tissue automatically reloads issues every 5 seconds. If the refreshed list contains issue numbers that were not already visible, or new comments, new issue descriptions, or updated issue bodies mention your authenticated GitHub username, the footer shows the notification, the terminal bell rings, and macOS plays the system notification sound when available.
 
 ## Development
 
@@ -154,17 +156,17 @@ This watches the project and runs `cargo check --all-targets` after changes. Ins
 Run the interactive TUI in a separate terminal:
 
 ```bash
-cargo run -- owner/skunkwork
+cargo run -- owner/tissue
 ```
 
 For restart-on-change development of the actual TUI, install `watchexec` and run the helper script in a normal terminal:
 
 ```bash
 cargo install watchexec-cli
-./scripts/dev-tui owner/skunkwork
+./scripts/dev-tui owner/tissue
 ```
 
-Do not run the full skunkwork TUI as a bacon job. Bacon is also a terminal UI, and nesting skunkwork inside it can leave the terminal alternate screen, mouse capture, or formatting in a bad state. Bacon's `run` and `run-long` jobs are intentionally overridden to print a reminder instead of launching skunkwork. The included `smoke` job intentionally runs only `cargo run -- --help`.
+Do not run the full tissue TUI as a bacon job. Bacon is also a terminal UI, and nesting tissue inside it can leave the terminal alternate screen, mouse capture, or formatting in a bad state. Bacon's `run` and `run-long` jobs are intentionally overridden to print a reminder instead of launching tissue. The included `smoke` job intentionally runs only `cargo run -- --help`.
 
 Run the checks used for this project:
 

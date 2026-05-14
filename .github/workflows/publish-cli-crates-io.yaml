@@ -1,4 +1,4 @@
-name: Publish CLI to Artifactory
+name: Publish CLI to crates.io
 
 on:
   workflow_call:
@@ -11,7 +11,7 @@ on:
         description: "GitHub runner label"
         type: string
         required: false
-        default: comcast-ubuntu-latest
+        default: ubuntu-latest
       timeout_minutes:
         description: "Job timeout in minutes"
         type: number
@@ -22,8 +22,13 @@ on:
         type: boolean
         required: false
         default: false
+      dry_run:
+        description: "Verify package publishing without uploading to crates.io"
+        type: boolean
+        required: false
+        default: false
     secrets:
-      artifactory_token:
+      CRATES_IO_TOKEN:
         required: true
   workflow_dispatch:
     inputs:
@@ -35,7 +40,7 @@ on:
         description: "GitHub runner label"
         type: string
         required: false
-        default: comcast-ubuntu-latest
+        default: ubuntu-latest
       timeout_minutes:
         description: "Job timeout in minutes"
         type: number
@@ -46,13 +51,18 @@ on:
         type: boolean
         required: false
         default: false
+      dry_run:
+        description: "Verify package publishing without uploading to crates.io"
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: read
 
 jobs:
   publish:
-    runs-on: ${{ inputs.runner_label || 'comcast-ubuntu-latest' }}
+    runs-on: ${{ inputs.runner_label || 'ubuntu-latest' }}
     timeout-minutes: ${{ inputs.timeout_minutes || 20 }}
     steps:
       - name: Checkout
@@ -63,21 +73,6 @@ jobs:
         with:
           toolchain: stable
           cache: true
-
-      - name: Configure Artifactory credentials
-        env:
-          ARTIFACTORY_TOKEN: ${{ secrets.artifactory_token != '' && secrets.artifactory_token || secrets.ARTIFACTORY_TITAN_CARGO_PASSWORD }}
-        run: |
-          if [[ -z "${ARTIFACTORY_TOKEN}" ]]; then
-            echo "Artifactory token is required. Configure ARTIFACTORY_TITAN_CARGO_PASSWORD or pass artifactory_token."
-            exit 1
-          fi
-
-          mkdir -p ~/.cargo
-          cat > ~/.cargo/credentials.toml << EOF
-          [registries.artifactory]
-          token = "Bearer ${ARTIFACTORY_TOKEN}"
-          EOF
 
       - name: Sync package version to release tag
         run: |
@@ -130,13 +125,24 @@ jobs:
           cargo_toml.write_text("\n".join(lines) + "\n")
           PY
 
-      - name: Publish crate to Artifactory cargo registry
+      - name: Publish crate to crates.io
         env:
           ALLOW_EXISTING: ${{ inputs.allow_existing && 'true' || 'false' }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
           set -euo pipefail
+          if [[ -z "${CARGO_REGISTRY_TOKEN}" ]]; then
+            echo "A crates.io token is required. Configure CRATES_IO_TOKEN or CARGO_REGISTRY_TOKEN."
+            exit 1
+          fi
+
           set +e
-          OUTPUT=$(cargo publish --registry artifactory --allow-dirty 2>&1)
+          if [[ "$DRY_RUN" == "true" ]]; then
+            OUTPUT=$(cargo publish --dry-run --allow-dirty 2>&1)
+          else
+            OUTPUT=$(cargo publish --allow-dirty 2>&1)
+          fi
           STATUS=$?
           set -e
 
@@ -147,7 +153,7 @@ jobs:
 
           if [[ "$ALLOW_EXISTING" == "true" ]] && echo "$OUTPUT" | grep -qi "already exists"; then
             echo "$OUTPUT"
-            echo "Version already exists in registry; continuing because allow_existing=true"
+            echo "Version already exists on crates.io; continuing because allow_existing=true"
             exit 0
           fi
 
@@ -163,8 +169,12 @@ jobs:
           VERSION="$(cargo pkgid | sed 's/.*#//')"
           {
             echo "Publish request tag: ${VERSION_TAG}"
-            echo "Published skunkwork ${VERSION} to registry 'artifactory'."
+            if [[ "${{ inputs.dry_run && 'true' || 'false' }}" == "true" ]]; then
+              echo "Verified tissue-cli ${VERSION} crates.io publish with dry-run."
+            else
+              echo "Published tissue-cli ${VERSION} to crates.io."
+            fi
             echo
             echo "Install with:"
-            echo "cargo install --registry artifactory skunkwork --version \"${VERSION}\" --locked"
+            echo "cargo install tissue-cli --version \"${VERSION}\" --locked"
           } >> "$GITHUB_STEP_SUMMARY"

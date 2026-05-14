@@ -1,6 +1,8 @@
 pub mod app;
 pub mod domain;
 pub mod github;
+pub mod message;
+pub mod realm;
 pub mod repo;
 pub mod tui;
 pub mod ui;

@@ -84,6 +84,8 @@ impl Default for IssueFilters {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UiMode {
     Browsing,
+    IssueDetail,
+    IssueDetailClosing,
     Command,
     FilterEditor,
     Search,
@@ -162,6 +164,8 @@ pub enum FlashKind {
     Refresh,
     Success,
     Error,
+    DetailOpen,
+    DetailClose,
 }
 
 const NEW_ISSUE_ANIMATION_FRAMES: u8 = 90;
@@ -1120,7 +1124,7 @@ mod tests {
 
     #[test]
     fn starts_with_open_issues_and_browse_mode() {
-        let app = App::new("owner/skunkwork".parse().unwrap());
+        let app = App::new("owner/tissue".parse().unwrap());
 
         assert_eq!(app.filters.state, IssueStateFilter::Open);
         assert_eq!(app.mode, UiMode::Browsing);
@@ -1129,7 +1133,7 @@ mod tests {
 
     #[test]
     fn cycles_state_filter() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
 
         app.cycle_state_filter();
         assert_eq!(app.filters.state, IssueStateFilter::Closed);
@@ -1141,7 +1145,7 @@ mod tests {
 
     #[test]
     fn cycles_sort_mode_and_orders_by_assignee() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.filters.sort = IssueSort::Assignee;
         let unassigned = issue(1, "one");
         let mut assigned = issue(2, "two");
@@ -1158,7 +1162,7 @@ mod tests {
 
     #[test]
     fn updates_search_query() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
 
         app.set_query("render bug");
 
@@ -1167,7 +1171,7 @@ mod tests {
 
     #[test]
     fn selection_is_clamped_to_loaded_issues() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_issues(vec![issue(1, "one"), issue(2, "two")]);
 
         app.select_next();
@@ -1180,7 +1184,7 @@ mod tests {
 
     #[test]
     fn stores_selected_issue_detail_and_toggles_comments() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         let detail = crate::domain::IssueDetail {
             summary: issue(1, "one"),
             body: "## Description".to_string(),
@@ -1199,7 +1203,7 @@ mod tests {
 
     #[test]
     fn starts_new_issue_form_with_separate_empty_fields() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.input = "old title".to_string();
         app.body_input = "old body".to_string();
         app.label_input = "bug".to_string();
@@ -1217,7 +1221,7 @@ mod tests {
 
     #[test]
     fn applies_issue_template_to_new_issue_body() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_repo_issue_templates(vec![IssueTemplate {
             name: "bug report".to_string(),
             body: "## Expected\n".to_string(),
@@ -1230,7 +1234,7 @@ mod tests {
 
     #[test]
     fn tracks_pending_action_for_loading_feedback() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
 
         app.begin_action(PendingAction::AddComment, "Adding comment");
 
@@ -1245,7 +1249,7 @@ mod tests {
 
     #[test]
     fn suggests_unselected_repo_labels_from_label_input() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_repo_labels(vec![
             Label {
                 name: "bug".to_string(),
@@ -1268,7 +1272,7 @@ mod tests {
 
     #[test]
     fn filters_collaborator_choices_from_picker_input() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_repo_collaborators(vec![
             User {
                 login: "alice".to_string(),
@@ -1287,7 +1291,7 @@ mod tests {
 
     #[test]
     fn suggests_and_completes_collaborator_mentions_from_text() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_repo_collaborators(vec![
             User {
                 login: "alice".to_string(),
@@ -1310,7 +1314,7 @@ mod tests {
 
     #[test]
     fn toggles_selected_issue_labels_for_editing() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.toggle_editing_issue_label("bug");
         app.toggle_editing_issue_label("docs");
         app.toggle_editing_issue_label("bug");
@@ -1320,7 +1324,7 @@ mod tests {
 
     #[test]
     fn toggles_selected_assignees_for_editing() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.toggle_editing_assignee("alice");
         app.toggle_editing_assignee("bob");
         app.toggle_editing_assignee("alice");
@@ -1330,7 +1334,7 @@ mod tests {
 
     #[test]
     fn new_issue_highlights_expire_after_animation_frames() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_issues(vec![issue(1, "one"), issue(2, "two")]);
 
         app.highlight_new_issues(vec![2]);
@@ -1346,7 +1350,7 @@ mod tests {
 
     #[test]
     fn new_issue_highlights_drop_when_issue_disappears() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_issues(vec![issue(1, "one"), issue(2, "two")]);
         app.highlight_new_issues(vec![2]);
 
@@ -1358,7 +1362,7 @@ mod tests {
 
     #[test]
     fn mention_highlights_are_tracked_separately_from_new_issues() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_issues(vec![issue(1, "one"), issue(2, "two")]);
 
         app.highlight_new_issues(vec![1]);

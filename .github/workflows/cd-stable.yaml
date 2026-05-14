@@ -15,13 +15,13 @@ jobs:
       existing_tag: ${{ github.event.release.tag_name }}
       new_tag: ${{ github.event.release.name }}
 
-  publish-stable-cli-artifactory:
+  publish-stable-cli-crates-io:
     needs: stable-tag
-    uses: ./.github/workflows/publish-cli-artifactory.yaml
+    uses: ./.github/workflows/publish-cli-crates-io.yaml
     with:
       version_tag: ${{ needs.stable-tag.outputs.new_tag }}
-      runner_label: comcast-ubuntu-latest
+      runner_label: ubuntu-latest
       timeout_minutes: 20
       allow_existing: true
     secrets:
-      artifactory_token: ${{ secrets.ARTIFACTORY_TITAN_CARGO_PASSWORD }}
+      CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}

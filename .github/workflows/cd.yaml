@@ -9,9 +9,8 @@ on:
       - "Cargo.lock"
       - "src/**"
       - "scripts/**"
-      - ".cargo/config.toml"
       - ".github/workflows/cd.yaml"
-      - ".github/workflows/publish-cli-artifactory.yaml"
+      - ".github/workflows/publish-cli-crates-io.yaml"
 
 permissions:
   contents: write
@@ -22,13 +21,13 @@ jobs:
     with:
       prerelease: true
 
-  publish-cli-artifactory:
+  publish-cli-crates-io:
     needs: tag-and-release
-    uses: ./.github/workflows/publish-cli-artifactory.yaml
+    uses: ./.github/workflows/publish-cli-crates-io.yaml
     with:
       version_tag: ${{ needs.tag-and-release.outputs.version-tag }}
-      runner_label: comcast-ubuntu-latest
+      runner_label: ubuntu-latest
       timeout_minutes: 20
       allow_existing: false
     secrets:
-      artifactory_token: ${{ secrets.ARTIFACTORY_TITAN_CARGO_PASSWORD }}
+      CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}

@@ -69,7 +69,7 @@ command = ["cargo", "doc", "--no-deps", "--open"]
 on_success = "job:doc"
 need_stdout = false
 
-# Keep bacon jobs non-interactive. Running skunkwork itself inside bacon can
+# Keep bacon jobs non-interactive. Running tissue itself inside bacon can
 # leave the terminal alternate screen and mouse capture in a bad state.
 [jobs.smoke]
 command = ["cargo", "run", "--", "--help"]

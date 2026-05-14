@@ -6,14 +6,14 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Position, Rect, Size},
     style::{Color, Modifier, Style},
     symbols::border::Set,
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{
         Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Widget,
         Wrap,
     },
 };
 use ratatui_textarea::{CursorMove, TextArea};
-use tachyonfx::{EffectManager, Interpolation, fx};
+use tachyonfx::{EffectManager, Interpolation, Motion, fx};
 use throbber_widgets_tui::{BRAILLE_ONE, Throbber, ThrobberState, WhichUse};
 use tui_scrollview::{ScrollView, ScrollViewState, ScrollbarVisibility};
 use tui_tree_widget::{Tree, TreeItem, TreeState};
@@ -74,11 +74,11 @@ pub enum MouseTarget {
 }
 
 #[derive(Default)]
-pub struct SkunkworkEffects {
+pub struct TissueEffects {
     manager: EffectManager<String>,
 }
 
-impl SkunkworkEffects {
+impl TissueEffects {
     pub fn trigger_startup_loading(&mut self) {
         self.manager.add_unique_effect(
             "startup-loading",
@@ -104,6 +104,32 @@ impl SkunkworkEffects {
         );
     }
 
+    pub fn trigger_detail_open(&mut self) {
+        self.manager.add_unique_effect(
+            "detail-open",
+            fx::slide_in(
+                Motion::RightToLeft,
+                12,
+                0,
+                Color::Reset,
+                (220, Interpolation::SineOut),
+            ),
+        );
+    }
+
+    pub fn trigger_detail_close(&mut self) {
+        self.manager.add_unique_effect(
+            "detail-close",
+            fx::slide_out(
+                Motion::LeftToRight,
+                12,
+                0,
+                Color::Reset,
+                (180, Interpolation::SineOut),
+            ),
+        );
+    }
+
     pub fn process(&mut self, elapsed: StdDuration, buffer: &mut Buffer, area: Rect) {
         self.manager.process_effects(elapsed.into(), buffer, area);
     }
@@ -120,34 +146,65 @@ impl SkunkworkEffects {
     }
 }
 
-pub fn trigger_flash_effect(app: &mut App, effects: &mut SkunkworkEffects) {
+pub fn trigger_flash_effect(app: &mut App, effects: &mut TissueEffects) {
     match app.flash.take() {
         Some(FlashKind::Refresh) => effects.trigger_refresh(),
         Some(FlashKind::Success) => effects.trigger_success(),
         Some(FlashKind::Error) => effects.trigger_error(),
+        Some(FlashKind::DetailOpen) => effects.trigger_detail_open(),
+        Some(FlashKind::DetailClose) => effects.trigger_detail_close(),
         None => {}
     }
 }
 
 pub fn render(app: &App, area: Rect, buffer: &mut Buffer) {
-    Block::new().style(page_style()).render(area, buffer);
+    render_page_background(app, area, buffer);
 
-    if app.mode == UiMode::Command {
-        let rows = command_mode_rows(area);
-        render_header(app, rows[0], buffer);
-        render_filters(app, rows[1], buffer);
-        render_body(app, rows[2], buffer);
-        render_command_bar(app, rows[3], buffer);
-        render_footer(app, rows[4], buffer);
-    } else {
-        let rows = main_rows(area);
-        render_header(app, rows[0], buffer);
-        render_filters(app, rows[1], buffer);
-        render_body(app, rows[2], buffer);
-        render_footer(app, rows[3], buffer);
+    let areas = screen_areas(app, area);
+    render_header(app, areas.header, buffer);
+    render_filters(app, areas.filters, buffer);
+    render_body(app, areas.body, buffer);
+    if let Some(command_bar) = areas.command_bar {
+        render_command_bar(app, command_bar, buffer);
     }
+    render_footer(app, areas.footer, buffer);
 
     render_overlay(app, area, buffer);
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ScreenAreas {
+    pub header: Rect,
+    pub filters: Rect,
+    pub body: Rect,
+    pub command_bar: Option<Rect>,
+    pub footer: Rect,
+}
+
+pub(crate) fn screen_areas(app: &App, area: Rect) -> ScreenAreas {
+    if app.mode == UiMode::Command {
+        let rows = command_mode_rows(area);
+        ScreenAreas {
+            header: rows[0],
+            filters: rows[1],
+            body: rows[2],
+            command_bar: Some(rows[3]),
+            footer: rows[4],
+        }
+    } else {
+        let rows = main_rows(area);
+        ScreenAreas {
+            header: rows[0],
+            filters: rows[1],
+            body: rows[2],
+            command_bar: None,
+            footer: rows[3],
+        }
+    }
+}
+
+pub(crate) fn render_page_background(_app: &App, area: Rect, buffer: &mut Buffer) {
+    Block::new().style(page_style()).render(area, buffer);
 }
 
 fn page_style() -> Style {
@@ -209,12 +266,13 @@ pub fn effect_area(app: &App, area: Rect) -> Rect {
         | UiMode::Loading
         | UiMode::Error => centered_rect(72, 55, area),
         UiMode::Command => command_bar_area(area),
+        UiMode::IssueDetail | UiMode::IssueDetailClosing => detail_area(area),
         UiMode::Browsing => issue_list_area(area),
         UiMode::FilterEditor => area,
     }
 }
 
-fn render_header(app: &App, area: Rect, buffer: &mut Buffer) {
+pub(crate) fn render_header(app: &App, area: Rect, buffer: &mut Buffer) {
     let open = app
         .issues
         .iter()
@@ -241,7 +299,7 @@ fn render_header(app: &App, area: Rect, buffer: &mut Buffer) {
         .render(area, buffer);
 }
 
-fn render_filters(app: &App, area: Rect, buffer: &mut Buffer) {
+pub(crate) fn render_filters(app: &App, area: Rect, buffer: &mut Buffer) {
     let state = match app.filters.state {
         IssueStateFilter::Open => "open",
         IssueStateFilter::Closed => "closed",
@@ -270,15 +328,18 @@ fn render_filters(app: &App, area: Rect, buffer: &mut Buffer) {
         .render(area, buffer);
 }
 
-fn render_body(app: &App, area: Rect, buffer: &mut Buffer) {
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(ISSUE_LIST_PERCENT),
-            Constraint::Percentage(DETAIL_PANEL_PERCENT),
-        ])
-        .split(area);
+pub(crate) fn render_body(app: &App, area: Rect, buffer: &mut Buffer) {
+    if !matches!(app.mode, UiMode::IssueDetail | UiMode::IssueDetailClosing) {
+        render_issue_list(app, area, buffer);
+        return;
+    }
 
+    let columns = body_columns(area);
+    render_issue_list(app, columns[0], buffer);
+    render_detail(app, columns[1], buffer);
+}
+
+fn render_issue_list(app: &App, area: Rect, buffer: &mut Buffer) {
     let widths = [
         Constraint::Length(6),
         Constraint::Length(5),
@@ -310,9 +371,7 @@ fn render_body(app: &App, area: Rect, buffer: &mut Buffer) {
         .highlight_symbol("▸")
         .highlight_spacing(HighlightSpacing::Always);
     let mut state = TableState::default().with_selected(Some(app.selected_index));
-    ratatui::widgets::StatefulWidget::render(table, columns[0], buffer, &mut state);
-
-    render_detail(app, columns[1], buffer);
+    ratatui::widgets::StatefulWidget::render(table, area, buffer, &mut state);
 }
 
 fn issue_row(
@@ -481,21 +540,28 @@ fn render_detail(app: &App, area: Rect, buffer: &mut Buffer) {
     };
 
     Paragraph::new(detail)
-        .block(frame_block("Detail", DETAIL_ACCENT))
+        .block(frame_block(
+            app.selected_issue()
+                .map(issue_detail_title)
+                .unwrap_or_else(|| "Detail".to_string()),
+            DETAIL_ACCENT,
+        ))
         .style(surface_style())
         .wrap(Wrap { trim: true })
         .render(area, buffer);
 }
 
 fn render_detail_tree(app: &App, detail: &IssueDetail, area: Rect, buffer: &mut Buffer) {
-    let block = frame_block(format!("Detail #{}", detail.summary.number), DETAIL_ACCENT);
+    let block = frame_block(issue_detail_title(&detail.summary), DETAIL_ACCENT);
     let inner = block.inner(area);
     block.render(area, buffer);
     if inner.is_empty() {
         return;
     }
 
-    let items = detail_tree_items(detail);
+    let description_width = inner.width.saturating_sub(4).max(1);
+    let comment_width = inner.width.saturating_sub(6).max(1);
+    let items = detail_tree_items(detail, description_width, comment_width);
     let tree = Tree::new(&items)
         .expect("detail tree item identifiers are unique")
         .style(surface_style())
@@ -512,8 +578,13 @@ fn render_detail_tree(app: &App, detail: &IssueDetail, area: Rect, buffer: &mut 
         }
     }
 
-    let content_height =
-        detail_tree_content_height(detail, inner.width, app.comments_expanded).max(inner.height);
+    let content_height = detail_tree_content_height(
+        detail,
+        description_width,
+        comment_width,
+        app.comments_expanded,
+    )
+    .max(inner.height);
     let content_size = Size::new(inner.width.max(1), content_height.max(1));
     let mut scroll_view = ScrollView::new(content_size)
         .vertical_scrollbar_visibility(ScrollbarVisibility::Automatic)
@@ -527,9 +598,17 @@ fn render_detail_tree(app: &App, detail: &IssueDetail, area: Rect, buffer: &mut 
     ratatui::widgets::StatefulWidget::render(scroll_view, inner, buffer, &mut scroll_state);
 }
 
-fn detail_tree_content_height(detail: &IssueDetail, width: u16, comments_expanded: bool) -> u16 {
-    let content_width = width.saturating_sub(4).max(1);
-    let description_height = markdown_display_height(&detail.body, content_width);
+fn issue_detail_title(issue: &IssueSummary) -> String {
+    format!("#{} {}", issue.number, issue.title)
+}
+
+fn detail_tree_content_height(
+    detail: &IssueDetail,
+    description_width: u16,
+    comment_width: u16,
+    comments_expanded: bool,
+) -> u16 {
+    let description_height = markdown_display_height(&detail.body, description_width);
     let comments_height = if !comments_expanded {
         0
     } else if detail.comments.is_empty() {
@@ -538,7 +617,7 @@ fn detail_tree_content_height(detail: &IssueDetail, width: u16, comments_expande
         detail
             .comments
             .iter()
-            .map(|comment| 1 + markdown_display_height(&comment.body, content_width))
+            .map(|comment| 1 + markdown_display_height(&comment.body, comment_width))
             .sum()
     };
 
@@ -560,24 +639,32 @@ fn markdown_display_height(markdown: &str, width: u16) -> u16 {
         .min(usize::from(u16::MAX)) as u16
 }
 
-fn detail_tree_items(detail: &IssueDetail) -> Vec<TreeItem<'_, String>> {
+fn detail_tree_items(
+    detail: &IssueDetail,
+    description_width: u16,
+    comment_width: u16,
+) -> Vec<TreeItem<'_, String>> {
     vec![
         TreeItem::new(
             "description".to_string(),
             "Description",
-            vec![markdown_leaf("description-body".to_string(), &detail.body)],
+            vec![markdown_leaf(
+                "description-body".to_string(),
+                &detail.body,
+                description_width,
+            )],
         )
         .expect("description item id is valid"),
         TreeItem::new(
             "comments".to_string(),
             format!("Comments ({})", detail.comments.len()),
-            comment_tree_items(&detail.comments),
+            comment_tree_items(&detail.comments, comment_width),
         )
         .expect("comments item id is valid"),
     ]
 }
 
-fn comment_tree_items(comments: &[IssueComment]) -> Vec<TreeItem<'_, String>> {
+fn comment_tree_items(comments: &[IssueComment], width: u16) -> Vec<TreeItem<'_, String>> {
     if comments.is_empty() {
         return vec![TreeItem::new_leaf(
             "no-comments".to_string(),
@@ -599,6 +686,7 @@ fn comment_tree_items(comments: &[IssueComment]) -> Vec<TreeItem<'_, String>> {
                 vec![markdown_leaf(
                     format!("comment-{index}-body"),
                     &comment.body,
+                    width,
                 )],
             )
             .expect("comment item id is valid")
@@ -606,15 +694,130 @@ fn comment_tree_items(comments: &[IssueComment]) -> Vec<TreeItem<'_, String>> {
         .collect()
 }
 
-fn markdown_leaf(id: String, markdown: &str) -> TreeItem<'_, String> {
+fn markdown_leaf(id: String, markdown: &str, width: u16) -> TreeItem<'_, String> {
     if markdown.trim().is_empty() {
         TreeItem::new_leaf(id, "No description.")
     } else {
-        TreeItem::new_leaf(id, tui_markdown::from_str(markdown))
+        TreeItem::new_leaf(id, wrap_text(tui_markdown::from_str(markdown), width))
     }
 }
 
-fn render_footer(app: &App, area: Rect, buffer: &mut Buffer) {
+fn wrap_text(text: Text<'_>, width: u16) -> Text<'static> {
+    let width = usize::from(width.max(1));
+    Text {
+        alignment: text.alignment,
+        style: text.style,
+        lines: text
+            .lines
+            .into_iter()
+            .flat_map(|line| wrap_line(line, width))
+            .collect(),
+    }
+}
+
+fn wrap_line(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
+    if line.width() <= width {
+        return vec![own_line(line)];
+    }
+
+    let mut wrapped = Vec::new();
+    let mut current_spans = Vec::new();
+    let mut current_width = 0usize;
+    let line_style = line.style;
+    let line_alignment = line.alignment;
+
+    for span in line.spans {
+        for word in span.content.split_whitespace() {
+            let word_width = word.chars().count();
+            let separator_width = usize::from(current_width > 0);
+            if current_width > 0 && current_width + separator_width + word_width > width {
+                wrapped.push(line_from_spans(
+                    std::mem::take(&mut current_spans),
+                    line_style,
+                    line_alignment,
+                ));
+                current_width = 0;
+            }
+
+            if current_width > 0 {
+                current_spans.push(Span::styled(" ".to_string(), span.style));
+                current_width += 1;
+            }
+
+            if word_width > width {
+                for chunk in word_chunks(word, width) {
+                    if current_width > 0 && current_width + chunk.chars().count() > width {
+                        wrapped.push(line_from_spans(
+                            std::mem::take(&mut current_spans),
+                            line_style,
+                            line_alignment,
+                        ));
+                        current_width = 0;
+                    }
+                    current_width += chunk.chars().count();
+                    current_spans.push(Span::styled(chunk, span.style));
+                }
+            } else {
+                current_width += word_width;
+                current_spans.push(Span::styled(word.to_string(), span.style));
+            }
+        }
+    }
+
+    if current_spans.is_empty() {
+        wrapped.push(line_from_spans(Vec::new(), line_style, line_alignment));
+    } else {
+        wrapped.push(line_from_spans(current_spans, line_style, line_alignment));
+    }
+
+    wrapped
+}
+
+fn own_line(line: Line<'_>) -> Line<'static> {
+    line_from_spans(
+        line.spans
+            .into_iter()
+            .map(|span| Span::styled(span.content.to_string(), span.style))
+            .collect(),
+        line.style,
+        line.alignment,
+    )
+}
+
+fn line_from_spans(
+    spans: Vec<Span<'static>>,
+    style: Style,
+    alignment: Option<ratatui::layout::Alignment>,
+) -> Line<'static> {
+    Line {
+        spans,
+        style,
+        alignment,
+    }
+}
+
+fn word_chunks(word: &str, width: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut chunk = String::new();
+    let mut chunk_width = 0usize;
+
+    for character in word.chars() {
+        if chunk_width == width {
+            chunks.push(std::mem::take(&mut chunk));
+            chunk_width = 0;
+        }
+        chunk.push(character);
+        chunk_width += 1;
+    }
+
+    if !chunk.is_empty() {
+        chunks.push(chunk);
+    }
+
+    chunks
+}
+
+pub(crate) fn render_footer(app: &App, area: Rect, buffer: &mut Buffer) {
     let footer = format!("{}\n{}", footer_shortcuts(app), app.status);
     Paragraph::new(footer)
         .style(Style::new().fg(DIM_FG))
@@ -623,9 +826,9 @@ fn render_footer(app: &App, area: Rect, buffer: &mut Buffer) {
 
 fn footer_shortcuts(app: &App) -> &'static str {
     match app.mode {
-        UiMode::Browsing => {
-            ": commands | n new | x close | j/k move | PgUp/PgDn detail | Enter fold | q quit"
-        }
+        UiMode::Browsing => ": commands | n new | x close | j/k move | Enter open | q quit",
+        UiMode::IssueDetail => "Esc list | Enter fold | j/k scroll | PgUp/PgDn detail | : commands",
+        UiMode::IssueDetailClosing => "Returning to list",
         UiMode::Command => "Enter run | Tab complete | Arrows edit | Esc cancel",
         UiMode::Search => "Enter search | Arrows edit | Esc cancel",
         UiMode::CommentComposer => {
@@ -655,7 +858,7 @@ fn footer_shortcuts(app: &App) -> &'static str {
     }
 }
 
-fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
+pub(crate) fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
     let title = match app.mode {
         UiMode::Search => Some("Search"),
         UiMode::CommentComposer => Some("Comment"),
@@ -707,7 +910,7 @@ fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
     }
 }
 
-fn render_command_bar(app: &App, area: Rect, buffer: &mut Buffer) {
+pub(crate) fn render_command_bar(app: &App, area: Rect, buffer: &mut Buffer) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Length(1)])
@@ -1274,7 +1477,9 @@ pub fn mouse_target(app: &App, area: Rect, column: u16, row: u16) -> Option<Mous
     let point = Rect::new(column, row, 1, 1);
 
     match app.mode {
-        UiMode::Browsing => browsing_mouse_target(app, area, point),
+        UiMode::Browsing | UiMode::IssueDetail | UiMode::IssueDetailClosing => {
+            browsing_mouse_target(app, area, point)
+        }
         UiMode::CommentComposer | UiMode::CloseComment => action_mouse_target(
             comment_editor_action_area(area),
             COMMENT_PRIMARY_LABEL,
@@ -1302,9 +1507,9 @@ pub fn mouse_target(app: &App, area: Rect, column: u16, row: u16) -> Option<Mous
 }
 
 fn browsing_mouse_target(app: &App, area: Rect, point: Rect) -> Option<MouseTarget> {
-    let columns = browsing_columns(area);
-    if intersects(point, columns[0]) {
-        let first_issue_row = columns[0].y.saturating_add(3);
+    let list_area = issue_list_area_for_mode(app, area);
+    if intersects(point, list_area) {
+        let first_issue_row = list_area.y.saturating_add(3);
         if point.y >= first_issue_row {
             let index = usize::from(point.y - first_issue_row);
             if index < app.issues.len() {
@@ -1313,7 +1518,10 @@ fn browsing_mouse_target(app: &App, area: Rect, point: Rect) -> Option<MouseTarg
         }
     }
 
-    if intersects(point, columns[1]) && app.selected_detail.is_some() {
+    if app.mode == UiMode::IssueDetail
+        && intersects(point, detail_area(area))
+        && app.selected_detail.is_some()
+    {
         return Some(MouseTarget::DetailPanel);
     }
 
@@ -1414,7 +1622,19 @@ fn browsing_columns(area: Rect) -> std::rc::Rc<[Rect]> {
 }
 
 fn issue_list_area(area: Rect) -> Rect {
-    browsing_columns(area)[0]
+    main_rows(area)[2]
+}
+
+fn issue_list_area_for_mode(app: &App, area: Rect) -> Rect {
+    if app.mode == UiMode::Browsing {
+        issue_list_area(area)
+    } else {
+        browsing_columns(area)[0]
+    }
+}
+
+fn detail_area(area: Rect) -> Rect {
+    browsing_columns(area)[1]
 }
 
 fn body_columns(area: Rect) -> std::rc::Rc<[Rect]> {
@@ -1573,7 +1793,7 @@ mod tests {
 
     #[test]
     fn renders_main_screen_with_filters_and_actions() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_issues(vec![
             issue(122, "Fix login redraw", IssueState::Open, &["bug"]),
             issue(101, "Clarify setup", IssueState::Closed, &["docs"]),
@@ -1584,7 +1804,7 @@ mod tests {
         render(&app, buffer.area, &mut buffer);
         let rendered = buffer_to_string(&buffer);
 
-        assert!(rendered.contains("owner/skunkwork"));
+        assert!(rendered.contains("owner/tissue"));
         assert!(rendered.contains("State: open"));
         assert!(rendered.contains("Assignee: any"));
         assert!(rendered.contains("Search: redraw"));
@@ -1608,7 +1828,7 @@ mod tests {
 
     #[test]
     fn main_screen_uses_terminal_default_background() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_issues(vec![
             issue(122, "Fix login redraw", IssueState::Open, &["bug"]),
             issue(101, "Clarify setup", IssueState::Closed, &["docs"]),
@@ -1622,7 +1842,7 @@ mod tests {
 
     #[test]
     fn modal_screens_use_terminal_default_background() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.start_new_issue();
         app.input = "Add terminal theme support".to_string();
         app.body_input = "Keep the user's terminal palette visible.".to_string();
@@ -1635,7 +1855,7 @@ mod tests {
 
     #[test]
     fn footer_shortcuts_follow_active_screen() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
 
         assert!(footer_shortcuts(&app).contains(": commands"));
         assert!(footer_shortcuts(&app).contains("n new"));
@@ -1663,7 +1883,7 @@ mod tests {
 
     #[test]
     fn renders_command_prompt_above_footer() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::Command;
         app.input = "sor".to_string();
 
@@ -1683,7 +1903,7 @@ mod tests {
 
     #[test]
     fn renders_issue_editor_with_title_and_body_fields() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::IssueEditor;
         app.input = "Fix redraw".to_string();
         app.body_input = "## Body".to_string();
@@ -1700,7 +1920,7 @@ mod tests {
 
     #[test]
     fn command_effect_area_uses_bottom_prompt() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::Command;
 
         let area = Rect::new(0, 0, 120, 40);
@@ -1713,7 +1933,7 @@ mod tests {
 
     #[test]
     fn renders_new_issue_highlight_in_issue_list() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_issues(vec![
             issue(122, "Fix login redraw", IssueState::Open, &["bug"]),
             issue(130, "Fresh", IssueState::Open, &[]),
@@ -1731,7 +1951,7 @@ mod tests {
 
     #[test]
     fn renders_mention_highlight_in_issue_list() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_issues(vec![
             issue(122, "Fix login redraw", IssueState::Open, &["bug"]),
             issue(130, "Ping", IssueState::Open, &[]),
@@ -1749,7 +1969,7 @@ mod tests {
 
     #[test]
     fn renders_team_metadata_and_stale_badge() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         let mut stale = issue(130, "Needs owner", IssueState::Open, &[]);
         stale.author = Some(User {
             login: "alice".to_string(),
@@ -1770,12 +1990,55 @@ mod tests {
     }
 
     #[test]
+    fn browsing_renders_issue_list_without_detail_panel() {
+        let mut app = App::new("owner/tissue".parse().unwrap());
+        app.set_issues(vec![issue(
+            122,
+            "Fix login redraw",
+            IssueState::Open,
+            &["bug"],
+        )]);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 110, 28));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Issues"));
+        assert!(rendered.contains("Fix login redraw"));
+        assert!(!rendered.contains("Detail"));
+        assert!(!rendered.contains("comments:"));
+    }
+
+    #[test]
+    fn detail_mode_renders_issue_list_and_loaded_detail_panel() {
+        let mut app = App::new("owner/tissue".parse().unwrap());
+        let summary = issue(122, "Fix login redraw", IssueState::Open, &["bug"]);
+        app.set_issues(vec![summary.clone()]);
+        app.mode = UiMode::IssueDetail;
+        app.set_selected_detail(crate::domain::IssueDetail {
+            summary,
+            body: "Loaded body".to_string(),
+            comments: Vec::new(),
+        });
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 110, 28));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Issues"));
+        assert!(rendered.contains("#122 Fix login redraw"));
+        assert!(!rendered.contains("Detail #122"));
+        assert!(rendered.contains("Loaded body"));
+    }
+
+    #[test]
     fn mouse_targets_issue_rows_and_detail_panel() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_issues(vec![
             issue(1, "Fix redraw", IssueState::Open, &[]),
             issue(2, "Add mouse", IssueState::Open, &[]),
         ]);
+        app.mode = UiMode::IssueDetail;
         app.selected_detail = Some(crate::domain::IssueDetail {
             summary: issue(1, "Fix redraw", IssueState::Open, &[]),
             body: String::new(),
@@ -1800,7 +2063,7 @@ mod tests {
 
     #[test]
     fn mouse_targets_new_issue_fields_and_buttons() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::NewIssue;
         let area = Rect::new(0, 0, 100, 30);
         let rows = new_issue_rows(area);
@@ -1829,7 +2092,7 @@ mod tests {
 
     #[test]
     fn mouse_targets_issue_editor_fields_and_buttons() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::IssueEditor;
         let area = Rect::new(0, 0, 100, 30);
         let rows = issue_editor_rows(area);
@@ -1850,7 +2113,7 @@ mod tests {
 
     #[test]
     fn mouse_targets_picker_rows_and_buttons() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::AssigneeEditor;
         app.set_repo_collaborators(vec![crate::domain::User {
             login: "alice".to_string(),
@@ -1894,7 +2157,7 @@ mod tests {
 
     #[test]
     fn renders_assignee_picker_with_collaborators() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::AssigneeEditor;
         app.set_repo_collaborators(vec![crate::domain::User {
             login: "alice".to_string(),
@@ -1912,7 +2175,7 @@ mod tests {
 
     #[test]
     fn renders_issue_label_editor_with_selected_labels() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::IssueLabelEditor;
         app.set_repo_labels(vec![
             Label {
@@ -1940,7 +2203,7 @@ mod tests {
 
     #[test]
     fn routine_refresh_starts_contained_loading_effects() {
-        let mut effects = SkunkworkEffects::default();
+        let mut effects = TissueEffects::default();
 
         effects.trigger_refresh();
 
@@ -1949,7 +2212,7 @@ mod tests {
 
     #[test]
     fn creates_startup_loading_effects() {
-        let mut effects = SkunkworkEffects::default();
+        let mut effects = TissueEffects::default();
 
         effects.trigger_startup_loading();
 
@@ -1958,7 +2221,7 @@ mod tests {
 
     #[test]
     fn loading_effects_are_targeted_to_modal_area() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.begin_action(PendingAction::Refresh, "Refreshing issues");
 
         let area = Rect::new(0, 0, 120, 40);
@@ -1970,19 +2233,18 @@ mod tests {
 
     #[test]
     fn browsing_refresh_effect_targets_issue_list() {
-        let app = App::new("owner/skunkwork".parse().unwrap());
+        let app = App::new("owner/tissue".parse().unwrap());
         let area = Rect::new(0, 0, 120, 40);
 
         let target = effect_area(&app, area);
 
         assert_eq!(target, issue_list_area(area));
-        assert!(target.width < area.width);
         assert!(target.height < area.height);
     }
 
     #[test]
     fn renders_loading_overlay_for_pending_actions() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.begin_action(PendingAction::CreateIssue, "Creating issue");
 
         let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
@@ -1996,7 +2258,7 @@ mod tests {
 
     #[test]
     fn renders_loading_overlay_with_throbber_indicator() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.begin_action(PendingAction::Refresh, "Refreshing issues");
         app.activity_frame = 2;
 
@@ -2010,13 +2272,14 @@ mod tests {
 
     #[test]
     fn detail_tree_scrolls_long_descriptions() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         let summary = issue(19, "Long detail", IssueState::Open, &[]);
         let body = (1..=24)
             .map(|line| format!("line {line:02}"))
             .collect::<Vec<_>>()
             .join("\n\n");
         app.set_issues(vec![summary.clone()]);
+        app.mode = UiMode::IssueDetail;
         app.set_selected_detail(crate::domain::IssueDetail {
             summary,
             body,
@@ -2034,7 +2297,7 @@ mod tests {
 
     #[test]
     fn renders_comment_composer_as_text_editor() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::CommentComposer;
         app.input = "Looks good @a".to_string();
         app.set_repo_collaborators(vec![crate::domain::User {
@@ -2054,7 +2317,7 @@ mod tests {
 
     #[test]
     fn renders_close_comment_as_required_text_editor() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.mode = UiMode::CloseComment;
         app.input = "Closing after verification".to_string();
 
@@ -2070,7 +2333,7 @@ mod tests {
 
     #[test]
     fn renders_new_issue_as_separate_title_body_and_label_fields() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.start_new_issue();
         app.input = "Add label picker".to_string();
         app.body_input = "## Details\n\nUse markdown".to_string();
@@ -2110,7 +2373,7 @@ mod tests {
 
     #[test]
     fn renders_body_mention_suggestions_in_new_issue_and_issue_editors() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_repo_collaborators(vec![crate::domain::User {
             login: "alice".to_string(),
         }]);
@@ -2140,7 +2403,7 @@ mod tests {
 
     #[test]
     fn renders_success_confirmation_over_reloaded_state() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         app.set_issues(vec![issue(122, "Fix login redraw", IssueState::Open, &[])]);
         app.mode = UiMode::Success;
         app.set_status("Commented on issue #122");
@@ -2149,7 +2412,6 @@ mod tests {
         render(&app, buffer.area, &mut buffer);
         let rendered = buffer_to_string(&buffer);
 
-        assert!(rendered.contains("Fix login redraw"));
         assert!(rendered.contains("Done"));
         assert!(rendered.contains("Commented on issue #122"));
         assert!(rendered.contains("State reloaded."));
@@ -2157,9 +2419,10 @@ mod tests {
 
     #[test]
     fn renders_issue_detail_as_markdown_tree_with_comments() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         let summary = issue(122, "Fix login redraw", IssueState::Open, &["bug"]);
         app.set_issues(vec![summary.clone()]);
+        app.mode = UiMode::IssueDetail;
         app.set_selected_detail(crate::domain::IssueDetail {
             summary,
             body: "## Description\n\n- redraw the form".to_string(),
@@ -2186,9 +2449,10 @@ mod tests {
 
     #[test]
     fn renders_multiline_markdown_issue_description() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         let summary = issue(122, "Fix multiline body", IssueState::Open, &["bug"]);
         app.set_issues(vec![summary.clone()]);
+        app.mode = UiMode::IssueDetail;
         app.set_selected_detail(crate::domain::IssueDetail {
             summary,
             body: "Line one\n\nLine two\n\n### Notes\n\n- first item\n- second item".to_string(),
@@ -2208,9 +2472,10 @@ mod tests {
 
     #[test]
     fn renders_plain_issue_description_without_extra_prefix_character() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         let summary = issue(19, "A new thing", IssueState::Open, &[]);
         app.set_issues(vec![summary.clone()]);
+        app.mode = UiMode::IssueDetail;
         app.set_selected_detail(crate::domain::IssueDetail {
             summary,
             body: "oohh fancy".to_string(),
@@ -2227,9 +2492,10 @@ mod tests {
 
     #[test]
     fn collapses_comment_bodies_in_detail_tree() {
-        let mut app = App::new("owner/skunkwork".parse().unwrap());
+        let mut app = App::new("owner/tissue".parse().unwrap());
         let summary = issue(122, "Fix login redraw", IssueState::Open, &["bug"]);
         app.set_issues(vec![summary.clone()]);
+        app.mode = UiMode::IssueDetail;
         app.set_selected_detail(crate::domain::IssueDetail {
             summary,
             body: "Body".to_string(),
@@ -2249,5 +2515,33 @@ mod tests {
 
         assert!(rendered.contains("Comments (1)"));
         assert!(!rendered.contains("Hidden comment body"));
+    }
+
+    #[test]
+    fn wraps_long_comment_lines_inside_detail_panel() {
+        let mut app = App::new("owner/tissue".parse().unwrap());
+        let summary = issue(122, "Fix login redraw", IssueState::Open, &["bug"]);
+        app.set_issues(vec![summary.clone()]);
+        app.mode = UiMode::IssueDetail;
+        app.set_selected_detail(crate::domain::IssueDetail {
+            summary,
+            body: "Body".to_string(),
+            comments: vec![crate::domain::IssueComment {
+                author: Some(crate::domain::User {
+                    login: "octocat".to_string(),
+                }),
+                body: "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu"
+                    .to_string(),
+                created_at: None,
+            }],
+        });
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 22));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("alpha beta gamma delta"));
+        assert!(rendered.contains("theta iota kappa lambda"));
+        assert!(!rendered.contains("alpha beta gamma delta epsilon zeta eta theta"));
     }
 }

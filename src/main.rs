@@ -4,15 +4,16 @@ use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
 };
-use skunkwork::{app::App, github::GitHubClient, repo, tui};
 use std::io::stdout;
+use tissue::{app::App, github::GitHubClient, repo, tui};
 
 #[derive(Debug, Parser)]
-#[command(name = "skunkwork")]
+#[command(name = "tissue")]
 #[command(version)]
 #[command(about = "A Ratatui issue tracker for one GitHub repository")]
 struct Args {
-    /// Repository to open, formatted as owner/repo. If omitted, gh repo view is used.
+    /// Repository to open, formatted as owner/repo or a GitHub remote URL.
+    /// If omitted, gh repo view or git remote origin is used.
     repo: Option<String>,
 }
 
