@@ -37,8 +37,17 @@ fn ci_workflow_checks_format_tests_package_and_actions() {
 
     assert!(workflow.contains("pull_request:"));
     assert!(workflow.contains("runs-on: comcast-ubuntu-latest"));
+    assert!(workflow.contains("rustup component add rustfmt"));
     assert!(workflow.contains("cargo fmt --check"));
     assert!(workflow.contains("cargo test"));
     assert!(workflow.contains("cargo publish --dry-run --allow-dirty"));
     assert!(workflow.contains("raven-actions/actionlint@v2"));
+}
+
+#[test]
+fn actionlint_knows_internal_runner_labels() {
+    let config = fs::read_to_string(".github/actionlint.yaml").expect("read actionlint config");
+
+    assert!(config.contains("self-hosted-runner:"));
+    assert!(config.contains("comcast-ubuntu-latest"));
 }
