@@ -371,6 +371,10 @@ fn is_submit_key(key: KeyEvent) -> bool {
     key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
+fn is_global_quit_key(key: KeyEvent) -> bool {
+    key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
 fn cursor_movement(key: KeyEvent) -> Option<TextCursorMove> {
     match key.code {
         KeyCode::Left => Some(TextCursorMove::Left),
@@ -384,6 +388,11 @@ fn cursor_movement(key: KeyEvent) -> Option<TextCursorMove> {
 }
 
 async fn handle_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
+    if is_global_quit_key(key) {
+        app.should_quit = true;
+        return;
+    }
+
     match app.mode {
         UiMode::Browsing => handle_browsing_key(app, backend, key).await,
         UiMode::IssueDetail => handle_issue_detail_key(app, backend, key).await,
@@ -3167,6 +3176,48 @@ mod tests {
         .await;
 
         assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_quits_from_any_mode() {
+        let backend = backend_with_issues(Vec::new());
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.mode = UiMode::CommentComposer;
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn q_quits_only_in_browsing_mode() {
+        let backend = backend_with_issues(Vec::new());
+        let mut app = App::new("owner/tissues".parse().unwrap());
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+        )
+        .await;
+        assert!(app.should_quit);
+
+        let mut non_browsing = App::new("owner/tissues".parse().unwrap());
+        non_browsing.mode = UiMode::Command;
+        handle_key(
+            &mut non_browsing,
+            &backend,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+        )
+        .await;
+
+        assert!(!non_browsing.should_quit);
+        assert_eq!(non_browsing.input, "q");
     }
 
     #[tokio::test]

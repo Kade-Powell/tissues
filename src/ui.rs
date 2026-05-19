@@ -1145,7 +1145,7 @@ fn footer_shortcuts(app: &App) -> String {
             "Left/Right move | v view | j/k select | Enter open | : commands | q quit".to_string()
         }
         UiMode::Browsing => {
-            ": commands | v view | t triage | n new | x close | j/k move | Enter open | q quit"
+            ": commands | v view | t triage | n new | x close | j/k move | Enter open | q/ctrl+c quit"
                 .to_string()
         }
         UiMode::IssueDetail => {
