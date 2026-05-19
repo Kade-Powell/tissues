@@ -5,7 +5,7 @@ use crossterm::{
     execute,
 };
 use std::io::stdout;
-use tissues::{app::App, github::GitHubClient, repo, tui};
+use tissues::{app::App, config::AppConfig, github::GitHubClient, repo, tui};
 
 #[derive(Debug, Parser)]
 #[command(name = "tissues")]
@@ -25,7 +25,8 @@ async fn main() -> Result<()> {
         Some(repo) => repo.parse()?,
         None => repo::infer_current_repo()?,
     };
-    let client = GitHubClient::from_gh_cli()?;
+    let config = AppConfig::load();
+    let client = GitHubClient::from_gh_cli_user(config.auth.gh_user.as_deref())?;
     let mut app = App::new(repository);
     let mut terminal = ratatui::init();
     execute!(stdout(), EnableMouseCapture)?;
