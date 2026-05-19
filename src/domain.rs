@@ -49,3 +49,41 @@ pub struct IssueTemplate {
     pub name: String,
     pub body: String,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProjectBoard {
+    pub title: String,
+    pub project_id: Option<String>,
+    pub status_field_id: Option<String>,
+    pub status_options: Vec<ProjectStatusOption>,
+    pub item_statuses: Vec<ProjectItemStatus>,
+    pub columns: Vec<ProjectColumn>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProjectStatusOption {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProjectItemStatus {
+    pub issue_number: u64,
+    pub item_id: String,
+    pub status_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProjectBoardSummary {
+    pub id: String,
+    pub owner: String,
+    pub number: u32,
+    pub title: String,
+    pub item_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProjectColumn {
+    pub name: String,
+    pub issues: Vec<IssueSummary>,
+}

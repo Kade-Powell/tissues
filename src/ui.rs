@@ -21,13 +21,15 @@ use tui_tree_widget::{Tree, TreeItem, TreeState};
 use crate::{
     app::{
         App, AssigneeChoice, AssigneeFilter, FlashKind, IssueEditField, IssueHighlightKind,
-        IssueStateFilter, NewIssueField, PendingAction, UiMode,
+        IssueStateFilter, IssueView, NewIssueField, PendingAction, UiMode,
     },
     domain::{IssueComment, IssueDetail, IssueState, IssueSummary},
 };
 
 const ISSUE_LIST_PERCENT: u16 = 40;
 const DETAIL_PANEL_PERCENT: u16 = 60;
+const MD_BREAKPOINT: u16 = 80;
+const XL_BREAKPOINT: u16 = 128;
 const COMMENT_PRIMARY_LABEL: &str = "Submit";
 const NEW_ISSUE_PRIMARY_LABEL: &str = "Create";
 const ISSUE_EDIT_PRIMARY_LABEL: &str = "Save";
@@ -261,6 +263,7 @@ pub fn effect_area(app: &App, area: Rect) -> Rect {
         | UiMode::AssigneeFilter
         | UiMode::AssigneeEditor
         | UiMode::IssueLabelEditor
+        | UiMode::ProjectBoardPicker
         | UiMode::ConfirmClose
         | UiMode::Success
         | UiMode::Loading
@@ -283,20 +286,55 @@ pub(crate) fn render_header(app: &App, area: Rect, buffer: &mut Buffer) {
         .iter()
         .filter(|issue| issue.state == IssueState::Closed)
         .count();
-    let header = Line::from(vec![
+    let mut lines = vec![Line::from(vec![
         Span::styled(app.repo.to_string(), Style::new().fg(ACTION_ACCENT).bold()),
         Span::styled(
             format!(
-                "    open: {open}  closed: {closed}  all: {}",
+                "    open {open}  closed {closed}  total {}",
                 app.issues.len()
             ),
             Style::new().fg(MUTED_FG),
         ),
-    ]);
+    ])];
+    if area.height > 1 {
+        lines.push(view_tabs_line(app));
+    }
+    if area.height > 2 {
+        lines.push(Line::from(vec![
+            Span::styled("Open ", Style::new().fg(OPEN_ACCENT).bold()),
+            Span::raw(open.to_string()),
+            Span::styled("   Closed ", Style::new().fg(CLOSED_FG).bold()),
+            Span::raw(closed.to_string()),
+            Span::styled("   Selected ", Style::new().fg(DETAIL_ACCENT).bold()),
+            Span::raw(
+                app.selected_issue()
+                    .map(|issue| format!("#{}", issue.number))
+                    .unwrap_or_else(|| "none".to_string()),
+            ),
+        ]));
+    }
 
-    Paragraph::new(header)
+    Paragraph::new(lines)
         .style(page_style())
         .render(area, buffer);
+}
+
+fn view_tabs_line(app: &App) -> Line<'static> {
+    let list = tab_span("List", app.issue_view == IssueView::List);
+    let board = tab_span("Board", app.issue_view == IssueView::Board);
+    Line::from(vec![list, Span::raw(" "), board])
+}
+
+fn tab_span(label: &'static str, active: bool) -> Span<'static> {
+    let style = if active {
+        Style::new()
+            .fg(ACTION_ACCENT)
+            .add_modifier(Modifier::BOLD)
+            .add_modifier(Modifier::REVERSED)
+    } else {
+        Style::new().fg(MUTED_FG)
+    };
+    Span::styled(format!(" {label} "), style)
 }
 
 pub(crate) fn render_filters(app: &App, area: Rect, buffer: &mut Buffer) {
@@ -318,11 +356,19 @@ pub(crate) fn render_filters(app: &App, area: Rect, buffer: &mut Buffer) {
     } else {
         format!(" [Writes: {}]", app.pending_writes.len())
     };
-    let filters = format!(
-        "[View: {view}] [Triage: {triage}] [State: {state}] [Assignee: {assignee}] [Labels: {labels}] [Search: {}] [Sort: {}]{pending}",
-        app.filters.query,
-        app.filters.sort.label()
-    );
+    let filters = if is_compact(area) {
+        format!(
+            "{state} | labels {labels} | search {} | sort {}{pending}",
+            empty_label(&app.filters.query),
+            app.filters.sort.label()
+        )
+    } else {
+        format!(
+            "[View: {view}] [Triage: {triage}] [State: {state}] [Assignee: {assignee}] [Labels: {labels}] [Search: {}] [Sort: {}]{pending}",
+            app.filters.query,
+            app.filters.sort.label()
+        )
+    };
 
     Paragraph::new(filters)
         .block(
@@ -336,14 +382,90 @@ pub(crate) fn render_filters(app: &App, area: Rect, buffer: &mut Buffer) {
 }
 
 pub(crate) fn render_body(app: &App, area: Rect, buffer: &mut Buffer) {
+    if is_compact(area) {
+        if matches!(app.mode, UiMode::IssueDetail | UiMode::IssueDetailClosing) {
+            render_detail(app, area, buffer);
+        } else {
+            render_compact_issue_list(app, area, buffer);
+        }
+        return;
+    }
+
     if !matches!(app.mode, UiMode::IssueDetail | UiMode::IssueDetailClosing) {
-        render_issue_list(app, area, buffer);
+        match app.issue_view {
+            IssueView::List => render_browsing_workspace(app, area, buffer),
+            IssueView::Board => render_board(app, area, buffer),
+        }
         return;
     }
 
     let columns = body_columns(area);
-    render_issue_list(app, columns[0], buffer);
+    match app.issue_view {
+        IssueView::List => render_issue_list(app, columns[0], buffer),
+        IssueView::Board => render_board(app, columns[0], buffer),
+    }
     render_detail(app, columns[1], buffer);
+}
+
+fn render_browsing_workspace(app: &App, area: Rect, buffer: &mut Buffer) {
+    if area.width < XL_BREAKPOINT {
+        render_issue_list(app, area, buffer);
+        return;
+    }
+
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
+        .split(area);
+    render_issue_list(app, columns[0], buffer);
+    render_focus_panel(app, columns[1], buffer);
+}
+
+fn render_compact_issue_list(app: &App, area: Rect, buffer: &mut Buffer) {
+    let rows = app.issues.iter().map(|issue| {
+        let check = match issue.state {
+            IssueState::Open => "[ ]",
+            IssueState::Closed => "[x]",
+        };
+        let age = issue
+            .updated_at
+            .map(age_label)
+            .unwrap_or_else(|| "-".to_string());
+        let label = issue
+            .labels
+            .first()
+            .map(|label| format!(" {}", label.name))
+            .unwrap_or_default();
+        Row::new([
+            Cell::from(format!("{check} #{} {}", issue.number, issue.title)),
+            Cell::from(age).style(Style::new().fg(MUTED_FG)),
+            Cell::from(label).style(Style::new().fg(LABEL_ACCENT)),
+        ])
+        .style(issue_attention_style(
+            app,
+            issue,
+            app.issue_highlight_kind(issue.number),
+        ))
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(18),
+            Constraint::Length(5),
+            Constraint::Length(14),
+        ],
+    )
+    .block(frame_block("", ISSUE_ACCENT))
+    .row_highlight_style(
+        Style::new()
+            .fg(DEFAULT_FG)
+            .add_modifier(Modifier::BOLD)
+            .add_modifier(Modifier::REVERSED),
+    )
+    .highlight_symbol(" ")
+    .highlight_spacing(HighlightSpacing::Always);
+    let mut state = TableState::default().with_selected(Some(app.selected_index));
+    ratatui::widgets::StatefulWidget::render(table, area, buffer, &mut state);
 }
 
 fn render_issue_list(app: &App, area: Rect, buffer: &mut Buffer) {
@@ -424,28 +546,7 @@ fn issue_row(
         .unwrap_or_else(|| "-".to_string());
     let stale = is_stale(issue);
 
-    let title = if highlight.is_some() || stale {
-        let stale_badge = stale.then_some("STALE ");
-        let badge = match highlight.as_ref() {
-            Some(IssueHighlightKind::New) => Some("NEW "),
-            Some(IssueHighlightKind::Mention) => Some("PING "),
-            None => None,
-        };
-        let mut spans = Vec::new();
-        if let Some(badge) = badge {
-            spans.push(Span::styled(badge, Style::new().fg(NOTICE_ACCENT).bold()));
-        }
-        if let Some(stale_badge) = stale_badge {
-            spans.push(Span::styled(
-                stale_badge,
-                Style::new().fg(WARNING_ACCENT).bold(),
-            ));
-        }
-        spans.push(Span::styled(issue.title.clone(), surface_style()));
-        Cell::from(Line::from(spans))
-    } else {
-        Cell::from(issue.title.clone())
-    };
+    let title = Cell::from(issue.title.clone());
 
     let row = Row::new([
         Cell::from(format!("#{}", issue.number)).style(Style::new().fg(ACTION_ACCENT)),
@@ -461,25 +562,228 @@ fn issue_row(
     ])
     .style(surface_style());
 
+    row.style(animated_issue_style(issue, highlight, animation_frame))
+}
+
+fn issue_attention_style(
+    app: &App,
+    issue: &IssueSummary,
+    highlight: Option<IssueHighlightKind>,
+) -> Style {
+    animated_issue_style(issue, highlight, app.new_issue_animation_frame)
+}
+
+fn animated_issue_style(
+    issue: &IssueSummary,
+    highlight: Option<IssueHighlightKind>,
+    animation_frame: u8,
+) -> Style {
     if let Some(kind) = highlight {
         let pulse_is_high = (animation_frame / 8).is_multiple_of(2);
-        let style = if pulse_is_high {
-            match kind {
-                IssueHighlightKind::New => Style::new().fg(NOTICE_ACCENT),
-                IssueHighlightKind::Mention => Style::new().fg(ACTION_ACCENT),
-            }
-            .add_modifier(Modifier::REVERSED)
-            .add_modifier(Modifier::BOLD)
+        let style = match kind {
+            IssueHighlightKind::New => Style::new().fg(NOTICE_ACCENT),
+            IssueHighlightKind::Mention => Style::new().fg(ACTION_ACCENT),
+        }
+        .add_modifier(Modifier::BOLD);
+        if pulse_is_high {
+            style.add_modifier(Modifier::REVERSED)
         } else {
-            match kind {
-                IssueHighlightKind::New => Style::new().fg(NOTICE_ACCENT),
-                IssueHighlightKind::Mention => Style::new().fg(ACTION_ACCENT),
-            }
-            .add_modifier(Modifier::BOLD)
-        };
-        row.style(style)
+            style
+        }
+    } else if is_stale(issue) {
+        Style::new().fg(WARNING_ACCENT)
     } else {
-        row
+        surface_style()
+    }
+}
+
+fn render_focus_panel(app: &App, area: Rect, buffer: &mut Buffer) {
+    let open = app
+        .issues
+        .iter()
+        .filter(|issue| issue.state == IssueState::Open)
+        .count();
+    let closed = app
+        .issues
+        .iter()
+        .filter(|issue| issue.state == IssueState::Closed)
+        .count();
+    let selected = app
+        .selected_issue()
+        .map(|issue| {
+            format!(
+                "#{} {}\nstate: {}\ncomments: {}\nlabels: {}\n\nEnter opens detail. :comment adds context. :assign updates ownership.",
+                issue.number,
+                issue.title,
+                match issue.state {
+                    IssueState::Open => "open",
+                    IssueState::Closed => "closed",
+                },
+                issue.comment_count,
+                empty_label(
+                    &issue
+                        .labels
+                        .iter()
+                        .map(|label| label.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            )
+        })
+        .unwrap_or_else(|| "No issue selected.".to_string());
+    let text = format!(
+        "Open\n{open}\n\nClosed\n{closed}\n\nFilters\n{}\n{}\n{}\n\n{selected}",
+        app.filters.state.as_query_value(),
+        app.filters.assignee.label(),
+        app.filters.sort.label(),
+    );
+    Paragraph::new(text)
+        .block(frame_block("Workspace", DETAIL_ACCENT))
+        .style(surface_style())
+        .wrap(Wrap { trim: true })
+        .render(area, buffer);
+}
+
+fn render_board(app: &App, area: Rect, buffer: &mut Buffer) {
+    if let Some(board) = app.project_board.as_ref() {
+        render_project_board(app, board, area, buffer);
+        return;
+    }
+
+    let block = frame_block("Board", ISSUE_ACCENT);
+    let inner = block.inner(area);
+    block.render(area, buffer);
+    if inner.is_empty() {
+        return;
+    }
+
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(inner.inner(Margin {
+            horizontal: 1,
+            vertical: 0,
+        }));
+    render_board_column(app, IssueState::Open, "Open issues", columns[0], buffer);
+    render_board_column(app, IssueState::Closed, "Closed issues", columns[1], buffer);
+}
+
+fn render_project_board(
+    app: &App,
+    board: &crate::domain::ProjectBoard,
+    area: Rect,
+    buffer: &mut Buffer,
+) {
+    let block = frame_block(format!("Board: {}", board.title), ISSUE_ACCENT);
+    let inner = block.inner(area);
+    block.render(area, buffer);
+    if inner.is_empty() {
+        return;
+    }
+
+    let count = board.columns.len().max(1);
+    let constraints =
+        std::iter::repeat_n(Constraint::Ratio(1, count as u32), count).collect::<Vec<_>>();
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(inner.inner(Margin {
+            horizontal: 1,
+            vertical: 0,
+        }));
+    for (column, area) in board.columns.iter().zip(columns.iter()) {
+        render_project_column(app, column, *area, buffer);
+    }
+}
+
+fn render_project_column(
+    app: &App,
+    column: &crate::domain::ProjectColumn,
+    area: Rect,
+    buffer: &mut Buffer,
+) {
+    let lines = if column.issues.is_empty() {
+        vec![Line::from("No issues")]
+    } else {
+        column
+            .issues
+            .iter()
+            .take(area.height.saturating_sub(2) as usize)
+            .map(|issue| {
+                let marker =
+                    if app.selected_issue().map(|selected| selected.number) == Some(issue.number) {
+                        ">"
+                    } else {
+                        " "
+                    };
+                Line::from(vec![
+                    Span::styled(marker, Style::new().fg(ACTION_ACCENT).bold()),
+                    Span::raw(format!(" #{} {}", issue.number, issue.title)),
+                ])
+                .style(issue_attention_style(
+                    app,
+                    issue,
+                    app.issue_highlight_kind(issue.number),
+                ))
+            })
+            .collect()
+    };
+
+    Paragraph::new(lines)
+        .block(frame_block(column.name.clone(), PICKER_ACCENT))
+        .style(surface_style())
+        .wrap(Wrap { trim: true })
+        .render(area, buffer);
+}
+
+fn render_board_column(
+    app: &App,
+    state: IssueState,
+    title: &'static str,
+    area: Rect,
+    buffer: &mut Buffer,
+) {
+    let issues = app
+        .issues
+        .iter()
+        .filter(|issue| issue.state == state)
+        .collect::<Vec<_>>();
+    let lines = if issues.is_empty() {
+        vec![Line::from("No issues")]
+    } else {
+        issues
+            .into_iter()
+            .take(area.height.saturating_sub(2) as usize)
+            .map(|issue| {
+                let marker =
+                    if app.selected_issue().map(|selected| selected.number) == Some(issue.number) {
+                        ">"
+                    } else {
+                        " "
+                    };
+                Line::from(vec![
+                    Span::styled(marker, Style::new().fg(ACTION_ACCENT).bold()),
+                    Span::raw(format!(" #{} {}", issue.number, issue.title)),
+                ])
+                .style(issue_attention_style(
+                    app,
+                    issue,
+                    app.issue_highlight_kind(issue.number),
+                ))
+            })
+            .collect()
+    };
+    Paragraph::new(lines)
+        .block(frame_block(title, board_state_accent(state)))
+        .style(surface_style())
+        .wrap(Wrap { trim: true })
+        .render(area, buffer);
+}
+
+fn board_state_accent(state: IssueState) -> Color {
+    match state {
+        IssueState::Open => OPEN_ACCENT,
+        IssueState::Closed => CLOSED_FG,
     }
 }
 
@@ -834,14 +1138,19 @@ pub(crate) fn render_footer(app: &App, area: Rect, buffer: &mut Buffer) {
 fn footer_shortcuts(app: &App) -> String {
     match app.mode {
         UiMode::Browsing if app.triage_mode => {
-            "triage | a assign me | l labels | c comment | x close | s skip | t exit".to_string()
+            "triage | v view | a assign me | l labels | c comment | x close | s skip | t exit"
+                .to_string()
+        }
+        UiMode::Browsing if app.issue_view == IssueView::Board => {
+            "Left/Right move | v view | j/k select | Enter open | : commands | q quit".to_string()
         }
         UiMode::Browsing => {
-            ": commands | t triage | n new | x close | j/k move | Enter open | q/ctrl+c quit"
+            ": commands | v view | t triage | n new | x close | j/k move | Enter open | q/ctrl+c quit"
                 .to_string()
         }
         UiMode::IssueDetail => {
-            "Esc list | Enter fold | j/k scroll | PgUp/PgDn detail | : commands".to_string()
+            "Esc list | v view | Enter fold | j/k scroll | PgUp/PgDn detail | : commands"
+                .to_string()
         }
         UiMode::IssueDetailClosing => "Returning to list".to_string(),
         UiMode::Command => "Enter run | Tab complete | Arrows edit | Esc cancel".to_string(),
@@ -871,6 +1180,7 @@ fn footer_shortcuts(app: &App) -> String {
         UiMode::IssueLabelEditor => {
             "Enter toggle label | Ctrl+S save | type search | j/k move | Esc cancel".to_string()
         }
+        UiMode::ProjectBoardPicker => "Enter open board | j/k move | Esc cancel".to_string(),
         UiMode::ConfirmClose => "y/Enter reopen | Esc cancel".to_string(),
         UiMode::Success => "Any key continue".to_string(),
         UiMode::Loading => "Working".to_string(),
@@ -889,6 +1199,7 @@ pub(crate) fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         UiMode::AssigneeFilter => Some("Assignee Filter"),
         UiMode::AssigneeEditor => Some("Assign Issue"),
         UiMode::IssueLabelEditor => Some("Edit Labels"),
+        UiMode::ProjectBoardPicker => Some("Select Board"),
         UiMode::ConfirmClose => Some("Confirm"),
         UiMode::Success => Some("Done"),
         UiMode::Loading => Some("Working"),
@@ -910,17 +1221,14 @@ pub(crate) fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
                 render_assignee_picker(app, title, popup, buffer)
             }
             UiMode::IssueLabelEditor => render_issue_label_editor(app, popup, buffer),
+            UiMode::ProjectBoardPicker => render_project_board_picker(app, popup, buffer),
             UiMode::Loading => render_loading_overlay(app, popup, buffer),
             UiMode::ConfirmClose => Paragraph::new("Press y to reopen, Esc to cancel")
                 .block(modal_block(title, WARNING_ACCENT))
                 .style(modal_style())
                 .wrap(Wrap { trim: false })
                 .render(popup, buffer),
-            UiMode::Error => Paragraph::new(app.status.clone())
-                .block(modal_block(title, ERROR_ACCENT))
-                .style(Style::new().fg(ERROR_ACCENT))
-                .wrap(Wrap { trim: false })
-                .render(popup, buffer),
+            UiMode::Error => render_error_overlay(app, title, popup, buffer),
             UiMode::Success => Paragraph::new(format!("{}\n\nState reloaded.", app.status))
                 .block(modal_block(title, OPEN_ACCENT))
                 .style(Style::new().fg(OPEN_ACCENT))
@@ -981,6 +1289,8 @@ fn command_suggestions_line(input: &str) -> String {
         "view untriaged",
         "view bugs",
         "triage",
+        "list",
+        "board",
         "label ",
         "sort updated",
         "sort created",
@@ -1102,6 +1412,36 @@ fn render_loading_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         );
 }
 
+fn render_error_overlay(app: &App, title: &'static str, area: Rect, buffer: &mut Buffer) {
+    let text = if let Some(error) = app.error_detail.as_ref() {
+        let mut lines = vec![
+            Line::from(Span::styled(
+                error.title.clone(),
+                Style::new().fg(ERROR_ACCENT).add_modifier(Modifier::BOLD),
+            )),
+            Line::raw(""),
+            Line::from(error.details.clone()),
+        ];
+        if let Some(hint) = error.hint.as_ref().filter(|hint| !hint.trim().is_empty()) {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "Next step",
+                Style::new().fg(NOTICE_ACCENT).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(hint.clone()));
+        }
+        Text::from(lines)
+    } else {
+        Text::from(app.status.clone())
+    };
+
+    Paragraph::new(text)
+        .block(modal_block(title, ERROR_ACCENT))
+        .style(Style::new().fg(ERROR_ACCENT))
+        .wrap(Wrap { trim: false })
+        .render(area, buffer);
+}
+
 fn render_assignee_picker(app: &App, title: &'static str, area: Rect, buffer: &mut Buffer) {
     let rows = picker_rows_from_popup(area);
     let choices = if app.mode == UiMode::AssigneeFilter {
@@ -1180,6 +1520,43 @@ fn render_issue_label_editor(app: &App, area: Rect, buffer: &mut Buffer) {
     render_action_buttons(ISSUE_LABEL_PRIMARY_LABEL, rows[1], buffer);
 }
 
+fn render_project_board_picker(app: &App, area: Rect, buffer: &mut Buffer) {
+    let rows = picker_rows_from_popup(area);
+    let mut lines = vec![
+        Line::from(format!("repo: {}", app.repo)),
+        Line::from("choose a project board"),
+        Line::raw(""),
+    ];
+    if app.project_board_choices.is_empty() {
+        lines.push(Line::from("No GitHub project boards found."));
+    } else {
+        lines.extend(
+            app.project_board_choices
+                .iter()
+                .enumerate()
+                .map(|(index, board)| {
+                    let marker = if index == app.picker_index { ">" } else { " " };
+                    let item_label = if board.item_count == 1 {
+                        "1 item".to_string()
+                    } else {
+                        format!("{} items", board.item_count)
+                    };
+                    Line::from(format!(
+                        "{marker} {} #{}  {}  {item_label}",
+                        board.owner, board.number, board.title
+                    ))
+                }),
+        );
+    }
+
+    Paragraph::new(lines)
+        .block(modal_block("Select Board", PICKER_ACCENT))
+        .style(modal_style())
+        .wrap(Wrap { trim: false })
+        .render(rows[0], buffer);
+    render_action_buttons("Open", rows[1], buffer);
+}
+
 fn assignee_choice_is_active(app: &App, choice: &AssigneeChoice) -> bool {
     match (app.mode.clone(), choice) {
         (UiMode::AssigneeFilter, AssigneeChoice::Any) => {
@@ -1226,6 +1603,7 @@ fn pending_action_label(action: &PendingAction) -> &'static str {
         PendingAction::UpdateIssue => "Updating issue",
         PendingAction::UpdateAssignees => "Updating assignees",
         PendingAction::UpdateLabels => "Updating labels",
+        PendingAction::UpdateProjectItem => "Moving board item",
     }
 }
 
@@ -1545,6 +1923,10 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     horizontal[1]
 }
 
+fn is_compact(area: Rect) -> bool {
+    area.width < MD_BREAKPOINT
+}
+
 pub fn mouse_target(app: &App, area: Rect, column: u16, row: u16) -> Option<MouseTarget> {
     let point = Rect::new(column, row, 1, 1);
 
@@ -1573,6 +1955,9 @@ pub fn mouse_target(app: &App, area: Rect, column: u16, row: u16) -> Option<Mous
             app.issue_label_choices().len(),
             ISSUE_LABEL_PRIMARY_LABEL,
         ),
+        UiMode::ProjectBoardPicker => {
+            picker_mouse_target(area, point, app.project_board_choices.len(), "Open")
+        }
         UiMode::Success => Some(MouseTarget::CancelAction),
         _ => None,
     }
@@ -1581,7 +1966,9 @@ pub fn mouse_target(app: &App, area: Rect, column: u16, row: u16) -> Option<Mous
 fn browsing_mouse_target(app: &App, area: Rect, point: Rect) -> Option<MouseTarget> {
     let list_area = issue_list_area_for_mode(app, area);
     if intersects(point, list_area) {
-        let first_issue_row = list_area.y.saturating_add(3);
+        let first_issue_row = list_area
+            .y
+            .saturating_add(if is_compact(area) { 1 } else { 3 });
         if point.y >= first_issue_row {
             let index = usize::from(point.y - first_issue_row);
             if index < app.issues.len() {
@@ -1661,10 +2048,22 @@ fn picker_mouse_target(
 }
 
 fn main_rows(area: Rect) -> std::rc::Rc<[Rect]> {
+    if is_compact(area) {
+        return Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(2),
+                Constraint::Min(8),
+                Constraint::Length(2),
+            ])
+            .split(area);
+    }
+
     Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
+            Constraint::Length(if area.width >= XL_BREAKPOINT { 3 } else { 1 }),
             Constraint::Length(3),
             Constraint::Min(8),
             Constraint::Length(2),
@@ -1673,10 +2072,23 @@ fn main_rows(area: Rect) -> std::rc::Rc<[Rect]> {
 }
 
 fn command_mode_rows(area: Rect) -> std::rc::Rc<[Rect]> {
+    if is_compact(area) {
+        return Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(2),
+                Constraint::Min(8),
+                Constraint::Length(4),
+                Constraint::Length(2),
+            ])
+            .split(area);
+    }
+
     Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
+            Constraint::Length(if area.width >= XL_BREAKPOINT { 3 } else { 1 }),
             Constraint::Length(3),
             Constraint::Min(8),
             Constraint::Length(4),
@@ -1899,6 +2311,158 @@ mod tests {
     }
 
     #[test]
+    fn compact_width_renders_plain_issue_list_without_todo_title() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_issues(vec![
+            issue(122, "Fix login redraw", IssueState::Open, &["bug"]),
+            issue(101, "Clarify setup", IssueState::Closed, &["docs"]),
+        ]);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 72, 22));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(!rendered.contains("Todo"));
+        assert!(!rendered.contains("Issues"));
+        assert!(rendered.contains("[ ] #122 Fix login redraw"));
+        assert!(rendered.contains("[x] #101 Clarify setup"));
+        assert!(!rendered.contains("Team"));
+        assert!(!rendered.contains("Assignee:"));
+    }
+
+    #[test]
+    fn wide_width_renders_rich_tabs_and_summary_panels() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_issues(vec![
+            issue(122, "Fix login redraw", IssueState::Open, &["bug"]),
+            issue(101, "Clarify setup", IssueState::Closed, &["docs"]),
+        ]);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 160, 34));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("List"));
+        assert!(rendered.contains("Board"));
+        assert!(rendered.contains("Open"));
+        assert!(rendered.contains("Closed"));
+        assert!(rendered.contains("Filters"));
+        assert!(rendered.contains("Issues"));
+    }
+
+    #[test]
+    fn board_view_groups_issues_like_github_columns() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_issues(vec![
+            issue(122, "Fix login redraw", IssueState::Open, &["bug"]),
+            issue(101, "Clarify setup", IssueState::Closed, &["docs"]),
+        ]);
+        app.set_issue_view(IssueView::Board);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 160, 34));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Board"));
+        assert!(rendered.contains("Open issues"));
+        assert!(rendered.contains("Closed issues"));
+        assert!(rendered.contains("#122 Fix login redraw"));
+        assert!(rendered.contains("#101 Clarify setup"));
+    }
+
+    #[test]
+    fn board_view_renders_project_board_columns_when_loaded() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_project_board(crate::domain::ProjectBoard {
+            title: "Roadmap".to_string(),
+            project_id: None,
+            status_field_id: None,
+            status_options: Vec::new(),
+            item_statuses: Vec::new(),
+            columns: vec![
+                crate::domain::ProjectColumn {
+                    name: "Todo".to_string(),
+                    issues: vec![issue(122, "Fix login redraw", IssueState::Open, &["bug"])],
+                },
+                crate::domain::ProjectColumn {
+                    name: "In Progress".to_string(),
+                    issues: vec![issue(101, "Clarify setup", IssueState::Open, &["docs"])],
+                },
+            ],
+        });
+        app.set_issue_view(IssueView::Board);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 160, 34));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Roadmap"));
+        assert!(rendered.contains("Todo"));
+        assert!(rendered.contains("In Progress"));
+        assert!(rendered.contains("#122 Fix login redraw"));
+        assert!(rendered.contains("#101 Clarify setup"));
+        assert!(!rendered.contains("Open issues"));
+        assert!(!rendered.contains("Closed issues"));
+    }
+
+    #[test]
+    fn renders_project_board_picker_choices() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_project_board_choices(vec![
+            crate::domain::ProjectBoardSummary {
+                id: "PVT_backlog".to_string(),
+                owner: "owner".to_string(),
+                number: 1,
+                title: "Backlog".to_string(),
+                item_count: 3,
+            },
+            crate::domain::ProjectBoardSummary {
+                id: "PVT_roadmap".to_string(),
+                owner: "owner".to_string(),
+                number: 2,
+                title: "Roadmap".to_string(),
+                item_count: 5,
+            },
+        ]);
+        app.mode = UiMode::ProjectBoardPicker;
+        app.picker_index = 1;
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Select Board"));
+        assert!(rendered.contains("owner #1"));
+        assert!(rendered.contains("Backlog"));
+        assert!(rendered.contains("3 items"));
+        assert!(rendered.contains("> owner #2"));
+        assert!(rendered.contains("Roadmap"));
+    }
+
+    #[test]
+    fn issue_rows_do_not_render_text_badges_for_highlights_or_stale_state() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        let mut stale = issue(130, "Needs owner", IssueState::Open, &[]);
+        stale.updated_at = Some(Utc::now() - Duration::days(30));
+        app.set_issues(vec![
+            issue(122, "Fix login redraw", IssueState::Open, &["bug"]),
+            stale,
+        ]);
+        app.highlight_new_issues(vec![122]);
+        app.highlight_mentioned_issues(vec![130]);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 140, 24));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("#122"));
+        assert!(rendered.contains("#130"));
+        assert!(!rendered.contains("NEW"));
+        assert!(!rendered.contains("PING"));
+        assert!(!rendered.contains("STALE"));
+    }
+
+    #[test]
     fn main_screen_uses_terminal_default_background() {
         let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_issues(vec![
@@ -1930,12 +2494,18 @@ mod tests {
         let mut app = App::new("owner/tissues".parse().unwrap());
 
         assert!(footer_shortcuts(&app).contains(": commands"));
+        assert!(footer_shortcuts(&app).contains("v view"));
         assert!(footer_shortcuts(&app).contains("n new"));
         assert!(footer_shortcuts(&app).contains("x close"));
         assert!(!footer_shortcuts(&app).contains("A assign"));
 
+        app.set_issue_view(IssueView::Board);
+        assert!(footer_shortcuts(&app).contains("Left/Right move"));
+
+        app.set_issue_view(IssueView::List);
         app.mode = UiMode::NewIssue;
         assert!(footer_shortcuts(&app).contains("Ctrl+S create"));
+        assert!(!footer_shortcuts(&app).contains("v view"));
         assert!(!footer_shortcuts(&app).contains("q quit"));
 
         app.mode = UiMode::CommentComposer;
@@ -2017,7 +2587,7 @@ mod tests {
         let rendered = buffer_to_string(&buffer);
 
         assert!(rendered.contains("#130"));
-        assert!(rendered.contains("NEW"));
+        assert!(!rendered.contains("NEW"));
         assert!(rendered.contains("Fresh"));
     }
 
@@ -2035,12 +2605,12 @@ mod tests {
         let rendered = buffer_to_string(&buffer);
 
         assert!(rendered.contains("#130"));
-        assert!(rendered.contains("PING"));
+        assert!(!rendered.contains("PING"));
         assert!(rendered.contains("Ping"));
     }
 
     #[test]
-    fn renders_team_metadata_and_stale_badge() {
+    fn renders_team_metadata_and_stale_age_without_badge_text() {
         let mut app = App::new("owner/tissues".parse().unwrap());
         let mut stale = issue(130, "Needs owner", IssueState::Open, &[]);
         stale.author = Some(User {
@@ -2057,7 +2627,7 @@ mod tests {
         let rendered = buffer_to_string(&buffer);
 
         assert!(rendered.contains("alice>bob"));
-        assert!(rendered.contains("STALE"));
+        assert!(!rendered.contains("STALE"));
         assert!(rendered.contains("30d"));
     }
 
@@ -2326,6 +2896,25 @@ mod tests {
         assert!(rendered.contains("Working"));
         assert!(rendered.contains("Creating issue"));
         assert!(!rendered.contains("[*]"));
+    }
+
+    #[test]
+    fn renders_standard_error_details_with_hint() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.show_error(
+            "Create issue failed",
+            "Resource not accessible by personal access token",
+            Some("Run `gh auth refresh -s repo`".to_string()),
+        );
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Create issue failed"));
+        assert!(rendered.contains("Resource not accessible"));
+        assert!(rendered.contains("Next step"));
+        assert!(rendered.contains("gh auth refresh -s repo"));
     }
 
     #[test]

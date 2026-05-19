@@ -14,7 +14,7 @@ use ratatui::DefaultTerminal;
 use crate::{
     app::{
         App, AssigneeChoice, AssigneeFilter, FlashKind, IssueEditField, IssueSort,
-        IssueStateFilter, NewIssueField, PendingAction, TextCursorMove, UiMode,
+        IssueStateFilter, IssueView, NewIssueField, PendingAction, TextCursorMove, UiMode,
     },
     cache::IssueCache,
     config::AppConfig,
@@ -29,6 +29,12 @@ const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 #[cfg(target_os = "macos")]
 const MACOS_NOTIFICATION_SOUND: &str = "/System/Library/Sounds/Glass.aiff";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BoardMoveDirection {
+    Previous,
+    Next,
+}
+
 pub async fn run<B: IssueBackend>(
     terminal: &mut DefaultTerminal,
     app: &mut App,
@@ -36,7 +42,9 @@ pub async fn run<B: IssueBackend>(
 ) -> Result<()> {
     let mut effects = TissueEffects::default();
     let mut realm = TissueRealm::new(app)?;
-    app.set_saved_views(AppConfig::load().views);
+    let config = AppConfig::load();
+    app.set_project_board_config(config.project_board);
+    app.set_saved_views(config.views);
     load_cached_issues(app);
     app.begin_action(PendingAction::Refresh, "Starting tissues");
     effects.trigger_startup_loading();
@@ -46,6 +54,7 @@ pub async fn run<B: IssueBackend>(
         app,
         &mut effects,
         Duration::from_millis(120),
+        true,
     )?;
     if let Ok(login) = backend.current_login().await {
         app.set_viewer_login(login);
@@ -59,7 +68,7 @@ pub async fn run<B: IssueBackend>(
         last_frame = Instant::now();
         ui::trigger_flash_effect(app, &mut effects);
 
-        draw_app(terminal, &mut realm, app, &mut effects, elapsed)?;
+        draw_app(terminal, &mut realm, app, &mut effects, elapsed, false)?;
         if app.mode == UiMode::IssueDetailClosing && !effects.has_effects() {
             app.mode = UiMode::Browsing;
         }
@@ -88,6 +97,7 @@ pub async fn run<B: IssueBackend>(
                             &preview,
                             &mut effects,
                             last_frame.elapsed(),
+                            false,
                         )?;
                     }
                     handle_key(app, backend, key).await;
@@ -157,18 +167,27 @@ fn draw_app(
     app: &App,
     effects: &mut TissueEffects,
     elapsed: Duration,
+    startup_loading: bool,
 ) -> Result<()> {
     terminal.draw(|frame| {
         let area = frame.area();
         realm.render(app, frame, area);
-        let effect_area = if app.status == "Starting tissues" {
-            area
-        } else {
-            ui::effect_area(app, area)
-        };
+        let effect_area = draw_effect_area(app, area, startup_loading);
         effects.process(elapsed, frame.buffer_mut(), effect_area);
     })?;
     Ok(())
+}
+
+fn draw_effect_area(
+    app: &App,
+    area: ratatui::layout::Rect,
+    startup_loading: bool,
+) -> ratatui::layout::Rect {
+    if startup_loading {
+        area
+    } else {
+        ui::effect_area(app, area)
+    }
 }
 
 fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> {
@@ -178,8 +197,27 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
                 PendingAction::LoadLabels,
                 "Loading repository labels".to_string(),
             )),
+            KeyCode::Left | KeyCode::Right if app.issue_view == IssueView::Board => {
+                app.selected_issue().map(|issue| {
+                    (
+                        PendingAction::UpdateProjectItem,
+                        format!("Moving issue #{}", issue.number),
+                    )
+                })
+            }
             _ => None,
         },
+        UiMode::IssueDetail
+            if app.issue_view == IssueView::Board
+                && matches!(key.code, KeyCode::Left | KeyCode::Right) =>
+        {
+            app.selected_issue().map(|issue| {
+                (
+                    PendingAction::UpdateProjectItem,
+                    format!("Moving issue #{}", issue.number),
+                )
+            })
+        }
         UiMode::Command if key.code == KeyCode::Enter => {
             let command = normalized_command(&app.input);
             if is_refresh_command(&command)
@@ -211,6 +249,9 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
                             format!("Loading labels for #{}", issue.number),
                         )
                     }),
+                    "board" | "boards" => {
+                        Some((PendingAction::Refresh, "Loading project boards".to_string()))
+                    }
                     _ => None,
                 }
             }
@@ -368,12 +409,14 @@ async fn handle_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) 
             handle_assignee_picker_key(app, backend, key).await;
         }
         UiMode::IssueLabelEditor => handle_issue_label_key(app, backend, key).await,
+        UiMode::ProjectBoardPicker => handle_project_board_picker_key(app, backend, key).await,
         UiMode::ConfirmClose => handle_confirm_key(app, backend, key).await,
         UiMode::Success => {
             app.mode = UiMode::Browsing;
         }
         UiMode::Error => {
             if key.code == KeyCode::Esc {
+                app.clear_error();
                 app.mode = UiMode::Browsing;
             }
         }
@@ -385,6 +428,13 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('t') => app.toggle_triage_mode(),
+        KeyCode::Char('v') => toggle_issue_view(app, backend).await,
+        KeyCode::Left if app.issue_view == IssueView::Board => {
+            move_selected_project_issue(app, backend, BoardMoveDirection::Previous).await;
+        }
+        KeyCode::Right if app.issue_view == IssueView::Board => {
+            move_selected_project_issue(app, backend, BoardMoveDirection::Next).await;
+        }
         KeyCode::Char('s') if app.triage_mode => app.skip_triage_issue(),
         KeyCode::Char('a') if app.triage_mode && app.selected_issue().is_some() => {
             assign_selected_issue_to_viewer(app, backend).await;
@@ -421,6 +471,13 @@ async fn handle_issue_detail_key<B: IssueBackend>(app: &mut App, backend: &B, ke
     match key.code {
         KeyCode::Esc => close_issue_detail(app),
         KeyCode::Enter => app.toggle_comments(),
+        KeyCode::Char('v') => toggle_issue_view(app, backend).await,
+        KeyCode::Left if app.issue_view == IssueView::Board => {
+            move_selected_project_issue(app, backend, BoardMoveDirection::Previous).await;
+        }
+        KeyCode::Right if app.issue_view == IssueView::Board => {
+            move_selected_project_issue(app, backend, BoardMoveDirection::Next).await;
+        }
         KeyCode::PageDown => app.scroll_detail_page_down(),
         KeyCode::PageUp => app.scroll_detail_page_up(),
         KeyCode::Char('j') | KeyCode::Down => app.scroll_detail_down(),
@@ -507,6 +564,7 @@ async fn handle_mouse_target<B: IssueBackend>(app: &mut App, backend: &B, target
                 submit_assignee_picker(app, backend).await;
             }
             UiMode::IssueLabelEditor => save_issue_labels(app, backend).await,
+            UiMode::ProjectBoardPicker => select_project_board_choice(app, backend).await,
             UiMode::ConfirmClose => toggle_issue_state(app, backend).await,
             UiMode::Success => app.mode = UiMode::Browsing,
             _ => {}
@@ -526,6 +584,9 @@ async fn handle_mouse_target<B: IssueBackend>(app: &mut App, backend: &B, target
                     if let Some(label) = app.issue_label_choices().get(index).cloned() {
                         app.toggle_editing_issue_label(&label);
                     }
+                }
+                UiMode::ProjectBoardPicker => {
+                    select_project_board_choice(app, backend).await;
                 }
                 _ => {}
             }
@@ -601,7 +662,10 @@ fn cancel_active_screen(app: &mut App) {
             app.clear_input();
             app.clear_body_input();
         }
-        UiMode::AssigneeFilter | UiMode::AssigneeEditor | UiMode::IssueLabelEditor => {
+        UiMode::AssigneeFilter
+        | UiMode::AssigneeEditor
+        | UiMode::IssueLabelEditor
+        | UiMode::ProjectBoardPicker => {
             app.mode = UiMode::Browsing;
             app.clear_input();
             app.editing_assignees.clear();
@@ -747,6 +811,9 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
             app.toggle_triage_mode();
             app.mode = UiMode::Browsing;
         }
+        "list" => app.set_issue_view(IssueView::List),
+        "board" => open_board_view(app, backend).await,
+        "boards" => open_project_board_chooser(app, backend, true).await,
         "views" => {
             app.mode = UiMode::Browsing;
             let names = app.saved_view_names();
@@ -829,6 +896,202 @@ async fn jump_to_first_mention<B: IssueBackend>(app: &mut App, backend: &B) {
     app.set_status(format!("Jumped to mention on issue #{number}"));
 }
 
+async fn toggle_issue_view<B: IssueBackend>(app: &mut App, backend: &B) {
+    app.cycle_issue_view();
+    if app.issue_view == IssueView::Board {
+        open_project_board_chooser(app, backend, false).await;
+    }
+}
+
+async fn open_board_view<B: IssueBackend>(app: &mut App, backend: &B) {
+    app.set_issue_view(IssueView::Board);
+    if app.project_board_config.is_configured() {
+        load_project_board(app, backend).await;
+    } else {
+        open_project_board_chooser(app, backend, false).await;
+    }
+}
+
+async fn open_project_board_chooser<B: IssueBackend>(
+    app: &mut App,
+    backend: &B,
+    force_picker: bool,
+) {
+    app.begin_action(PendingAction::Refresh, "Loading project boards");
+    match backend.list_project_boards(&app.repo).await {
+        Ok(choices) if choices.is_empty() => {
+            app.finish_action();
+            load_project_board(app, backend).await;
+        }
+        Ok(choices) if choices.len() == 1 && !force_picker => {
+            app.finish_action();
+            select_project_board_summary(app, backend, choices[0].clone()).await;
+        }
+        Ok(choices) => {
+            app.finish_action();
+            app.open_project_board_picker(choices);
+        }
+        Err(err) => {
+            app.finish_action();
+            app.show_error(
+                "Project board load failed",
+                format!("{err:#}"),
+                Some(project_auth_hint()),
+            );
+        }
+    }
+}
+
+async fn select_project_board_summary<B: IssueBackend>(
+    app: &mut App,
+    backend: &B,
+    choice: crate::domain::ProjectBoardSummary,
+) {
+    let status_field = app.project_board_config.status_field.clone();
+    app.set_project_board_config(crate::config::ProjectBoardConfig {
+        owner: Some(choice.owner),
+        number: Some(choice.number),
+        status_field,
+    });
+    app.set_issue_view(IssueView::Board);
+    load_project_board(app, backend).await;
+}
+
+async fn select_project_board_choice<B: IssueBackend>(app: &mut App, backend: &B) {
+    let Some(choice) = app.project_board_choices.get(app.picker_index).cloned() else {
+        app.mode = UiMode::Browsing;
+        app.set_status("No GitHub project boards available");
+        return;
+    };
+    select_project_board_summary(app, backend, choice).await;
+}
+
+async fn load_project_board<B: IssueBackend>(app: &mut App, backend: &B) {
+    app.begin_action(PendingAction::Refresh, "Loading project board");
+    match backend
+        .list_project_board(&app.repo, &app.project_board_config)
+        .await
+    {
+        Ok(Some(board)) => {
+            app.finish_action();
+            app.set_project_board(board);
+            app.mode = UiMode::Browsing;
+            app.set_status("Loaded GitHub project board");
+        }
+        Ok(None) => {
+            app.finish_action();
+            app.clear_project_board();
+            app.mode = UiMode::Browsing;
+            app.set_status("No GitHub project board found; showing issue state board");
+        }
+        Err(err) => {
+            app.finish_action();
+            app.clear_project_board();
+            app.show_error(
+                "Project board load failed",
+                format!("{err:#}"),
+                Some(project_auth_hint()),
+            );
+        }
+    }
+}
+
+fn project_auth_hint() -> String {
+    "Run `gh auth status` to inspect scopes. For GitHub Projects, run `gh auth refresh -s read:project -s project`.".to_string()
+}
+
+async fn move_selected_project_issue<B: IssueBackend>(
+    app: &mut App,
+    backend: &B,
+    direction: BoardMoveDirection,
+) {
+    let Some(issue_number) = app.selected_issue().map(|issue| issue.number) else {
+        return;
+    };
+    let Some(board) = app.project_board.clone() else {
+        app.flash = Some(FlashKind::Error);
+        app.set_status("Load a GitHub project board before moving board items");
+        return;
+    };
+    let Some(project_id) = board.project_id.clone() else {
+        app.flash = Some(FlashKind::Error);
+        app.set_status("This board view is not connected to a GitHub project");
+        return;
+    };
+    let Some(field_id) = board.status_field_id.clone() else {
+        app.flash = Some(FlashKind::Error);
+        app.set_status("This GitHub project does not expose a writable status field");
+        return;
+    };
+    let Some(item) = board
+        .item_statuses
+        .iter()
+        .find(|item| item.issue_number == issue_number)
+        .cloned()
+    else {
+        app.flash = Some(FlashKind::Error);
+        app.set_status(format!(
+            "Issue #{issue_number} is not on this GitHub project board"
+        ));
+        return;
+    };
+    let Some(current_index) = board
+        .status_options
+        .iter()
+        .position(|option| option.name == item.status_name)
+    else {
+        app.flash = Some(FlashKind::Error);
+        app.set_status(format!(
+            "Issue #{issue_number} is not in a known board state"
+        ));
+        return;
+    };
+
+    let target_index = match direction {
+        BoardMoveDirection::Previous if current_index == 0 => {
+            app.set_status(format!(
+                "Issue #{issue_number} is already in the first board state"
+            ));
+            return;
+        }
+        BoardMoveDirection::Previous => current_index - 1,
+        BoardMoveDirection::Next if current_index + 1 >= board.status_options.len() => {
+            app.set_status(format!(
+                "Issue #{issue_number} is already in the last board state"
+            ));
+            return;
+        }
+        BoardMoveDirection::Next => current_index + 1,
+    };
+    let target = board.status_options[target_index].clone();
+
+    app.begin_action(
+        PendingAction::UpdateProjectItem,
+        format!("Moving issue #{issue_number} to {}", target.name),
+    );
+    match backend
+        .update_project_item_status(&project_id, &item.item_id, &field_id, &target.id)
+        .await
+    {
+        Ok(()) => {
+            app.finish_action();
+            load_project_board(app, backend).await;
+            if app.mode != UiMode::Error {
+                app.flash = Some(FlashKind::Success);
+                app.set_status(format!("Moved issue #{issue_number} to {}", target.name));
+            }
+        }
+        Err(err) => {
+            app.finish_action();
+            app.show_error(
+                "Move board item failed",
+                format!("{err:#}"),
+                Some(project_auth_hint()),
+            );
+        }
+    }
+}
+
 fn command_suggestions(input: &str) -> Vec<String> {
     let command = normalized_command(input);
     let mut suggestions = [
@@ -843,6 +1106,9 @@ fn command_suggestions(input: &str) -> Vec<String> {
         "view untriaged",
         "view bugs",
         "triage",
+        "list",
+        "board",
+        "boards",
         "label ",
         "sort updated",
         "sort created",
@@ -1246,6 +1512,22 @@ async fn handle_issue_label_key<B: IssueBackend>(app: &mut App, backend: &B, key
     }
 }
 
+async fn handle_project_board_picker_key<B: IssueBackend>(
+    app: &mut App,
+    backend: &B,
+    key: KeyEvent,
+) {
+    match key.code {
+        KeyCode::Esc => cancel_active_screen(app),
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.select_next_picker_item(app.project_board_choices.len());
+        }
+        KeyCode::Up | KeyCode::Char('k') => app.select_previous_picker_item(),
+        KeyCode::Enter => select_project_board_choice(app, backend).await,
+        _ => {}
+    }
+}
+
 async fn handle_confirm_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
     match key.code {
         KeyCode::Esc | KeyCode::Char('n') => app.mode = UiMode::Browsing,
@@ -1320,7 +1602,7 @@ async fn auto_refresh<B: IssueBackend>(app: &mut App, backend: &B) -> AutoRefres
             app.highlight_mentioned_issues(mention_issue_numbers.clone());
 
             app.finish_action();
-            app.flash = Some(FlashKind::Refresh);
+            app.flash = None;
             if let Some(status) = new_issue_status {
                 app.set_status(status);
             } else if let Some(status) = mention_status {
@@ -1781,11 +2063,17 @@ async fn submit_new_issue<B: IssueBackend>(app: &mut App, backend: &B, force_cre
         }
         Err(err) => {
             app.finish_action();
-            app.mode = UiMode::NewIssue;
-            app.flash = Some(FlashKind::Error);
-            app.set_status(format!("Create failed: {err:#}"));
+            app.show_error(
+                "Create issue failed",
+                format!("{err:#}"),
+                Some(issue_write_auth_hint()),
+            );
         }
     }
+}
+
+fn issue_write_auth_hint() -> String {
+    "Run `gh auth status` to inspect scopes. For private repositories, run `gh auth refresh -s repo`. Fine-grained tokens need Issues: read/write for this repository.".to_string()
 }
 
 async fn save_issue_edit<B: IssueBackend>(app: &mut App, backend: &B) {
@@ -2290,6 +2578,11 @@ mod tests {
         labels: Mutex<Vec<Label>>,
         collaborators: Mutex<Vec<User>>,
         templates: Mutex<Vec<IssueTemplate>>,
+        create_error: Mutex<Option<String>>,
+        project_error: Mutex<Option<String>>,
+        project_boards: Mutex<Vec<crate::domain::ProjectBoardSummary>>,
+        project_board: Mutex<Option<crate::domain::ProjectBoard>>,
+        project_moves: Mutex<Vec<(String, String, String, String)>>,
     }
 
     fn issue(number: u64, title: &str, state: IssueState, comment_count: u64) -> IssueSummary {
@@ -2340,6 +2633,11 @@ mod tests {
                 name: "bug report".to_string(),
                 body: "## Expected\n\n## Actual\n".to_string(),
             }]),
+            create_error: Mutex::new(None),
+            project_error: Mutex::new(None),
+            project_boards: Mutex::new(Vec::new()),
+            project_board: Mutex::new(None),
+            project_moves: Mutex::new(Vec::new()),
         }
     }
 
@@ -2420,6 +2718,40 @@ mod tests {
             Ok(self.collaborators.lock().unwrap().clone())
         }
 
+        async fn list_project_board(
+            &self,
+            _repo: &Repository,
+            _config: &crate::config::ProjectBoardConfig,
+        ) -> Result<Option<crate::domain::ProjectBoard>> {
+            if let Some(message) = self.project_error.lock().unwrap().clone() {
+                return Err(color_eyre::eyre::eyre!(message));
+            }
+            Ok(self.project_board.lock().unwrap().clone())
+        }
+
+        async fn list_project_boards(
+            &self,
+            _repo: &Repository,
+        ) -> Result<Vec<crate::domain::ProjectBoardSummary>> {
+            Ok(self.project_boards.lock().unwrap().clone())
+        }
+
+        async fn update_project_item_status(
+            &self,
+            project_id: &str,
+            item_id: &str,
+            field_id: &str,
+            option_id: &str,
+        ) -> Result<()> {
+            self.project_moves.lock().unwrap().push((
+                project_id.to_string(),
+                item_id.to_string(),
+                field_id.to_string(),
+                option_id.to_string(),
+            ));
+            Ok(())
+        }
+
         async fn create_issue(
             &self,
             _repo: &Repository,
@@ -2427,6 +2759,9 @@ mod tests {
             body: &str,
             labels: &[String],
         ) -> Result<IssueSummary> {
+            if let Some(message) = self.create_error.lock().unwrap().clone() {
+                return Err(color_eyre::eyre::eyre!(message));
+            }
             *self.created_body.lock().unwrap() = Some(body.to_string());
             *self.created_labels.lock().unwrap() = labels.to_vec();
             let created = issue(2, "New task", IssueState::Open, 0);
@@ -2585,6 +2920,25 @@ mod tests {
         assert_eq!(app.status, "Created issue #2");
         assert_eq!(app.mode, UiMode::Success);
         assert_eq!(app.flash, Some(FlashKind::Success));
+    }
+
+    #[tokio::test]
+    async fn create_issue_failure_opens_standard_error_details() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        *backend.create_error.lock().unwrap() =
+            Some("Resource not accessible by personal access token".to_string());
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.start_new_issue();
+        app.input = "New task".to_string();
+
+        submit_new_issue(&mut app, &backend, true).await;
+
+        assert_eq!(app.mode, UiMode::Error);
+        assert_eq!(app.status, "Create issue failed");
+        let error = app.error_detail.as_ref().expect("error detail");
+        assert_eq!(error.title, "Create issue failed");
+        assert!(error.details.contains("Resource not accessible"));
+        assert!(error.hint.as_ref().unwrap().contains("gh auth refresh"));
     }
 
     #[tokio::test]
@@ -3040,6 +3394,312 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browsing_shortcut_toggles_between_list_and_board_views() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+        )
+        .await;
+        assert_eq!(app.issue_view, IssueView::Board);
+
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+        )
+        .await;
+        assert_eq!(app.issue_view, IssueView::List);
+    }
+
+    #[tokio::test]
+    async fn board_and_list_commands_switch_issue_views() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.mode = UiMode::Command;
+        app.input = "board".to_string();
+
+        run_command(&mut app, &backend).await;
+        assert_eq!(app.issue_view, IssueView::Board);
+        assert_eq!(app.mode, UiMode::Browsing);
+
+        app.mode = UiMode::Command;
+        app.input = "list".to_string();
+        run_command(&mut app, &backend).await;
+        assert_eq!(app.issue_view, IssueView::List);
+        assert_eq!(app.mode, UiMode::Browsing);
+    }
+
+    #[tokio::test]
+    async fn board_command_loads_project_board_from_backend() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        *backend.project_board.lock().unwrap() = Some(crate::domain::ProjectBoard {
+            title: "Roadmap".to_string(),
+            project_id: None,
+            status_field_id: None,
+            status_options: Vec::new(),
+            item_statuses: Vec::new(),
+            columns: vec![crate::domain::ProjectColumn {
+                name: "Todo".to_string(),
+                issues: vec![issue(1, "Fix redraw", IssueState::Open, 1)],
+            }],
+        });
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.mode = UiMode::Command;
+        app.input = "board".to_string();
+
+        run_command(&mut app, &backend).await;
+
+        assert_eq!(app.issue_view, IssueView::Board);
+        assert_eq!(app.project_board.as_ref().unwrap().title, "Roadmap");
+        assert_eq!(app.status, "Loaded GitHub project board");
+    }
+
+    #[tokio::test]
+    async fn board_command_opens_picker_when_multiple_project_boards_exist() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        *backend.project_boards.lock().unwrap() = vec![
+            crate::domain::ProjectBoardSummary {
+                id: "PVT_backlog".to_string(),
+                owner: "owner".to_string(),
+                number: 1,
+                title: "Backlog".to_string(),
+                item_count: 3,
+            },
+            crate::domain::ProjectBoardSummary {
+                id: "PVT_roadmap".to_string(),
+                owner: "owner".to_string(),
+                number: 2,
+                title: "Roadmap".to_string(),
+                item_count: 5,
+            },
+        ];
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.mode = UiMode::Command;
+        app.input = "board".to_string();
+
+        run_command(&mut app, &backend).await;
+
+        assert_eq!(app.issue_view, IssueView::Board);
+        assert_eq!(app.mode, UiMode::ProjectBoardPicker);
+        assert_eq!(app.project_board_choices.len(), 2);
+        assert_eq!(app.status, "Choose a GitHub project board");
+    }
+
+    #[tokio::test]
+    async fn board_picker_enter_loads_selected_project_board() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        *backend.project_board.lock().unwrap() = Some(crate::domain::ProjectBoard {
+            title: "Roadmap".to_string(),
+            project_id: None,
+            status_field_id: None,
+            status_options: Vec::new(),
+            item_statuses: Vec::new(),
+            columns: Vec::new(),
+        });
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_project_board_choices(vec![
+            crate::domain::ProjectBoardSummary {
+                id: "PVT_backlog".to_string(),
+                owner: "owner".to_string(),
+                number: 1,
+                title: "Backlog".to_string(),
+                item_count: 3,
+            },
+            crate::domain::ProjectBoardSummary {
+                id: "PVT_roadmap".to_string(),
+                owner: "owner".to_string(),
+                number: 2,
+                title: "Roadmap".to_string(),
+                item_count: 5,
+            },
+        ]);
+        app.mode = UiMode::ProjectBoardPicker;
+        app.picker_index = 1;
+
+        handle_project_board_picker_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.issue_view, IssueView::Board);
+        assert_eq!(app.project_board_config.owner.as_deref(), Some("owner"));
+        assert_eq!(app.project_board_config.number, Some(2));
+        assert_eq!(app.mode, UiMode::Browsing);
+        assert_eq!(app.project_board.as_ref().unwrap().title, "Roadmap");
+    }
+
+    #[tokio::test]
+    async fn right_arrow_moves_selected_project_issue_to_next_board_state() {
+        let first_issue = issue(1, "Fix redraw", IssueState::Open, 1);
+        let backend = backend_with_issues(vec![first_issue.clone()]);
+        *backend.project_board.lock().unwrap() = Some(crate::domain::ProjectBoard {
+            title: "Roadmap".to_string(),
+            project_id: Some("project-id".to_string()),
+            status_field_id: Some("status-field-id".to_string()),
+            status_options: vec![
+                crate::domain::ProjectStatusOption {
+                    id: "todo-option".to_string(),
+                    name: "Todo".to_string(),
+                },
+                crate::domain::ProjectStatusOption {
+                    id: "doing-option".to_string(),
+                    name: "Doing".to_string(),
+                },
+            ],
+            item_statuses: vec![crate::domain::ProjectItemStatus {
+                issue_number: 1,
+                item_id: "item-id".to_string(),
+                status_name: "Todo".to_string(),
+            }],
+            columns: vec![crate::domain::ProjectColumn {
+                name: "Doing".to_string(),
+                issues: vec![first_issue],
+            }],
+        });
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        app.set_project_board(crate::domain::ProjectBoard {
+            title: "Roadmap".to_string(),
+            project_id: Some("project-id".to_string()),
+            status_field_id: Some("status-field-id".to_string()),
+            status_options: vec![
+                crate::domain::ProjectStatusOption {
+                    id: "todo-option".to_string(),
+                    name: "Todo".to_string(),
+                },
+                crate::domain::ProjectStatusOption {
+                    id: "doing-option".to_string(),
+                    name: "Doing".to_string(),
+                },
+            ],
+            item_statuses: vec![crate::domain::ProjectItemStatus {
+                issue_number: 1,
+                item_id: "item-id".to_string(),
+                status_name: "Todo".to_string(),
+            }],
+            columns: vec![crate::domain::ProjectColumn {
+                name: "Todo".to_string(),
+                issues: vec![issue(1, "Fix redraw", IssueState::Open, 1)],
+            }],
+        });
+        app.set_issue_view(IssueView::Board);
+
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(
+            *backend.project_moves.lock().unwrap(),
+            vec![(
+                "project-id".to_string(),
+                "item-id".to_string(),
+                "status-field-id".to_string(),
+                "doing-option".to_string(),
+            )]
+        );
+        assert_eq!(app.status, "Moved issue #1 to Doing");
+        assert_eq!(app.project_board.as_ref().unwrap().columns[0].name, "Doing");
+    }
+
+    #[tokio::test]
+    async fn left_arrow_on_first_project_state_does_not_mutate() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        app.set_project_board(crate::domain::ProjectBoard {
+            title: "Roadmap".to_string(),
+            project_id: Some("project-id".to_string()),
+            status_field_id: Some("status-field-id".to_string()),
+            status_options: vec![
+                crate::domain::ProjectStatusOption {
+                    id: "todo-option".to_string(),
+                    name: "Todo".to_string(),
+                },
+                crate::domain::ProjectStatusOption {
+                    id: "doing-option".to_string(),
+                    name: "Doing".to_string(),
+                },
+            ],
+            item_statuses: vec![crate::domain::ProjectItemStatus {
+                issue_number: 1,
+                item_id: "item-id".to_string(),
+                status_name: "Todo".to_string(),
+            }],
+            columns: vec![crate::domain::ProjectColumn {
+                name: "Todo".to_string(),
+                issues: vec![issue(1, "Fix redraw", IssueState::Open, 1)],
+            }],
+        });
+        app.set_issue_view(IssueView::Board);
+
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert!(backend.project_moves.lock().unwrap().is_empty());
+        assert_eq!(app.status, "Issue #1 is already in the first board state");
+    }
+
+    #[tokio::test]
+    async fn board_load_failure_opens_standard_error_details() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        *backend.project_error.lock().unwrap() =
+            Some("projectsV2 field requires one of the following scopes: ['read:project']".into());
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.mode = UiMode::Command;
+        app.input = "board".to_string();
+
+        run_command(&mut app, &backend).await;
+
+        assert_eq!(app.issue_view, IssueView::Board);
+        assert_eq!(app.mode, UiMode::Error);
+        assert_eq!(app.status, "Project board load failed");
+        let error = app.error_detail.as_ref().expect("error detail");
+        assert_eq!(error.title, "Project board load failed");
+        assert!(error.details.contains("read:project"));
+        assert!(error.hint.as_ref().unwrap().contains("read:project"));
+    }
+
+    #[tokio::test]
+    async fn short_board_command_is_not_supported() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.mode = UiMode::Command;
+        app.input = "b".to_string();
+
+        run_command(&mut app, &backend).await;
+
+        assert_eq!(app.issue_view, IssueView::List);
+        assert_eq!(app.mode, UiMode::Browsing);
+        assert_eq!(app.flash, Some(FlashKind::Error));
+        assert_eq!(app.status, "Unknown command: b");
+    }
+
+    #[test]
+    fn startup_status_does_not_make_later_refresh_effects_full_screen() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.begin_action(PendingAction::Refresh, "Starting tissues");
+        let area = ratatui::layout::Rect::new(0, 0, 120, 40);
+
+        let target = draw_effect_area(&app, area, false);
+
+        assert_ne!(target, area);
+        assert_eq!(target, ui::effect_area(&app, area));
+    }
+
+    #[tokio::test]
     async fn assignee_editor_assigns_issue_to_collaborator() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/tissues".parse().unwrap());
@@ -3294,6 +3954,16 @@ mod tests {
             ))
         );
 
+        app.set_issue_view(IssueView::Board);
+        assert_eq!(
+            loading_preview(&app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
+            Some((
+                PendingAction::UpdateProjectItem,
+                "Moving issue #1".to_string()
+            ))
+        );
+        app.set_issue_view(IssueView::List);
+
         app.mode = UiMode::Command;
         app.input = "refresh".to_string();
         assert_eq!(
@@ -3413,7 +4083,7 @@ mod tests {
         assert!(outcome.has_new_issues());
         assert_eq!(app.selected_issue().unwrap().number, 1);
         assert_eq!(app.status, "New issue #3: Handle webhook");
-        assert_eq!(app.flash, Some(FlashKind::Refresh));
+        assert_eq!(app.flash, None);
         assert!(app.is_new_issue_highlighted(3));
         assert_eq!(app.mode, UiMode::Browsing);
     }
@@ -3535,7 +4205,7 @@ mod tests {
 
         assert_eq!(outcome, AutoRefreshOutcome::default());
         assert_eq!(app.status, "Auto-refreshed; no new issues");
-        assert_eq!(app.flash, Some(FlashKind::Refresh));
+        assert_eq!(app.flash, None);
         assert_eq!(app.mode, UiMode::Browsing);
     }
 
