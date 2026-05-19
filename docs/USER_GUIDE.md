@@ -235,6 +235,10 @@ When GitHub rejects an operation, `tissues` shows a standard error modal with:
 - the detailed GitHub or GraphQL error,
 - a suggested next command when one is known.
 
+If the error is caused by a missing GitHub CLI scope, the modal shows a repair
+action. Press `r` to run the matching `gh auth refresh -s ...` command, then
+retry the failed action.
+
 Press `Esc` to dismiss the error and return to the previous workflow.
 
 ## Troubleshooting

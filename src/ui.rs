@@ -1184,6 +1184,7 @@ fn footer_shortcuts(app: &App) -> String {
         UiMode::ConfirmClose => "y/Enter reopen | Esc cancel".to_string(),
         UiMode::Success => "Any key continue".to_string(),
         UiMode::Loading => "Working".to_string(),
+        UiMode::Error if app.error_detail_has_remediation() => "r repair | Esc dismiss".to_string(),
         UiMode::Error => "Esc dismiss".to_string(),
         UiMode::FilterEditor => "Esc cancel".to_string(),
     }
@@ -1430,6 +1431,17 @@ fn render_error_overlay(app: &App, title: &'static str, area: Rect, buffer: &mut
             )));
             lines.push(Line::from(hint.clone()));
         }
+        if let Some(remediation) = error.remediation.as_ref() {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "Repair",
+                Style::new().fg(OPEN_ACCENT).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(format!(
+                "Press r to run `{}`.",
+                remediation.command
+            )));
+        }
         Text::from(lines)
     } else {
         Text::from(app.status.clone())
@@ -1604,6 +1616,7 @@ fn pending_action_label(action: &PendingAction) -> &'static str {
         PendingAction::UpdateAssignees => "Updating assignees",
         PendingAction::UpdateLabels => "Updating labels",
         PendingAction::UpdateProjectItem => "Moving board item",
+        PendingAction::RepairAuth => "Repairing GitHub auth",
     }
 }
 
@@ -2915,6 +2928,30 @@ mod tests {
         assert!(rendered.contains("Resource not accessible"));
         assert!(rendered.contains("Next step"));
         assert!(rendered.contains("gh auth refresh -s repo"));
+    }
+
+    #[test]
+    fn renders_error_remediation_action() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.show_error_with_remediation(
+            "Project board load failed",
+            "GitHub denied project board access because the active token is missing read:project.",
+            Some("Run `gh auth status` to inspect scopes.".to_string()),
+            Some(crate::app::ErrorRemediation {
+                label: "Refresh GitHub project access".to_string(),
+                command: "gh auth refresh -s read:project".to_string(),
+                scopes: vec!["read:project".to_string()],
+            }),
+        );
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(footer_shortcuts(&app).contains("r repair"));
+        assert!(rendered.contains("Repair"));
+        assert!(rendered.contains("Press r to run"));
+        assert!(rendered.contains("gh auth refresh -s read:project"));
     }
 
     #[test]

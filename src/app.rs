@@ -151,6 +151,7 @@ pub enum PendingAction {
     UpdateAssignees,
     UpdateLabels,
     UpdateProjectItem,
+    RepairAuth,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -200,6 +201,14 @@ pub struct ErrorDetail {
     pub title: String,
     pub details: String,
     pub hint: Option<String>,
+    pub remediation: Option<ErrorRemediation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ErrorRemediation {
+    pub label: String,
+    pub command: String,
+    pub scopes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -424,6 +433,26 @@ impl App {
             title: title.clone(),
             details: details.into(),
             hint,
+            remediation: None,
+        });
+        self.mode = UiMode::Error;
+        self.flash = Some(FlashKind::Error);
+        self.set_status(title);
+    }
+
+    pub fn show_error_with_remediation(
+        &mut self,
+        title: impl Into<String>,
+        details: impl Into<String>,
+        hint: Option<String>,
+        remediation: Option<ErrorRemediation>,
+    ) {
+        let title = title.into();
+        self.error_detail = Some(ErrorDetail {
+            title: title.clone(),
+            details: details.into(),
+            hint,
+            remediation,
         });
         self.mode = UiMode::Error;
         self.flash = Some(FlashKind::Error);
@@ -432,6 +461,13 @@ impl App {
 
     pub fn clear_error(&mut self) {
         self.error_detail = None;
+    }
+
+    pub fn error_detail_has_remediation(&self) -> bool {
+        self.error_detail
+            .as_ref()
+            .and_then(|error| error.remediation.as_ref())
+            .is_some()
     }
 
     pub fn set_project_board(&mut self, board: ProjectBoard) {
