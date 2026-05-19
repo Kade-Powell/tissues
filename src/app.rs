@@ -3,8 +3,10 @@ use std::cmp::Ordering;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::SavedView,
-    domain::{IssueDetail, IssueSummary, IssueTemplate, Label, User},
+    config::{ProjectBoardConfig, SavedView},
+    domain::{
+        IssueDetail, IssueSummary, IssueTemplate, Label, ProjectBoard, ProjectBoardSummary, User,
+    },
     repo::Repository,
 };
 
@@ -99,10 +101,17 @@ pub enum UiMode {
     AssigneeFilter,
     AssigneeEditor,
     IssueLabelEditor,
+    ProjectBoardPicker,
     ConfirmClose,
     Success,
     Loading,
     Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IssueView {
+    List,
+    Board,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -141,6 +150,7 @@ pub enum PendingAction {
     UpdateIssue,
     UpdateAssignees,
     UpdateLabels,
+    UpdateProjectItem,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -186,11 +196,19 @@ pub struct IssueHighlight {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ErrorDetail {
+    pub title: String,
+    pub details: String,
+    pub hint: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct App {
     pub repo: Repository,
     pub filters: IssueFilters,
     pub issues: Vec<IssueSummary>,
     pub selected_index: usize,
+    pub issue_view: IssueView,
     pub mode: UiMode,
     pub status: String,
     pub input: String,
@@ -215,6 +233,10 @@ pub struct App {
     pub flash: Option<FlashKind>,
     pub viewer_login: Option<String>,
     pub issue_highlights: Vec<IssueHighlight>,
+    pub project_board: Option<ProjectBoard>,
+    pub project_board_choices: Vec<ProjectBoardSummary>,
+    pub project_board_config: ProjectBoardConfig,
+    pub error_detail: Option<ErrorDetail>,
     pub saved_views: Vec<SavedView>,
     pub active_view: Option<String>,
     pub triage_mode: bool,
@@ -232,6 +254,7 @@ impl App {
             filters: IssueFilters::default(),
             issues: Vec::new(),
             selected_index: 0,
+            issue_view: IssueView::List,
             mode: UiMode::Browsing,
             status: "Ready".to_string(),
             input: String::new(),
@@ -256,6 +279,10 @@ impl App {
             flash: None,
             viewer_login: None,
             issue_highlights: Vec::new(),
+            project_board: None,
+            project_board_choices: Vec::new(),
+            project_board_config: ProjectBoardConfig::default(),
+            error_detail: None,
             saved_views: Vec::new(),
             active_view: None,
             triage_mode: false,
@@ -334,6 +361,19 @@ impl App {
         }
     }
 
+    pub fn set_issue_view(&mut self, view: IssueView) {
+        self.issue_view = view;
+        self.mode = UiMode::Browsing;
+    }
+
+    pub fn cycle_issue_view(&mut self) {
+        self.issue_view = match self.issue_view {
+            IssueView::List => IssueView::Board,
+            IssueView::Board => IssueView::List,
+        };
+        self.mode = UiMode::Browsing;
+    }
+
     pub fn cycle_state_filter(&mut self) {
         self.active_view = None;
         self.filters.state = match self.filters.state {
@@ -371,6 +411,55 @@ impl App {
 
     pub fn set_status(&mut self, status: impl Into<String>) {
         self.status = status.into();
+    }
+
+    pub fn show_error(
+        &mut self,
+        title: impl Into<String>,
+        details: impl Into<String>,
+        hint: Option<String>,
+    ) {
+        let title = title.into();
+        self.error_detail = Some(ErrorDetail {
+            title: title.clone(),
+            details: details.into(),
+            hint,
+        });
+        self.mode = UiMode::Error;
+        self.flash = Some(FlashKind::Error);
+        self.set_status(title);
+    }
+
+    pub fn clear_error(&mut self) {
+        self.error_detail = None;
+    }
+
+    pub fn set_project_board(&mut self, board: ProjectBoard) {
+        self.project_board = Some(board);
+    }
+
+    pub fn clear_project_board(&mut self) {
+        self.project_board = None;
+    }
+
+    pub fn set_project_board_choices(&mut self, choices: Vec<ProjectBoardSummary>) {
+        self.project_board_choices = choices;
+        self.picker_index = self
+            .picker_index
+            .min(self.project_board_choices.len().saturating_sub(1));
+    }
+
+    pub fn open_project_board_picker(&mut self, choices: Vec<ProjectBoardSummary>) {
+        self.set_project_board_choices(choices);
+        self.reset_picker();
+        self.issue_view = IssueView::Board;
+        self.mode = UiMode::ProjectBoardPicker;
+        self.set_status("Choose a GitHub project board");
+    }
+
+    pub fn set_project_board_config(&mut self, config: ProjectBoardConfig) {
+        self.project_board_config = config;
+        self.clear_project_board();
     }
 
     pub fn begin_action(&mut self, action: PendingAction, status: impl Into<String>) {
@@ -1023,6 +1112,7 @@ impl App {
             UiMode::AssigneeFilter => self.assignee_filter_choices().len(),
             UiMode::AssigneeEditor => self.assignee_assignment_choices().len(),
             UiMode::IssueLabelEditor => self.issue_label_choices().len(),
+            UiMode::ProjectBoardPicker => self.project_board_choices.len(),
             _ => 0,
         };
         if item_count == 0 {
@@ -1265,7 +1355,19 @@ mod tests {
 
         assert_eq!(app.filters.state, IssueStateFilter::Open);
         assert_eq!(app.mode, UiMode::Browsing);
+        assert_eq!(app.issue_view, IssueView::List);
         assert!(app.filters.query.is_empty());
+    }
+
+    #[test]
+    fn cycles_between_list_and_board_issue_views() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+
+        app.cycle_issue_view();
+        assert_eq!(app.issue_view, IssueView::Board);
+
+        app.cycle_issue_view();
+        assert_eq!(app.issue_view, IssueView::List);
     }
 
     #[test]

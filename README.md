@@ -5,6 +5,7 @@ tissues is a Rust terminal app for working through GitHub issues in one reposito
 ## Features
 
 - Browse open, closed, or all issues for a single repository.
+- Toggle between the issue list and a GitHub Projects board view.
 - Filter by issue state, assignee, labels, and search text.
 - Sort by updated time, created time, comment count, or assignee.
 - View the selected issue body and comments in a collapsible tree.
@@ -23,9 +24,8 @@ tissues is a Rust terminal app for working through GitHub issues in one reposito
 - Show a visible notification, terminal bell, and macOS system sound when new issues arrive.
 - Notify when new comments mention your authenticated GitHub username.
 - Notify when new issue descriptions or updated issue bodies mention your authenticated GitHub username.
-- Animate newly arrived issues in the list with a temporary `NEW` row highlight.
-- Animate mentioned issues in the list with a temporary `PING` row highlight.
-- Show issue author, assignees, relative age, mention badges, and stale badges in the list.
+- Animate newly arrived and mentioned issues in the list without adding text badges.
+- Show issue author, assignees, relative age, mentions, and stale state in the list.
 - Show a confirmation after successful writes once issue state has reloaded.
 - Show compact loading indicators for routine actions with contained TachyonFX movement.
 - Use a simple TachyonFX coalesce effect for loading and completion feedback.
@@ -49,6 +49,40 @@ gh auth token
 ```
 
 It does not persist GitHub credentials.
+
+For a checkout that should use a specific GitHub CLI account without switching
+the global active `gh` account, create `.tissues/config.json` in that checkout:
+
+```json
+{
+  "auth": {
+    "gh_user": "Kade-Powell"
+  }
+}
+```
+
+When configured, tissues reads the token with `gh auth token --user Kade-Powell`.
+The `.tissues` directory is ignored by git so the account choice stays local to
+the checkout.
+
+Creating issues requires a token that can write issues in the repository. For
+GitHub CLI OAuth tokens, refresh repository access with:
+
+```bash
+gh auth refresh -s repo
+```
+
+Loading GitHub Projects requires read access to Projects:
+
+```bash
+gh auth refresh -s read:project
+```
+
+Moving issues through GitHub Project board states requires project write access:
+
+```bash
+gh auth refresh -s project
+```
 
 ## Run
 
@@ -97,6 +131,8 @@ cargo run
 
 - `j` / `Down`: move to the next issue.
 - `k` / `Up`: move to the previous issue.
+- `v`: toggle between list and board view.
+- `Left` / `Right`: move the selected issue to the previous or next GitHub Project board state while in board view.
 - `Enter`: collapse or expand comments in the detail tree.
 - `:`: open command mode at the bottom of the screen.
 - `Tab`: complete the highlighted command suggestion while in command mode.
@@ -117,6 +153,9 @@ cargo run
 Useful commands:
 
 - `:refresh`: reload issues now.
+- `:board`: open the board view.
+- `:boards`: choose from repository GitHub Projects.
+- `:list`: return to the issue list.
 - `:all`, `:clear`, or `:clear filters`: clear state, assignee, label, and search filters.
 - `:fs` or `:filter state`: cycle state filter: open, closed, all.
 - `:fa` or `:filter assignee`: choose an assignee filter: any, me, unassigned, or a collaborator.
@@ -198,6 +237,25 @@ The core code is split by responsibility:
 - `src/tui.rs`: terminal event loop and live issue operations.
 - `src/ui.rs`: Ratatui rendering and TachyonFX effects.
 
+## GitHub Projects
+
+The board view loads a GitHub Projects board when one is available. If multiple
+repository projects are available, tissues shows a board picker. To pin a user
+or organization project, add `project_board` to `~/.config/tissues/config.json`:
+
+```json
+{
+  "project_board": {
+    "owner": "Kade-Powell",
+    "number": 1,
+    "status_field": "Status"
+  }
+}
+```
+
+The `owner` is the user or organization that owns the project, `number` is the
+project number from GitHub, and `status_field` defaults to `Status`.
+
 ## Current Scope
 
-This is a v1 focused issue tracker. It intentionally does not include multi-repo inboxes, project board sync, pull request review workflows, or custom token storage.
+This is a v1 focused issue tracker. It intentionally does not include multi-repo inboxes, pull request review workflows, or custom token storage.

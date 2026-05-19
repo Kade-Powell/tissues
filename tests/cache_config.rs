@@ -3,7 +3,7 @@ use std::{fs, time::SystemTime};
 use tissues::{
     app::{AssigneeFilter, IssueFilters, IssueSort, IssueStateFilter},
     cache::IssueCache,
-    config::{AppConfig, SavedView},
+    config::{AppConfig, GitHubAuthConfig, ProjectBoardConfig, SavedView},
     domain::{IssueState, IssueSummary},
     repo::Repository,
 };
@@ -79,6 +79,8 @@ fn saved_views_serialize_filters_for_user_config() {
                 sort: IssueSort::Updated,
             },
         }],
+        auth: GitHubAuthConfig::default(),
+        project_board: ProjectBoardConfig::default(),
     };
 
     let json = serde_json::to_string(&config).expect("serialize config");
@@ -86,6 +88,67 @@ fn saved_views_serialize_filters_for_user_config() {
 
     assert_eq!(parsed.views[0].name, "mine");
     assert_eq!(parsed.views[0].filters.assignee, AssigneeFilter::Me);
+}
+
+#[test]
+fn project_board_config_serializes_owner_number_and_status_field() {
+    let config = AppConfig {
+        views: Vec::new(),
+        auth: GitHubAuthConfig::default(),
+        project_board: ProjectBoardConfig {
+            owner: Some("owner".to_string()),
+            number: Some(7),
+            status_field: "Status".to_string(),
+        },
+    };
+
+    let json = serde_json::to_string(&config).expect("serialize config");
+    let parsed: AppConfig = serde_json::from_str(&json).expect("deserialize config");
+
+    assert_eq!(parsed.project_board.owner.as_deref(), Some("owner"));
+    assert_eq!(parsed.project_board.number, Some(7));
+    assert_eq!(parsed.project_board.status_field, "Status");
+}
+
+#[test]
+fn auth_config_serializes_github_cli_user() {
+    let config = AppConfig {
+        views: Vec::new(),
+        auth: GitHubAuthConfig {
+            gh_user: Some("Kade-Powell".to_string()),
+        },
+        project_board: ProjectBoardConfig::default(),
+    };
+
+    let json = serde_json::to_string(&config).expect("serialize config");
+    let parsed: AppConfig = serde_json::from_str(&json).expect("deserialize config");
+
+    assert_eq!(parsed.auth.gh_user.as_deref(), Some("Kade-Powell"));
+}
+
+#[test]
+fn repo_config_overrides_user_config_for_repo_local_auth() {
+    let root = temp_dir("config-merge");
+    let user_path = root.join("user-config.json");
+    let repo_path = root.join(".tissues").join("config.json");
+    fs::create_dir_all(repo_path.parent().unwrap()).expect("create repo config dir");
+    fs::write(
+        &user_path,
+        r#"{"auth":{"gh_user":"kpowel859_comcast"},"project_board":{"number":1}}"#,
+    )
+    .expect("write user config");
+    fs::write(
+        &repo_path,
+        r#"{"auth":{"gh_user":"Kade-Powell"},"project_board":{"number":2}}"#,
+    )
+    .expect("write repo config");
+
+    let config = AppConfig::load_from_paths(Some(user_path), Some(repo_path));
+
+    assert_eq!(config.auth.gh_user.as_deref(), Some("Kade-Powell"));
+    assert_eq!(config.project_board.number, Some(2));
+
+    fs::remove_dir_all(root).expect("remove temp config");
 }
 
 #[test]
