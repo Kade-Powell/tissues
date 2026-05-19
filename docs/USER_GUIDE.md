@@ -116,6 +116,10 @@ key is needed for the current mode, it should be visible there.
 Mouse selection also works for issue rows, picker rows, modal fields, and action
 buttons.
 
+When an error popup is open, `tissues` temporarily releases mouse capture so you
+can select and copy the error details and next-step guidance with your terminal's
+normal text selection.
+
 ## List view
 
 List view is the fastest way to work through a filtered set of issues. Use it

@@ -8,7 +8,13 @@ use std::{
 
 use chrono::Utc;
 use color_eyre::eyre::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::{
+    event::{
+        DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyModifiers, MouseButton,
+        MouseEvent, MouseEventKind,
+    },
+    execute,
+};
 use ratatui::DefaultTerminal;
 
 use crate::{
@@ -61,6 +67,8 @@ pub async fn run<B: IssueBackend>(
         app.set_viewer_login(login);
     }
     refresh(app, backend).await;
+    let mut mouse_capture_enabled = true;
+    sync_mouse_capture(app, &mut mouse_capture_enabled)?;
 
     let mut last_frame = Instant::now();
     let mut next_auto_refresh = Instant::now() + AUTO_REFRESH_INTERVAL;
@@ -68,6 +76,7 @@ pub async fn run<B: IssueBackend>(
         let elapsed = last_frame.elapsed();
         last_frame = Instant::now();
         ui::trigger_flash_effect(app, &mut effects);
+        sync_mouse_capture(app, &mut mouse_capture_enabled)?;
 
         draw_app(terminal, &mut realm, app, &mut effects, elapsed, false)?;
         if app.mode == UiMode::IssueDetailClosing && !effects.has_effects() {
@@ -134,6 +143,26 @@ fn play_system_notification_sound() {
             let _ = Command::new(program).args(args).status();
         });
     }
+}
+
+fn sync_mouse_capture(app: &App, mouse_capture_enabled: &mut bool) -> Result<()> {
+    let should_enable = mouse_capture_should_be_enabled(app);
+    if should_enable == *mouse_capture_enabled {
+        return Ok(());
+    }
+
+    if should_enable {
+        execute!(io::stdout(), EnableMouseCapture)?;
+    } else {
+        execute!(io::stdout(), DisableMouseCapture)?;
+    }
+    *mouse_capture_enabled = should_enable;
+
+    Ok(())
+}
+
+fn mouse_capture_should_be_enabled(app: &App) -> bool {
+    app.mode != UiMode::Error
 }
 
 #[cfg(target_os = "macos")]
