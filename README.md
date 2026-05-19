@@ -259,6 +259,34 @@ or organization project, add `project_board` to `~/.config/tissues/config.json`:
 The `owner` is the user or organization that owns the project, `number` is the
 project number from GitHub, and `status_field` defaults to `Status`.
 
+## UI Effects
+
+Configure terminal animation behavior in `~/.config/tissues/config.json` or
+`.tissues/config.json`:
+
+```json
+{
+  "ui": {
+    "all_effects_disabled": false,
+    "loading_effect": "coalesce"
+  }
+}
+```
+
+`all_effects_disabled` disables all visual effects when true, including refresh,
+startup, success/error, and detail open/close transitions.
+
+`loading_effect` controls startup and refresh animations when global effects are
+enabled. Supported values:
+
+- `disabled`
+- `coalesce`
+- `paint`
+- `evolve`
+- `explode`
+
+`loading_effect` has no effect when `all_effects_disabled` is `true`.
+
 ## Current Scope
 
 This is a v1 focused issue tracker. It intentionally does not include multi-repo inboxes, pull request review workflows, or custom token storage.

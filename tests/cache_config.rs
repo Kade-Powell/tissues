@@ -3,7 +3,10 @@ use std::{fs, time::SystemTime};
 use tissues::{
     app::{AssigneeFilter, IssueFilters, IssueSort, IssueStateFilter},
     cache::IssueCache,
-    config::{AppConfig, GitHubAuthConfig, ProjectBoardConfig, SavedView},
+    config::{
+        AppConfig, GitHubAuthConfig, LoadingEffectStyle, ProjectBoardConfig, SavedView,
+        UiEffectsConfig,
+    },
     domain::{IssueState, IssueSummary},
     repo::Repository,
 };
@@ -81,6 +84,7 @@ fn saved_views_serialize_filters_for_user_config() {
         }],
         auth: GitHubAuthConfig::default(),
         project_board: ProjectBoardConfig::default(),
+        ui: UiEffectsConfig::default(),
     };
 
     let json = serde_json::to_string(&config).expect("serialize config");
@@ -100,6 +104,7 @@ fn project_board_config_serializes_owner_number_and_status_field() {
             number: Some(7),
             status_field: "Status".to_string(),
         },
+        ui: UiEffectsConfig::default(),
     };
 
     let json = serde_json::to_string(&config).expect("serialize config");
@@ -118,6 +123,7 @@ fn auth_config_serializes_github_cli_user() {
             gh_user: Some("Kade-Powell".to_string()),
         },
         project_board: ProjectBoardConfig::default(),
+        ui: UiEffectsConfig::default(),
     };
 
     let json = serde_json::to_string(&config).expect("serialize config");
@@ -147,6 +153,50 @@ fn repo_config_overrides_user_config_for_repo_local_auth() {
 
     assert_eq!(config.auth.gh_user.as_deref(), Some("Kade-Powell"));
     assert_eq!(config.project_board.number, Some(2));
+
+    fs::remove_dir_all(root).expect("remove temp config");
+}
+
+#[test]
+fn ui_effects_config_serializes_all_effect_controls() {
+    let config = AppConfig {
+        views: Vec::new(),
+        auth: GitHubAuthConfig::default(),
+        project_board: ProjectBoardConfig::default(),
+        ui: UiEffectsConfig {
+            all_effects_disabled: true,
+            loading_effect: LoadingEffectStyle::Evolve,
+        },
+    };
+
+    let json = serde_json::to_string(&config).expect("serialize config");
+    let parsed: AppConfig = serde_json::from_str(&json).expect("deserialize config");
+
+    assert!(parsed.ui.all_effects_disabled);
+    assert_eq!(parsed.ui.loading_effect, LoadingEffectStyle::Evolve);
+}
+
+#[test]
+fn repo_config_overrides_user_config_for_ui_effects() {
+    let root = temp_dir("config-merge-ui");
+    let user_path = root.join("user-config.json");
+    let repo_path = root.join(".tissues").join("config.json");
+    fs::create_dir_all(repo_path.parent().unwrap()).expect("create repo config dir");
+    fs::write(
+        &user_path,
+        r#"{"ui":{"loading_effect":"paint","all_effects_disabled":false}}"#,
+    )
+    .expect("write user config");
+    fs::write(
+        &repo_path,
+        r#"{"ui":{"loading_effect":"explode","all_effects_disabled":true}}"#,
+    )
+    .expect("write repo config");
+
+    let config = AppConfig::load_from_paths(Some(user_path), Some(repo_path));
+
+    assert!(config.ui.all_effects_disabled);
+    assert_eq!(config.ui.loading_effect, LoadingEffectStyle::Explode);
 
     fs::remove_dir_all(root).expect("remove temp config");
 }

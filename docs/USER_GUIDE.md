@@ -223,6 +223,24 @@ While browsing, `tissues` automatically reloads issues every 5 seconds. It keeps
 the refresh effect contained to the issue area and does not replay the startup
 animation.
 
+To configure visual effects, set `ui` in `~/.config/tissues/config.json` or
+`.tissues/config.json`:
+
+```json
+{
+  "ui": {
+    "all_effects_disabled": false,
+    "loading_effect": "coalesce"
+  }
+}
+```
+
+- `all_effects_disabled`: disable all animations and visual effects.
+- `loading_effect`: choose startup/refresh effect. Values: `disabled`,
+  `coalesce`, `paint`, `evolve`, `explode`.
+
+When `all_effects_disabled` is `true`, `loading_effect` is ignored.
+
 When new issues arrive, or new comments/descriptions mention your authenticated
 GitHub username, the footer shows a notification and the terminal bell rings.
 On macOS, the system notification sound plays when available.
