@@ -439,6 +439,7 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('t') => app.toggle_triage_mode(),
+        KeyCode::Esc if app.triage_mode => app.toggle_triage_mode(),
         KeyCode::Char('v') => toggle_issue_view(app, backend).await,
         KeyCode::Left if app.issue_view == IssueView::Board => {
             move_selected_project_issue(app, backend, BoardMoveDirection::Previous).await;
@@ -3480,6 +3481,29 @@ mod tests {
         );
         assert_eq!(app.selected_issue().unwrap().assignees[0].login, "kpowel");
         assert_eq!(app.mode, UiMode::Success);
+    }
+
+    #[tokio::test]
+    async fn triage_mode_can_be_exited_with_escape() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 0)]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+        )
+        .await;
+        assert!(app.triage_mode);
+
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert!(!app.triage_mode);
     }
 
     #[tokio::test]
