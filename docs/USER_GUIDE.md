@@ -214,6 +214,7 @@ the selected issue:
 - `l`: edit labels.
 - `c`: comment.
 - `x`: close or reopen.
+- `d`: permanently delete after confirmation.
 - `s`: skip to the next issue.
 - `t`: exit triage mode.
 

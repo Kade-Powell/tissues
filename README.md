@@ -142,6 +142,7 @@ cargo run
 - `Space`: toggle users while assigning, then `Enter` submits all selected assignees.
 - `n`: create a new issue with separate title, Markdown body, and labels fields.
 - `x`: close the selected open issue with a required comment, or reopen a closed issue after confirmation.
+- `d`: in triage mode, open a confirmation modal to permanently delete the selected issue.
 - `Tab` / `Shift+Tab`: move between new issue fields.
 - `Tab`: complete an active `@username` mention while writing a comment or issue body.
 - Arrow keys, `Home`, `End`, `Backspace`, and `Delete`: edit text at the cursor in command, search, comment, issue, and picker fields.
