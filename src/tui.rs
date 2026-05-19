@@ -27,6 +27,7 @@ use crate::{
 };
 
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const ISSUE_ROW_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(600);
 #[cfg(target_os = "macos")]
 const MACOS_NOTIFICATION_SOUND: &str = "/System/Library/Sounds/Glass.aiff";
 
@@ -34,6 +35,40 @@ const MACOS_NOTIFICATION_SOUND: &str = "/System/Library/Sounds/Glass.aiff";
 enum BoardMoveDirection {
     Previous,
     Next,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct IssueRowClick {
+    issue_number: u64,
+    at: Instant,
+    issues_revision: u64,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct MouseIssueClickTracker {
+    last_issue_row_click: Option<IssueRowClick>,
+}
+
+impl MouseIssueClickTracker {
+    fn register_issue_row_click(&mut self, issue_number: u64, issues_revision: u64) -> bool {
+        let now = Instant::now();
+        if let Some(click) = self.last_issue_row_click {
+            if click.issue_number == issue_number
+                && click.issues_revision == issues_revision
+                && now.duration_since(click.at) <= ISSUE_ROW_DOUBLE_CLICK_WINDOW
+            {
+                self.last_issue_row_click = None;
+                return true;
+            }
+        }
+
+        self.last_issue_row_click = Some(IssueRowClick {
+            issue_number,
+            at: now,
+            issues_revision,
+        });
+        false
+    }
 }
 
 pub async fn run<B: IssueBackend>(
@@ -64,6 +99,7 @@ pub async fn run<B: IssueBackend>(
 
     let mut last_frame = Instant::now();
     let mut next_auto_refresh = Instant::now() + AUTO_REFRESH_INTERVAL;
+    let mut click_tracker = MouseIssueClickTracker::default();
     while !app.should_quit {
         let elapsed = last_frame.elapsed();
         last_frame = Instant::now();
@@ -104,7 +140,14 @@ pub async fn run<B: IssueBackend>(
                     handle_key(app, backend, key).await;
                 }
                 TissueMsg::Mouse(mouse) => {
-                    handle_mouse(app, backend, mouse, terminal.size()?.into()).await;
+                    handle_mouse(
+                        app,
+                        backend,
+                        &mut click_tracker,
+                        mouse,
+                        terminal.size()?.into(),
+                    )
+                    .await;
                 }
                 TissueMsg::Resize(_, _) | TissueMsg::Tick => {}
             }
@@ -511,13 +554,14 @@ async fn handle_issue_detail_key<B: IssueBackend>(app: &mut App, backend: &B, ke
 async fn handle_mouse<B: IssueBackend>(
     app: &mut App,
     backend: &B,
+    click_tracker: &mut MouseIssueClickTracker,
     mouse: MouseEvent,
     area: ratatui::layout::Rect,
 ) {
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             if let Some(target) = ui::mouse_target(app, area, mouse.column, mouse.row) {
-                handle_mouse_target(app, backend, target).await;
+                handle_mouse_target_with_tracker(app, backend, click_tracker, target).await;
             }
         }
         MouseEventKind::ScrollDown if app.mode == UiMode::Browsing => {
@@ -550,10 +594,27 @@ async fn handle_mouse<B: IssueBackend>(
     }
 }
 
+#[cfg(test)]
 async fn handle_mouse_target<B: IssueBackend>(app: &mut App, backend: &B, target: ui::MouseTarget) {
+    let mut click_tracker = MouseIssueClickTracker::default();
+    handle_mouse_target_with_tracker(app, backend, &mut click_tracker, target).await;
+}
+
+async fn handle_mouse_target_with_tracker<B: IssueBackend>(
+    app: &mut App,
+    backend: &B,
+    click_tracker: &mut MouseIssueClickTracker,
+    target: ui::MouseTarget,
+) {
     match target {
         ui::MouseTarget::IssueRow(index) if app.mode == UiMode::Browsing => {
             app.select_issue_index(index);
+            let Some(issue_number) = app.selected_issue().map(|issue| issue.number) else {
+                return;
+            };
+            if click_tracker.register_issue_row_click(issue_number, app.issues_revision()) {
+                open_selected_detail(app, backend).await;
+            }
         }
         ui::MouseTarget::IssueRow(index) if app.mode == UiMode::IssueDetail => {
             app.select_issue_index(index);
@@ -4076,6 +4137,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mouse_double_click_on_issue_opens_detail_like_enter() {
+        let backend = backend_with_issues(vec![
+            issue(1, "Fix redraw", IssueState::Open, 1),
+            issue(2, "Add mouse", IssueState::Open, 0),
+        ]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        let mut click_tracker = MouseIssueClickTracker::default();
+        refresh(&mut app, &backend).await;
+
+        handle_mouse_target_with_tracker(
+            &mut app,
+            &backend,
+            &mut click_tracker,
+            ui::MouseTarget::IssueRow(1),
+        )
+        .await;
+        handle_mouse_target_with_tracker(
+            &mut app,
+            &backend,
+            &mut click_tracker,
+            ui::MouseTarget::IssueRow(1),
+        )
+        .await;
+
+        assert_eq!(app.selected_issue().unwrap().number, 2);
+        assert_eq!(app.mode, UiMode::IssueDetail);
+        assert_eq!(app.status, "Viewing issue #2; Esc returns to list");
+        assert_eq!(*backend.detail_calls.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn mouse_double_click_on_already_selected_issue_opens_detail() {
+        let backend = backend_with_issues(vec![
+            issue(1, "Fix redraw", IssueState::Open, 1),
+            issue(2, "Add mouse", IssueState::Open, 0),
+        ]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        let mut click_tracker = MouseIssueClickTracker::default();
+        refresh(&mut app, &backend).await;
+
+        handle_mouse_target_with_tracker(
+            &mut app,
+            &backend,
+            &mut click_tracker,
+            ui::MouseTarget::IssueRow(0),
+        )
+        .await;
+        handle_mouse_target_with_tracker(
+            &mut app,
+            &backend,
+            &mut click_tracker,
+            ui::MouseTarget::IssueRow(0),
+        )
+        .await;
+
+        assert_eq!(app.selected_issue().unwrap().number, 1);
+        assert_eq!(app.mode, UiMode::IssueDetail);
+        assert_eq!(app.status, "Viewing issue #1; Esc returns to list");
+        assert_eq!(*backend.detail_calls.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn clicking_already_selected_issue_in_detail_retriggers_open_flash() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        let mut click_tracker = MouseIssueClickTracker::default();
+        refresh(&mut app, &backend).await;
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+        assert_eq!(app.mode, UiMode::IssueDetail);
+        assert_eq!(app.flash, Some(FlashKind::DetailOpen));
+
+        ui::trigger_flash_effect(&mut app, &mut TissueEffects::default());
+
+        handle_mouse_target_with_tracker(
+            &mut app,
+            &backend,
+            &mut click_tracker,
+            ui::MouseTarget::IssueRow(0),
+        )
+        .await;
+
+        assert_eq!(app.mode, UiMode::IssueDetail);
+        assert_eq!(*backend.detail_calls.lock().unwrap(), 1);
+        assert_eq!(app.flash, Some(FlashKind::DetailOpen));
+    }
+
+    #[tokio::test]
+    async fn opening_cached_selected_issue_retriggers_open_flash() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        refresh(&mut app, &backend).await;
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+        assert_eq!(app.mode, UiMode::IssueDetail);
+        assert_eq!(app.flash, Some(FlashKind::DetailOpen));
+
+        ui::trigger_flash_effect(&mut app, &mut TissueEffects::default());
+        assert_eq!(app.flash, None);
+
+        close_issue_detail(&mut app);
+        app.mode = UiMode::Browsing;
+        app.flash = None;
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.mode, UiMode::IssueDetail);
+        assert_eq!(*backend.detail_calls.lock().unwrap(), 1);
+        assert_eq!(app.flash, Some(FlashKind::DetailOpen));
+    }
+
+    #[tokio::test]
     async fn mouse_wheel_over_detail_scrolls_detail_without_changing_issue() {
         let backend = backend_with_issues(vec![
             issue(1, "Fix redraw", IssueState::Open, 1),
@@ -4091,9 +4278,11 @@ mod tests {
         .await;
         let detail_calls = *backend.detail_calls.lock().unwrap();
 
+        let mut click_tracker = MouseIssueClickTracker::default();
         handle_mouse(
             &mut app,
             &backend,
+            &mut click_tracker,
             MouseEvent {
                 kind: MouseEventKind::ScrollDown,
                 column: 96,
@@ -4107,6 +4296,38 @@ mod tests {
         assert_eq!(app.selected_issue().unwrap().number, 1);
         assert_eq!(app.detail_scroll, 3);
         assert_eq!(*backend.detail_calls.lock().unwrap(), detail_calls);
+    }
+
+    #[tokio::test]
+    async fn mouse_double_click_after_window_expires_does_not_open_detail() {
+        let backend = backend_with_issues(vec![
+            issue(1, "Fix redraw", IssueState::Open, 1),
+            issue(2, "Add mouse", IssueState::Open, 0),
+        ]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        let mut click_tracker = MouseIssueClickTracker::default();
+        refresh(&mut app, &backend).await;
+
+        handle_mouse_target_with_tracker(
+            &mut app,
+            &backend,
+            &mut click_tracker,
+            ui::MouseTarget::IssueRow(1),
+        )
+        .await;
+        std::thread::sleep(Duration::from_millis(650));
+        handle_mouse_target_with_tracker(
+            &mut app,
+            &backend,
+            &mut click_tracker,
+            ui::MouseTarget::IssueRow(1),
+        )
+        .await;
+
+        assert_eq!(app.selected_issue().unwrap().number, 2);
+        assert_eq!(app.mode, UiMode::Browsing);
+        assert_eq!(*backend.detail_calls.lock().unwrap(), 0);
+        assert!(app.selected_detail.is_none());
     }
 
     #[test]

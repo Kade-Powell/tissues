@@ -254,6 +254,7 @@ pub struct App {
     pub activity_frame: u8,
     pub detail_scroll: u16,
     pub should_quit: bool,
+    issues_revision: u64,
 }
 
 impl App {
@@ -300,15 +301,21 @@ impl App {
             activity_frame: 0,
             detail_scroll: 0,
             should_quit: false,
+            issues_revision: 0,
         }
     }
 
     pub fn set_issues(&mut self, issues: Vec<IssueSummary>) {
         self.issues = issues;
+        self.issues_revision = self.issues_revision.wrapping_add(1);
         self.sort_issues();
         self.clamp_selection();
         self.clear_stale_detail();
         self.clear_missing_issue_highlights();
+    }
+
+    pub fn issues_revision(&self) -> u64 {
+        self.issues_revision
     }
 
     pub fn selected_issue(&self) -> Option<&IssueSummary> {
@@ -341,6 +348,7 @@ impl App {
         let previous = self.selected_issue().map(|issue| issue.number);
         self.issues.retain(|item| item.number != issue.number);
         self.issues.insert(0, issue);
+        self.issues_revision = self.issues_revision.wrapping_add(1);
         self.selected_index = 0;
         if self.selected_issue().map(|issue| issue.number) != previous {
             self.detail_scroll = 0;
