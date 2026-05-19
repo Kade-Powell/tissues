@@ -2,6 +2,9 @@
 
 tissues is a Rust terminal app for working through GitHub issues in one repository at a time. It uses Ratatui for the interface, TachyonFX for terminal animations, Octocrab for GitHub API calls, and the GitHub CLI for authentication.
 
+For setup, workflows, board movement, auth scopes, and troubleshooting, see the
+[user guide](docs/USER_GUIDE.md).
+
 ## Features
 
 - Browse open, closed, or all issues for a single repository.
