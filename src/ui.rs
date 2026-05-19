@@ -837,7 +837,8 @@ fn footer_shortcuts(app: &App) -> String {
             "triage | a assign me | l labels | c comment | x close | s skip | t exit".to_string()
         }
         UiMode::Browsing => {
-            ": commands | t triage | n new | x close | j/k move | Enter open | q quit".to_string()
+            ": commands | t triage | n new | x close | j/k move | Enter open | q/ctrl+c quit"
+                .to_string()
         }
         UiMode::IssueDetail => {
             "Esc list | Enter fold | j/k scroll | PgUp/PgDn detail | : commands".to_string()
