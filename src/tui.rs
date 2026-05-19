@@ -13,8 +13,9 @@ use ratatui::DefaultTerminal;
 
 use crate::{
     app::{
-        App, AssigneeChoice, AssigneeFilter, FlashKind, IssueEditField, IssueSort,
-        IssueStateFilter, IssueView, NewIssueField, PendingAction, TextCursorMove, UiMode,
+        App, AssigneeChoice, AssigneeFilter, ErrorRemediation, FlashKind, IssueEditField,
+        IssueSort, IssueStateFilter, IssueView, NewIssueField, PendingAction, TextCursorMove,
+        UiMode,
     },
     cache::IssueCache,
     config::AppConfig,
@@ -414,12 +415,22 @@ async fn handle_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) 
         UiMode::Success => {
             app.mode = UiMode::Browsing;
         }
-        UiMode::Error => {
-            if key.code == KeyCode::Esc {
+        UiMode::Error => match key.code {
+            KeyCode::Esc => {
                 app.clear_error();
                 app.mode = UiMode::Browsing;
             }
-        }
+            KeyCode::Char('r')
+                if app
+                    .error_detail
+                    .as_ref()
+                    .and_then(|error| error.remediation.as_ref())
+                    .is_some() =>
+            {
+                repair_error(app, backend).await;
+            }
+            _ => {}
+        },
         _ => app.mode = UiMode::Browsing,
     }
 }
@@ -933,10 +944,16 @@ async fn open_project_board_chooser<B: IssueBackend>(
         }
         Err(err) => {
             app.finish_action();
-            app.show_error(
+            let details = format!("{err:#}");
+            app.show_error_with_remediation(
                 "Project board load failed",
-                format!("{err:#}"),
+                github_scope_error_details(&details, &["read:project"], "project board access"),
                 Some(project_auth_hint()),
+                github_scope_remediation(
+                    &details,
+                    &["read:project"],
+                    "Refresh GitHub project access",
+                ),
             );
         }
     }
@@ -987,10 +1004,16 @@ async fn load_project_board<B: IssueBackend>(app: &mut App, backend: &B) {
         Err(err) => {
             app.finish_action();
             app.clear_project_board();
-            app.show_error(
+            let details = format!("{err:#}");
+            app.show_error_with_remediation(
                 "Project board load failed",
-                format!("{err:#}"),
+                github_scope_error_details(&details, &["read:project"], "project board access"),
                 Some(project_auth_hint()),
+                github_scope_remediation(
+                    &details,
+                    &["read:project"],
+                    "Refresh GitHub project access",
+                ),
             );
         }
     }
@@ -998,6 +1021,90 @@ async fn load_project_board<B: IssueBackend>(app: &mut App, backend: &B) {
 
 fn project_auth_hint() -> String {
     "Run `gh auth status` to inspect scopes. For GitHub Projects, run `gh auth refresh -s read:project -s project`.".to_string()
+}
+
+fn github_scope_remediation(
+    details: &str,
+    scopes: &[&str],
+    label: impl Into<String>,
+) -> Option<ErrorRemediation> {
+    if !looks_like_github_scope_error(details) {
+        return None;
+    }
+    let scopes = scopes
+        .iter()
+        .map(|scope| (*scope).to_string())
+        .collect::<Vec<_>>();
+    Some(ErrorRemediation {
+        label: label.into(),
+        command: gh_auth_refresh_command(&scopes),
+        scopes,
+    })
+}
+
+fn github_scope_error_details(details: &str, scopes: &[&str], operation: &str) -> String {
+    if !looks_like_github_scope_error(details) {
+        return details.to_string();
+    }
+
+    let scope_list = scopes
+        .iter()
+        .map(|scope| format!("`{scope}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("GitHub denied {operation} because the active `gh` token is missing {scope_list}.")
+}
+
+fn looks_like_github_scope_error(details: &str) -> bool {
+    details.contains("required scopes")
+        || details.contains("required scope")
+        || details.contains("requires one of the following scopes")
+        || details.contains("not been granted")
+        || details.contains("Resource not accessible by personal access token")
+}
+
+fn gh_auth_refresh_command(scopes: &[String]) -> String {
+    let scope_args = scopes
+        .iter()
+        .map(|scope| format!("-s {scope}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("gh auth refresh {scope_args}")
+}
+
+async fn repair_error<B: IssueBackend>(app: &mut App, backend: &B) {
+    let Some(remediation) = app
+        .error_detail
+        .as_ref()
+        .and_then(|error| error.remediation.clone())
+    else {
+        return;
+    };
+
+    app.begin_action(
+        PendingAction::RepairAuth,
+        format!("Running {}", remediation.command),
+    );
+    match backend.refresh_auth_scopes(&remediation.scopes).await {
+        Ok(()) => {
+            app.finish_action();
+            app.clear_error();
+            app.mode = UiMode::Browsing;
+            app.flash = Some(FlashKind::Success);
+            app.set_status(format!(
+                "{} complete; retry the failed action",
+                remediation.label
+            ));
+        }
+        Err(err) => {
+            app.finish_action();
+            app.show_error(
+                "Auth repair failed",
+                format!("{err:#}"),
+                Some(format!("Run `{}` in your terminal.", remediation.command)),
+            );
+        }
+    }
 }
 
 async fn move_selected_project_issue<B: IssueBackend>(
@@ -1083,10 +1190,16 @@ async fn move_selected_project_issue<B: IssueBackend>(
         }
         Err(err) => {
             app.finish_action();
-            app.show_error(
+            let details = format!("{err:#}");
+            app.show_error_with_remediation(
                 "Move board item failed",
-                format!("{err:#}"),
+                github_scope_error_details(&details, &["project"], "project board edits"),
                 Some(project_auth_hint()),
+                github_scope_remediation(
+                    &details,
+                    &["project"],
+                    "Refresh GitHub project write access",
+                ),
             );
         }
     }
@@ -2063,10 +2176,12 @@ async fn submit_new_issue<B: IssueBackend>(app: &mut App, backend: &B, force_cre
         }
         Err(err) => {
             app.finish_action();
-            app.show_error(
+            let details = format!("{err:#}");
+            app.show_error_with_remediation(
                 "Create issue failed",
-                format!("{err:#}"),
+                github_scope_error_details(&details, &["repo"], "issue writes"),
                 Some(issue_write_auth_hint()),
+                github_scope_remediation(&details, &["repo"], "Refresh GitHub repository access"),
             );
         }
     }
@@ -2583,6 +2698,8 @@ mod tests {
         project_boards: Mutex<Vec<crate::domain::ProjectBoardSummary>>,
         project_board: Mutex<Option<crate::domain::ProjectBoard>>,
         project_moves: Mutex<Vec<(String, String, String, String)>>,
+        auth_refreshes: Mutex<Vec<Vec<String>>>,
+        auth_refresh_error: Mutex<Option<String>>,
     }
 
     fn issue(number: u64, title: &str, state: IssueState, comment_count: u64) -> IssueSummary {
@@ -2638,6 +2755,8 @@ mod tests {
             project_boards: Mutex::new(Vec::new()),
             project_board: Mutex::new(None),
             project_moves: Mutex::new(Vec::new()),
+            auth_refreshes: Mutex::new(Vec::new()),
+            auth_refresh_error: Mutex::new(None),
         }
     }
 
@@ -2749,6 +2868,14 @@ mod tests {
                 field_id.to_string(),
                 option_id.to_string(),
             ));
+            Ok(())
+        }
+
+        async fn refresh_auth_scopes(&self, scopes: &[String]) -> Result<()> {
+            if let Some(message) = self.auth_refresh_error.lock().unwrap().clone() {
+                return Err(color_eyre::eyre::eyre!(message));
+            }
+            self.auth_refreshes.lock().unwrap().push(scopes.to_vec());
             Ok(())
         }
 
@@ -2937,8 +3064,12 @@ mod tests {
         assert_eq!(app.status, "Create issue failed");
         let error = app.error_detail.as_ref().expect("error detail");
         assert_eq!(error.title, "Create issue failed");
-        assert!(error.details.contains("Resource not accessible"));
+        assert!(error.details.contains("missing `repo`"));
         assert!(error.hint.as_ref().unwrap().contains("gh auth refresh"));
+        assert_eq!(
+            error.remediation.as_ref().unwrap().scopes,
+            vec!["repo".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -3668,8 +3799,49 @@ mod tests {
         assert_eq!(app.status, "Project board load failed");
         let error = app.error_detail.as_ref().expect("error detail");
         assert_eq!(error.title, "Project board load failed");
-        assert!(error.details.contains("read:project"));
+        assert_eq!(
+            error.details,
+            "GitHub denied project board access because the active `gh` token is missing `read:project`."
+        );
+        assert!(!error.details.contains("line 4"));
         assert!(error.hint.as_ref().unwrap().contains("read:project"));
+        let remediation = error.remediation.as_ref().expect("auth remediation");
+        assert_eq!(remediation.command, "gh auth refresh -s read:project");
+        assert_eq!(remediation.scopes, vec!["read:project".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn error_repair_key_refreshes_auth_scopes_and_returns_to_browsing() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.show_error_with_remediation(
+            "Project board load failed",
+            "GitHub denied project board access because the token is missing `read:project`.",
+            Some("Run `gh auth refresh -s read:project`.".to_string()),
+            Some(ErrorRemediation {
+                label: "Refresh GitHub project access".to_string(),
+                command: "gh auth refresh -s read:project".to_string(),
+                scopes: vec!["read:project".to_string()],
+            }),
+        );
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(
+            *backend.auth_refreshes.lock().unwrap(),
+            vec![vec!["read:project".to_string()]]
+        );
+        assert_eq!(app.mode, UiMode::Browsing);
+        assert!(app.error_detail.is_none());
+        assert_eq!(
+            app.status,
+            "Refresh GitHub project access complete; retry the failed action"
+        );
     }
 
     #[tokio::test]

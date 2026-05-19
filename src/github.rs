@@ -42,6 +42,7 @@ pub trait IssueBackend {
         field_id: &str,
         option_id: &str,
     ) -> Result<()>;
+    async fn refresh_auth_scopes(&self, scopes: &[String]) -> Result<()>;
     async fn create_issue(
         &self,
         repo: &Repository,
@@ -80,6 +81,7 @@ pub trait IssueBackend {
 
 pub struct GitHubClient {
     crab: Octocrab,
+    gh_user: Option<String>,
 }
 
 impl GitHubClient {
@@ -88,16 +90,23 @@ impl GitHubClient {
     }
 
     pub fn from_gh_cli_user(gh_user: Option<&str>) -> Result<Self> {
-        Self::from_token(load_gh_token(gh_user)?)
+        Self::from_token_for_user(load_gh_token(gh_user)?, gh_user)
     }
 
     pub fn from_token(token: String) -> Result<Self> {
+        Self::from_token_for_user(token, None)
+    }
+
+    fn from_token_for_user(token: String, gh_user: Option<&str>) -> Result<Self> {
         let crab = Octocrab::builder()
             .personal_token(token)
             .build()
             .wrap_err("failed to build GitHub client")?;
 
-        Ok(Self { crab })
+        Ok(Self {
+            crab,
+            gh_user: gh_user.map(ToOwned::to_owned),
+        })
     }
 
     pub async fn load_current_login(&self) -> Result<String> {
@@ -366,6 +375,10 @@ impl IssueBackend for GitHubClient {
             .await
             .wrap_err("failed to update GitHub project item status")?;
         Ok(())
+    }
+
+    async fn refresh_auth_scopes(&self, scopes: &[String]) -> Result<()> {
+        refresh_gh_auth_scopes(self.gh_user.as_deref(), scopes)
     }
 
     async fn create_issue(
@@ -1003,12 +1016,74 @@ pub fn load_gh_token(gh_user: Option<&str>) -> Result<String> {
     parse_gh_token_output(String::from_utf8_lossy(&output.stdout).as_ref())
 }
 
+pub fn refresh_gh_auth_scopes(gh_user: Option<&str>, scopes: &[String]) -> Result<()> {
+    let scopes = scopes
+        .iter()
+        .map(|scope| scope.trim())
+        .filter(|scope| !scope.is_empty())
+        .collect::<Vec<_>>();
+    if scopes.is_empty() {
+        return Ok(());
+    }
+
+    if let Some(user) = gh_user.filter(|user| !user.trim().is_empty()) {
+        let active_user = active_gh_user().ok();
+        if active_user.as_deref() != Some(user) {
+            return Err(eyre!(
+                "GitHub CLI can only refresh scopes for the active account. Run `gh auth switch -u {user}` first, then `{}`.",
+                gh_auth_refresh_command(&scopes)
+            ));
+        }
+    }
+
+    let args = gh_auth_refresh_args(&scopes);
+    let status = Command::new("gh")
+        .args(&args)
+        .status()
+        .wrap_err_with(|| format!("failed to run `{}`", gh_command_display(&args)))?;
+    if !status.success() {
+        return Err(eyre!("`{}` failed", gh_command_display(&args)));
+    }
+    Ok(())
+}
+
+fn active_gh_user() -> Result<String> {
+    let output = Command::new("gh")
+        .args(["auth", "status", "--active", "--json", "hosts"])
+        .output()
+        .wrap_err("failed to inspect active GitHub CLI account")?;
+    if !output.status.success() {
+        return Err(eyre!("`gh auth status --active --json hosts` failed"));
+    }
+
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).wrap_err("failed to parse `gh auth status` JSON")?;
+    value["hosts"]["github.com"]
+        .as_array()
+        .and_then(|accounts| accounts.iter().find(|account| account["active"] == true))
+        .and_then(|account| account["login"].as_str())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| eyre!("no active GitHub CLI account found"))
+}
+
 fn gh_token_args(gh_user: Option<&str>) -> Vec<&str> {
     let mut args = vec!["auth", "token"];
     if let Some(user) = gh_user.filter(|user| !user.trim().is_empty()) {
         args.extend(["--user", user]);
     }
     args
+}
+
+fn gh_auth_refresh_args<'a>(scopes: &'a [&'a str]) -> Vec<&'a str> {
+    let mut args = vec!["auth", "refresh"];
+    for scope in scopes {
+        args.extend(["-s", scope]);
+    }
+    args
+}
+
+fn gh_auth_refresh_command(scopes: &[&str]) -> String {
+    gh_command_display(&gh_auth_refresh_args(scopes))
 }
 
 fn gh_command_display(args: &[&str]) -> String {
