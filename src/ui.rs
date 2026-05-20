@@ -1124,7 +1124,7 @@ pub(crate) fn render_footer(app: &App, area: Rect, buffer: &mut Buffer) {
 fn footer_shortcuts(app: &App) -> String {
     match app.mode {
         UiMode::Browsing if app.triage_mode => {
-            "triage | v view | a assign me | l labels | c comment | x close | s skip | t exit"
+            "triage | v view | a assign me | l labels | c comment | x close | s skip | t/esc exit"
                 .to_string()
         }
         UiMode::Browsing if app.issue_view == IssueView::Board => {
