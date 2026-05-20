@@ -90,6 +90,10 @@ Then `tissues` reads:
 gh auth token --user Kade-Powell
 ```
 
+When a repair action needs to refresh scopes, GitHub CLI requires the target
+account to be active. If `auth.gh_user` is configured, `tissues` switches to that
+account first and then runs `gh auth refresh`.
+
 The `.tissues` directory is ignored by git, so this setting stays local to your
 machine.
 
@@ -124,6 +128,7 @@ for triage, search, quick edits, comments, and issue creation.
 Useful commands:
 
 - `:refresh`: reload issues.
+- `:doctor`: check GitHub auth, issue access, and project board readiness.
 - `:all`, `:clear`, or `:clear filters`: clear filters.
 - `:fs` or `:filter state`: cycle open, closed, and all issues.
 - `:fa` or `:filter assignee`: choose an assignee filter.
@@ -237,9 +242,26 @@ When GitHub rejects an operation, `tissues` shows a standard error modal with:
 
 If the error is caused by a missing GitHub CLI scope, the modal shows a repair
 action. Press `r` to run the matching `gh auth refresh -s ...` command, then
-retry the failed action.
+`tissues` retries the failed action when it can. If `auth.gh_user` is configured
+for this checkout, repair switches `gh` to that account before refreshing scopes.
 
 Press `Esc` to dismiss the error and return to the previous workflow.
+
+## Doctor
+
+Run `:doctor` when a repository behaves unexpectedly. Doctor checks:
+
+- the GitHub CLI account being used,
+- issue list access,
+- issue write scope,
+- project board read scope,
+- project board movement scope,
+- repository project board discovery.
+
+Failed checks include a repair action when `tissues` knows the matching
+`gh auth refresh -s ...` command. Select the check and press `r` to repair it.
+After a repair, Doctor reruns the checks. If `auth.gh_user` is configured for
+this checkout, repair switches `gh` to that account before refreshing scopes.
 
 ## Troubleshooting
 

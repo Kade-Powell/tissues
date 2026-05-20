@@ -53,8 +53,8 @@ gh auth token
 
 It does not persist GitHub credentials.
 
-For a checkout that should use a specific GitHub CLI account without switching
-the global active `gh` account, create `.tissues/config.json` in that checkout:
+For a checkout that should use a specific GitHub CLI account, create
+`.tissues/config.json` in that checkout:
 
 ```json
 {
@@ -65,8 +65,9 @@ the global active `gh` account, create `.tissues/config.json` in that checkout:
 ```
 
 When configured, tissues reads the token with `gh auth token --user Kade-Powell`.
-The `.tissues` directory is ignored by git so the account choice stays local to
-the checkout.
+If an auth repair needs new scopes, tissues switches `gh` to that account before
+running `gh auth refresh`. The `.tissues` directory is ignored by git so the
+account choice stays local to the checkout.
 
 Creating issues requires a token that can write issues in the repository. For
 GitHub CLI OAuth tokens, refresh repository access with:
@@ -156,6 +157,7 @@ cargo run
 Useful commands:
 
 - `:refresh`: reload issues now.
+- `:doctor`: check GitHub auth, issue access, and project board readiness.
 - `:board`: open the board view.
 - `:boards`: choose from repository GitHub Projects.
 - `:list`: return to the issue list.
@@ -237,8 +239,9 @@ The core code is split by responsibility:
 - `src/domain.rs`: issue, comment, label, and user models.
 - `src/github.rs`: Octocrab adapter and `gh auth token` integration.
 - `src/repo.rs`: repository parsing and `gh repo view` inference.
-- `src/tui.rs`: terminal event loop and live issue operations.
-- `src/ui.rs`: Ratatui rendering and TachyonFX effects.
+- `src/realm.rs`: mounted tui-realm components and input translation.
+- `src/tui.rs`: model updates and live issue operations.
+- `src/ui.rs`: component rendering helpers and TachyonFX effects.
 
 ## GitHub Projects
 

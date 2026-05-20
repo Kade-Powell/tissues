@@ -20,8 +20,8 @@ use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::{
     app::{
-        App, AssigneeChoice, AssigneeFilter, FlashKind, IssueEditField, IssueHighlightKind,
-        IssueStateFilter, IssueView, NewIssueField, PendingAction, UiMode,
+        App, AssigneeChoice, AssigneeFilter, DoctorCheckStatus, FlashKind, IssueEditField,
+        IssueHighlightKind, IssueStateFilter, IssueView, NewIssueField, PendingAction, UiMode,
     },
     domain::{IssueComment, IssueDetail, IssueState, IssueSummary},
 };
@@ -159,21 +159,6 @@ pub fn trigger_flash_effect(app: &mut App, effects: &mut TissueEffects) {
     }
 }
 
-pub fn render(app: &App, area: Rect, buffer: &mut Buffer) {
-    render_page_background(app, area, buffer);
-
-    let areas = screen_areas(app, area);
-    render_header(app, areas.header, buffer);
-    render_filters(app, areas.filters, buffer);
-    render_body(app, areas.body, buffer);
-    if let Some(command_bar) = areas.command_bar {
-        render_command_bar(app, command_bar, buffer);
-    }
-    render_footer(app, areas.footer, buffer);
-
-    render_overlay(app, area, buffer);
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ScreenAreas {
     pub header: Rect,
@@ -264,6 +249,7 @@ pub fn effect_area(app: &App, area: Rect) -> Rect {
         | UiMode::AssigneeEditor
         | UiMode::IssueLabelEditor
         | UiMode::ProjectBoardPicker
+        | UiMode::Doctor
         | UiMode::ConfirmClose
         | UiMode::Success
         | UiMode::Loading
@@ -1181,6 +1167,10 @@ fn footer_shortcuts(app: &App) -> String {
             "Enter toggle label | Ctrl+S save | type search | j/k move | Esc cancel".to_string()
         }
         UiMode::ProjectBoardPicker => "Enter open board | j/k move | Esc cancel".to_string(),
+        UiMode::Doctor if app.selected_doctor_remediation().is_some() => {
+            "r repair | j/k move | Esc close".to_string()
+        }
+        UiMode::Doctor => "j/k move | Esc close".to_string(),
         UiMode::ConfirmClose => "y/Enter reopen | Esc cancel".to_string(),
         UiMode::Success => "Any key continue".to_string(),
         UiMode::Loading => "Working".to_string(),
@@ -1201,6 +1191,7 @@ pub(crate) fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         UiMode::AssigneeEditor => Some("Assign Issue"),
         UiMode::IssueLabelEditor => Some("Edit Labels"),
         UiMode::ProjectBoardPicker => Some("Select Board"),
+        UiMode::Doctor => Some("Doctor"),
         UiMode::ConfirmClose => Some("Confirm"),
         UiMode::Success => Some("Done"),
         UiMode::Loading => Some("Working"),
@@ -1223,6 +1214,7 @@ pub(crate) fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
             }
             UiMode::IssueLabelEditor => render_issue_label_editor(app, popup, buffer),
             UiMode::ProjectBoardPicker => render_project_board_picker(app, popup, buffer),
+            UiMode::Doctor => render_doctor(app, popup, buffer),
             UiMode::Loading => render_loading_overlay(app, popup, buffer),
             UiMode::ConfirmClose => Paragraph::new("Press y to reopen, Esc to cancel")
                 .block(modal_block(title, WARNING_ACCENT))
@@ -1569,6 +1561,44 @@ fn render_project_board_picker(app: &App, area: Rect, buffer: &mut Buffer) {
     render_action_buttons("Open", rows[1], buffer);
 }
 
+fn render_doctor(app: &App, area: Rect, buffer: &mut Buffer) {
+    let rows = picker_rows_from_popup(area);
+    let mut lines = vec![Line::from(format!("repo: {}", app.repo)), Line::raw("")];
+    if app.doctor_checks.is_empty() {
+        lines.push(Line::from("No checks have run yet."));
+    } else {
+        for (index, check) in app.doctor_checks.iter().enumerate() {
+            let marker = if index == app.picker_index { ">" } else { " " };
+            let style = match check.status {
+                DoctorCheckStatus::Pass => Style::new().fg(OPEN_ACCENT),
+                DoctorCheckStatus::Warn => Style::new().fg(WARNING_ACCENT),
+                DoctorCheckStatus::Fail => Style::new().fg(ERROR_ACCENT),
+            };
+            lines.push(Line::from(vec![
+                Span::raw(marker),
+                Span::raw(" "),
+                Span::styled(check.status.label(), style.add_modifier(Modifier::BOLD)),
+                Span::raw(format!(" {}", check.name)),
+            ]));
+            lines.push(Line::from(format!("  {}", check.detail)));
+            if index == app.picker_index {
+                if let Some(remediation) = check.remediation.as_ref() {
+                    lines.push(Line::from(format!(
+                        "  Press r to run `{}`.",
+                        remediation.command
+                    )));
+                }
+            }
+        }
+    }
+
+    Paragraph::new(lines)
+        .block(modal_block("Doctor", NOTICE_ACCENT))
+        .style(modal_style())
+        .wrap(Wrap { trim: false })
+        .render(rows[0], buffer);
+}
+
 fn assignee_choice_is_active(app: &App, choice: &AssigneeChoice) -> bool {
     match (app.mode.clone(), choice) {
         (UiMode::AssigneeFilter, AssigneeChoice::Any) => {
@@ -1617,6 +1647,7 @@ fn pending_action_label(action: &PendingAction) -> &'static str {
         PendingAction::UpdateLabels => "Updating labels",
         PendingAction::UpdateProjectItem => "Moving board item",
         PendingAction::RepairAuth => "Repairing GitHub auth",
+        PendingAction::RunDoctor => "Running doctor",
     }
 }
 
@@ -2268,6 +2299,20 @@ mod tests {
     };
     use chrono::Duration;
     use ratatui::{buffer::Buffer, layout::Rect};
+
+    fn render(app: &App, area: Rect, buffer: &mut Buffer) {
+        render_page_background(app, area, buffer);
+
+        let areas = screen_areas(app, area);
+        render_header(app, areas.header, buffer);
+        render_filters(app, areas.filters, buffer);
+        render_body(app, areas.body, buffer);
+        if let Some(command_bar) = areas.command_bar {
+            render_command_bar(app, command_bar, buffer);
+        }
+        render_footer(app, areas.footer, buffer);
+        render_overlay(app, area, buffer);
+    }
 
     fn issue(number: u64, title: &str, state: IssueState, labels: &[&str]) -> IssueSummary {
         IssueSummary {
@@ -2941,6 +2986,7 @@ mod tests {
                 label: "Refresh GitHub project access".to_string(),
                 command: "gh auth refresh -s read:project".to_string(),
                 scopes: vec!["read:project".to_string()],
+                retry: None,
             }),
         );
 
@@ -2952,6 +2998,42 @@ mod tests {
         assert!(rendered.contains("Repair"));
         assert!(rendered.contains("Press r to run"));
         assert!(rendered.contains("gh auth refresh -s read:project"));
+    }
+
+    #[test]
+    fn renders_doctor_checks_with_repair_hint() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_doctor_checks(vec![
+            crate::app::DoctorCheck {
+                name: "GitHub account".to_string(),
+                status: crate::app::DoctorCheckStatus::Pass,
+                detail: "Authenticated as alice".to_string(),
+                remediation: None,
+            },
+            crate::app::DoctorCheck {
+                name: "Project board access".to_string(),
+                status: crate::app::DoctorCheckStatus::Fail,
+                detail: "Missing read:project".to_string(),
+                remediation: Some(crate::app::ErrorRemediation {
+                    label: "Refresh GitHub project access".to_string(),
+                    command: "gh auth refresh -s read:project".to_string(),
+                    scopes: vec!["read:project".to_string()],
+                    retry: Some(crate::app::RetryAction::RunDoctor),
+                }),
+            },
+        ]);
+        app.mode = UiMode::Doctor;
+        app.picker_index = 1;
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(footer_shortcuts(&app).contains("r repair"));
+        assert!(rendered.contains("Doctor"));
+        assert!(rendered.contains("pass GitHub account"));
+        assert!(rendered.contains("fail Project board access"));
+        assert!(rendered.contains("Press r to run"));
     }
 
     #[test]

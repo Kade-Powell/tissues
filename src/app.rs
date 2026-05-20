@@ -103,6 +103,7 @@ pub enum UiMode {
     IssueLabelEditor,
     ProjectBoardPicker,
     ConfirmClose,
+    Doctor,
     Success,
     Loading,
     Error,
@@ -152,6 +153,7 @@ pub enum PendingAction {
     UpdateLabels,
     UpdateProjectItem,
     RepairAuth,
+    RunDoctor,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -209,6 +211,47 @@ pub struct ErrorRemediation {
     pub label: String,
     pub command: String,
     pub scopes: Vec<String>,
+    pub retry: Option<RetryAction>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RetryAction {
+    OpenProjectBoardChooser { force_picker: bool },
+    LoadProjectBoard,
+    MoveBoardItem(BoardMoveDirection),
+    SubmitNewIssue { force_create: bool },
+    RunDoctor,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoardMoveDirection {
+    Previous,
+    Next,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DoctorCheckStatus {
+    Pass,
+    Warn,
+    Fail,
+}
+
+impl DoctorCheckStatus {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Warn => "warn",
+            Self::Fail => "fail",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DoctorCheck {
+    pub name: String,
+    pub status: DoctorCheckStatus,
+    pub detail: String,
+    pub remediation: Option<ErrorRemediation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -246,6 +289,7 @@ pub struct App {
     pub project_board_choices: Vec<ProjectBoardSummary>,
     pub project_board_config: ProjectBoardConfig,
     pub error_detail: Option<ErrorDetail>,
+    pub doctor_checks: Vec<DoctorCheck>,
     pub saved_views: Vec<SavedView>,
     pub active_view: Option<String>,
     pub triage_mode: bool,
@@ -292,6 +336,7 @@ impl App {
             project_board_choices: Vec::new(),
             project_board_config: ProjectBoardConfig::default(),
             error_detail: None,
+            doctor_checks: Vec::new(),
             saved_views: Vec::new(),
             active_view: None,
             triage_mode: false,
@@ -468,6 +513,19 @@ impl App {
             .as_ref()
             .and_then(|error| error.remediation.as_ref())
             .is_some()
+    }
+
+    pub fn set_doctor_checks(&mut self, checks: Vec<DoctorCheck>) {
+        self.doctor_checks = checks;
+        self.picker_index = self
+            .picker_index
+            .min(self.doctor_checks.len().saturating_sub(1));
+    }
+
+    pub fn selected_doctor_remediation(&self) -> Option<&ErrorRemediation> {
+        self.doctor_checks
+            .get(self.picker_index)
+            .and_then(|check| check.remediation.as_ref())
     }
 
     pub fn set_project_board(&mut self, board: ProjectBoard) {
@@ -1149,6 +1207,7 @@ impl App {
             UiMode::AssigneeEditor => self.assignee_assignment_choices().len(),
             UiMode::IssueLabelEditor => self.issue_label_choices().len(),
             UiMode::ProjectBoardPicker => self.project_board_choices.len(),
+            UiMode::Doctor => self.doctor_checks.len(),
             _ => 0,
         };
         if item_count == 0 {

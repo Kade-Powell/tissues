@@ -13,14 +13,14 @@ use ratatui::DefaultTerminal;
 
 use crate::{
     app::{
-        App, AssigneeChoice, AssigneeFilter, ErrorRemediation, FlashKind, IssueEditField,
-        IssueSort, IssueStateFilter, IssueView, NewIssueField, PendingAction, TextCursorMove,
-        UiMode,
+        App, AssigneeChoice, AssigneeFilter, BoardMoveDirection, DoctorCheck, DoctorCheckStatus,
+        ErrorRemediation, FlashKind, IssueEditField, IssueSort, IssueStateFilter, IssueView,
+        NewIssueField, PendingAction, RetryAction, TextCursorMove, UiMode,
     },
     cache::IssueCache,
     config::AppConfig,
     domain::{IssueComment, IssueState, IssueSummary, User},
-    github::IssueBackend,
+    github::{GitHubAuthStatus, IssueBackend},
     message::TissueMsg,
     realm::TissueRealm,
     ui::{self, TissueEffects},
@@ -29,12 +29,6 @@ use crate::{
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 #[cfg(target_os = "macos")]
 const MACOS_NOTIFICATION_SOUND: &str = "/System/Library/Sounds/Glass.aiff";
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum BoardMoveDirection {
-    Previous,
-    Next,
-}
 
 pub async fn run<B: IssueBackend>(
     terminal: &mut DefaultTerminal,
@@ -253,6 +247,9 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
                     "board" | "boards" => {
                         Some((PendingAction::Refresh, "Loading project boards".to_string()))
                     }
+                    "doctor" | "check" => {
+                        Some((PendingAction::RunDoctor, "Running doctor".to_string()))
+                    }
                     _ => None,
                 }
             }
@@ -411,6 +408,7 @@ async fn handle_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) 
         }
         UiMode::IssueLabelEditor => handle_issue_label_key(app, backend, key).await,
         UiMode::ProjectBoardPicker => handle_project_board_picker_key(app, backend, key).await,
+        UiMode::Doctor => handle_doctor_key(app, backend, key).await,
         UiMode::ConfirmClose => handle_confirm_key(app, backend, key).await,
         UiMode::Success => {
             app.mode = UiMode::Browsing;
@@ -676,7 +674,8 @@ fn cancel_active_screen(app: &mut App) {
         UiMode::AssigneeFilter
         | UiMode::AssigneeEditor
         | UiMode::IssueLabelEditor
-        | UiMode::ProjectBoardPicker => {
+        | UiMode::ProjectBoardPicker
+        | UiMode::Doctor => {
             app.mode = UiMode::Browsing;
             app.clear_input();
             app.editing_assignees.clear();
@@ -825,6 +824,7 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
         "list" => app.set_issue_view(IssueView::List),
         "board" => open_board_view(app, backend).await,
         "boards" => open_project_board_chooser(app, backend, true).await,
+        "doctor" | "check" => run_doctor(app, backend).await,
         "views" => {
             app.mode = UiMode::Browsing;
             let names = app.saved_view_names();
@@ -953,6 +953,7 @@ async fn open_project_board_chooser<B: IssueBackend>(
                     &details,
                     &["read:project"],
                     "Refresh GitHub project access",
+                    Some(RetryAction::OpenProjectBoardChooser { force_picker }),
                 ),
             );
         }
@@ -1013,6 +1014,7 @@ async fn load_project_board<B: IssueBackend>(app: &mut App, backend: &B) {
                     &details,
                     &["read:project"],
                     "Refresh GitHub project access",
+                    Some(RetryAction::LoadProjectBoard),
                 ),
             );
         }
@@ -1027,6 +1029,7 @@ fn github_scope_remediation(
     details: &str,
     scopes: &[&str],
     label: impl Into<String>,
+    retry: Option<RetryAction>,
 ) -> Option<ErrorRemediation> {
     if !looks_like_github_scope_error(details) {
         return None;
@@ -1039,6 +1042,7 @@ fn github_scope_remediation(
         label: label.into(),
         command: gh_auth_refresh_command(&scopes),
         scopes,
+        retry,
     })
 }
 
@@ -1072,6 +1076,170 @@ fn gh_auth_refresh_command(scopes: &[String]) -> String {
     format!("gh auth refresh {scope_args}")
 }
 
+async fn run_doctor<B: IssueBackend>(app: &mut App, backend: &B) {
+    app.begin_action(PendingAction::RunDoctor, "Running doctor");
+    let mut checks = Vec::new();
+    let auth_status = match backend.auth_status().await {
+        Ok(status) => {
+            checks.push(doctor_check(
+                "GitHub account",
+                DoctorCheckStatus::Pass,
+                format!("Authenticated as {}", status.login),
+                None,
+            ));
+            Some(status)
+        }
+        Err(err) => {
+            checks.push(doctor_check(
+                "GitHub account",
+                DoctorCheckStatus::Fail,
+                format!("{err:#}"),
+                None,
+            ));
+            None
+        }
+    };
+
+    match backend.list_issues(&app.repo, &app.filters).await {
+        Ok(issues) => checks.push(doctor_check(
+            "Issue access",
+            DoctorCheckStatus::Pass,
+            format!("Loaded {} issues from {}", issues.len(), app.repo),
+            None,
+        )),
+        Err(err) => {
+            let details = format!("{err:#}");
+            checks.push(doctor_check(
+                "Issue access",
+                DoctorCheckStatus::Fail,
+                github_scope_error_details(&details, &["repo"], "issue access"),
+                github_scope_remediation(
+                    &details,
+                    &["repo"],
+                    "Refresh GitHub repository access",
+                    Some(RetryAction::RunDoctor),
+                ),
+            ));
+        }
+    }
+
+    if let Some(status) = auth_status.as_ref() {
+        checks.push(scope_doctor_check(
+            status,
+            "Issue writes",
+            "repo",
+            "Issue create/edit/comment/close actions can write to this repository",
+            "Issue write actions may fail until repository access is refreshed",
+            "Refresh GitHub repository access",
+        ));
+        checks.push(scope_doctor_check(
+            status,
+            "Project board access",
+            "read:project",
+            "GitHub Projects can be loaded",
+            "Project boards cannot load until project read access is refreshed",
+            "Refresh GitHub project access",
+        ));
+        checks.push(scope_doctor_check(
+            status,
+            "Project board movement",
+            "project",
+            "Board items can be moved between statuses",
+            "Board moves may fail until project write access is refreshed",
+            "Refresh GitHub project write access",
+        ));
+    }
+
+    match backend.list_project_boards(&app.repo).await {
+        Ok(boards) if boards.is_empty() => checks.push(doctor_check(
+            "Repository boards",
+            DoctorCheckStatus::Warn,
+            "No GitHub Projects are attached to this repository",
+            None,
+        )),
+        Ok(boards) => checks.push(doctor_check(
+            "Repository boards",
+            DoctorCheckStatus::Pass,
+            format!("Found {} GitHub project board(s)", boards.len()),
+            None,
+        )),
+        Err(err) => {
+            let details = format!("{err:#}");
+            checks.push(doctor_check(
+                "Repository boards",
+                DoctorCheckStatus::Fail,
+                github_scope_error_details(&details, &["read:project"], "project board access"),
+                github_scope_remediation(
+                    &details,
+                    &["read:project"],
+                    "Refresh GitHub project access",
+                    Some(RetryAction::RunDoctor),
+                ),
+            ));
+        }
+    }
+
+    app.finish_action();
+    app.reset_picker();
+    let failures = checks
+        .iter()
+        .filter(|check| check.status == DoctorCheckStatus::Fail)
+        .count();
+    let warnings = checks
+        .iter()
+        .filter(|check| check.status == DoctorCheckStatus::Warn)
+        .count();
+    app.set_doctor_checks(checks);
+    app.mode = UiMode::Doctor;
+    if failures == 0 && warnings == 0 {
+        app.set_status("Doctor checks passed");
+    } else {
+        app.set_status(format!(
+            "Doctor found {failures} failure(s) and {warnings} warning(s)"
+        ));
+    }
+}
+
+fn scope_doctor_check(
+    status: &GitHubAuthStatus,
+    name: &str,
+    scope: &str,
+    pass_detail: &str,
+    fail_detail: &str,
+    remediation_label: &str,
+) -> DoctorCheck {
+    if status.has_scope(scope) {
+        doctor_check(name, DoctorCheckStatus::Pass, pass_detail, None)
+    } else {
+        let scopes = vec![scope.to_string()];
+        doctor_check(
+            name,
+            DoctorCheckStatus::Fail,
+            fail_detail,
+            Some(ErrorRemediation {
+                label: remediation_label.to_string(),
+                command: gh_auth_refresh_command(&scopes),
+                scopes,
+                retry: Some(RetryAction::RunDoctor),
+            }),
+        )
+    }
+}
+
+fn doctor_check(
+    name: impl Into<String>,
+    status: DoctorCheckStatus,
+    detail: impl Into<String>,
+    remediation: Option<ErrorRemediation>,
+) -> DoctorCheck {
+    DoctorCheck {
+        name: name.into(),
+        status,
+        detail: detail.into(),
+        remediation,
+    }
+}
+
 async fn repair_error<B: IssueBackend>(app: &mut App, backend: &B) {
     let Some(remediation) = app
         .error_detail
@@ -1081,6 +1249,14 @@ async fn repair_error<B: IssueBackend>(app: &mut App, backend: &B) {
         return;
     };
 
+    repair_remediation(app, backend, remediation).await;
+}
+
+async fn repair_remediation<B: IssueBackend>(
+    app: &mut App,
+    backend: &B,
+    remediation: ErrorRemediation,
+) {
     app.begin_action(
         PendingAction::RepairAuth,
         format!("Running {}", remediation.command),
@@ -1089,12 +1265,16 @@ async fn repair_error<B: IssueBackend>(app: &mut App, backend: &B) {
         Ok(()) => {
             app.finish_action();
             app.clear_error();
-            app.mode = UiMode::Browsing;
-            app.flash = Some(FlashKind::Success);
-            app.set_status(format!(
-                "{} complete; retry the failed action",
-                remediation.label
-            ));
+            if let Some(retry) = remediation.retry {
+                retry_action(app, backend, retry).await;
+            } else {
+                app.mode = UiMode::Browsing;
+                app.flash = Some(FlashKind::Success);
+                app.set_status(format!(
+                    "{} complete; retry the failed action",
+                    remediation.label
+                ));
+            }
         }
         Err(err) => {
             app.finish_action();
@@ -1104,6 +1284,22 @@ async fn repair_error<B: IssueBackend>(app: &mut App, backend: &B) {
                 Some(format!("Run `{}` in your terminal.", remediation.command)),
             );
         }
+    }
+}
+
+async fn retry_action<B: IssueBackend>(app: &mut App, backend: &B, retry: RetryAction) {
+    match retry {
+        RetryAction::OpenProjectBoardChooser { force_picker } => {
+            open_project_board_chooser(app, backend, force_picker).await;
+        }
+        RetryAction::LoadProjectBoard => load_project_board(app, backend).await,
+        RetryAction::MoveBoardItem(direction) => {
+            move_selected_project_issue(app, backend, direction).await;
+        }
+        RetryAction::SubmitNewIssue { force_create } => {
+            submit_new_issue(app, backend, force_create).await;
+        }
+        RetryAction::RunDoctor => run_doctor(app, backend).await,
     }
 }
 
@@ -1199,6 +1395,7 @@ async fn move_selected_project_issue<B: IssueBackend>(
                     &details,
                     &["project"],
                     "Refresh GitHub project write access",
+                    Some(RetryAction::MoveBoardItem(direction)),
                 ),
             );
         }
@@ -1222,6 +1419,7 @@ fn command_suggestions(input: &str) -> Vec<String> {
         "list",
         "board",
         "boards",
+        "doctor",
         "label ",
         "sort updated",
         "sort created",
@@ -1637,6 +1835,24 @@ async fn handle_project_board_picker_key<B: IssueBackend>(
         }
         KeyCode::Up | KeyCode::Char('k') => app.select_previous_picker_item(),
         KeyCode::Enter => select_project_board_choice(app, backend).await,
+        _ => {}
+    }
+}
+
+async fn handle_doctor_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => cancel_active_screen(app),
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.select_next_picker_item(app.doctor_checks.len());
+        }
+        KeyCode::Up | KeyCode::Char('k') => app.select_previous_picker_item(),
+        KeyCode::Char('r') if app.selected_doctor_remediation().is_some() => {
+            let remediation = app
+                .selected_doctor_remediation()
+                .expect("checked remediation")
+                .clone();
+            repair_remediation(app, backend, remediation).await;
+        }
         _ => {}
     }
 }
@@ -2181,7 +2397,12 @@ async fn submit_new_issue<B: IssueBackend>(app: &mut App, backend: &B, force_cre
                 "Create issue failed",
                 github_scope_error_details(&details, &["repo"], "issue writes"),
                 Some(issue_write_auth_hint()),
-                github_scope_remediation(&details, &["repo"], "Refresh GitHub repository access"),
+                github_scope_remediation(
+                    &details,
+                    &["repo"],
+                    "Refresh GitHub repository access",
+                    Some(RetryAction::SubmitNewIssue { force_create }),
+                ),
             );
         }
     }
@@ -2700,6 +2921,9 @@ mod tests {
         project_moves: Mutex<Vec<(String, String, String, String)>>,
         auth_refreshes: Mutex<Vec<Vec<String>>>,
         auth_refresh_error: Mutex<Option<String>>,
+        auth_login: Mutex<String>,
+        auth_scopes: Mutex<Vec<String>>,
+        auth_status_error: Mutex<Option<String>>,
     }
 
     fn issue(number: u64, title: &str, state: IssueState, comment_count: u64) -> IssueSummary {
@@ -2757,6 +2981,13 @@ mod tests {
             project_moves: Mutex::new(Vec::new()),
             auth_refreshes: Mutex::new(Vec::new()),
             auth_refresh_error: Mutex::new(None),
+            auth_login: Mutex::new("kpowel".to_string()),
+            auth_scopes: Mutex::new(vec![
+                "repo".to_string(),
+                "read:project".to_string(),
+                "project".to_string(),
+            ]),
+            auth_status_error: Mutex::new(None),
         }
     }
 
@@ -2772,6 +3003,17 @@ mod tests {
     impl IssueBackend for MockBackend {
         async fn current_login(&self) -> Result<String> {
             Ok("kpowel".to_string())
+        }
+
+        async fn auth_status(&self) -> Result<GitHubAuthStatus> {
+            if let Some(message) = self.auth_status_error.lock().unwrap().clone() {
+                return Err(color_eyre::eyre::eyre!(message));
+            }
+            Ok(GitHubAuthStatus {
+                login: self.auth_login.lock().unwrap().clone(),
+                active: true,
+                scopes: self.auth_scopes.lock().unwrap().clone(),
+            })
         }
 
         async fn list_issues(
@@ -2876,6 +3118,12 @@ mod tests {
                 return Err(color_eyre::eyre::eyre!(message));
             }
             self.auth_refreshes.lock().unwrap().push(scopes.to_vec());
+            let mut auth_scopes = self.auth_scopes.lock().unwrap();
+            for scope in scopes {
+                if !auth_scopes.iter().any(|existing| existing == scope) {
+                    auth_scopes.push(scope.clone());
+                }
+            }
             Ok(())
         }
 
@@ -3822,6 +4070,7 @@ mod tests {
                 label: "Refresh GitHub project access".to_string(),
                 command: "gh auth refresh -s read:project".to_string(),
                 scopes: vec!["read:project".to_string()],
+                retry: None,
             }),
         );
 
@@ -3841,6 +4090,109 @@ mod tests {
         assert_eq!(
             app.status,
             "Refresh GitHub project access complete; retry the failed action"
+        );
+    }
+
+    #[tokio::test]
+    async fn repairing_project_board_auth_retries_board_load() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        *backend.project_error.lock().unwrap() =
+            Some("projectsV2 field requires one of the following scopes: ['read:project']".into());
+        *backend.project_board.lock().unwrap() = Some(crate::domain::ProjectBoard {
+            title: "Roadmap".to_string(),
+            project_id: None,
+            status_field_id: None,
+            status_options: Vec::new(),
+            item_statuses: Vec::new(),
+            columns: Vec::new(),
+        });
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.mode = UiMode::Command;
+        app.input = "board".to_string();
+
+        run_command(&mut app, &backend).await;
+        *backend.project_error.lock().unwrap() = None;
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(
+            *backend.auth_refreshes.lock().unwrap(),
+            vec![vec!["read:project".to_string()]]
+        );
+        assert_eq!(app.mode, UiMode::Browsing);
+        assert_eq!(app.project_board.as_ref().unwrap().title, "Roadmap");
+        assert_eq!(app.status, "Loaded GitHub project board");
+    }
+
+    #[tokio::test]
+    async fn doctor_command_reports_missing_project_scope_with_repair() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        *backend.auth_scopes.lock().unwrap() = vec!["repo".to_string(), "read:org".to_string()];
+        *backend.project_boards.lock().unwrap() = vec![crate::domain::ProjectBoardSummary {
+            id: "PVT_roadmap".to_string(),
+            owner: "owner".to_string(),
+            number: 1,
+            title: "Roadmap".to_string(),
+            item_count: 5,
+        }];
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.mode = UiMode::Command;
+        app.input = "doctor".to_string();
+
+        run_command(&mut app, &backend).await;
+
+        assert_eq!(app.mode, UiMode::Doctor);
+        assert!(app.status.contains("Doctor found"));
+        let project_read = app
+            .doctor_checks
+            .iter()
+            .find(|check| check.name == "Project board access")
+            .expect("project read check");
+        assert_eq!(project_read.status, crate::app::DoctorCheckStatus::Fail);
+        assert_eq!(
+            project_read.remediation.as_ref().unwrap().command,
+            "gh auth refresh -s read:project"
+        );
+    }
+
+    #[tokio::test]
+    async fn doctor_repair_refreshes_scope_and_reruns_checks() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        *backend.auth_scopes.lock().unwrap() = vec!["repo".to_string()];
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_doctor_checks(vec![crate::app::DoctorCheck {
+            name: "Project board access".to_string(),
+            status: crate::app::DoctorCheckStatus::Fail,
+            detail: "Missing read:project".to_string(),
+            remediation: Some(ErrorRemediation {
+                label: "Refresh GitHub project access".to_string(),
+                command: "gh auth refresh -s read:project".to_string(),
+                scopes: vec!["read:project".to_string()],
+                retry: Some(crate::app::RetryAction::RunDoctor),
+            }),
+        }]);
+        app.mode = UiMode::Doctor;
+
+        handle_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(
+            *backend.auth_refreshes.lock().unwrap(),
+            vec![vec!["read:project".to_string()]]
+        );
+        assert_eq!(app.mode, UiMode::Doctor);
+        assert!(
+            app.doctor_checks
+                .iter()
+                .any(|check| check.name == "Project board access")
         );
     }
 

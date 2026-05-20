@@ -19,6 +19,7 @@ use crate::{
 #[async_trait]
 pub trait IssueBackend {
     async fn current_login(&self) -> Result<String>;
+    async fn auth_status(&self) -> Result<GitHubAuthStatus>;
     async fn list_issues(
         &self,
         repo: &Repository,
@@ -77,6 +78,19 @@ pub trait IssueBackend {
         number: u64,
         labels: &[String],
     ) -> Result<IssueSummary>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitHubAuthStatus {
+    pub login: String,
+    pub active: bool,
+    pub scopes: Vec<String>,
+}
+
+impl GitHubAuthStatus {
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.scopes.iter().any(|candidate| candidate == scope)
+    }
 }
 
 pub struct GitHubClient {
@@ -145,6 +159,10 @@ impl GitHubClient {
 impl IssueBackend for GitHubClient {
     async fn current_login(&self) -> Result<String> {
         self.load_current_login().await
+    }
+
+    async fn auth_status(&self) -> Result<GitHubAuthStatus> {
+        load_gh_auth_status(self.gh_user.as_deref())
     }
 
     async fn list_issues(
@@ -1026,25 +1044,62 @@ pub fn refresh_gh_auth_scopes(gh_user: Option<&str>, scopes: &[String]) -> Resul
         return Ok(());
     }
 
-    if let Some(user) = gh_user.filter(|user| !user.trim().is_empty()) {
-        let active_user = active_gh_user().ok();
-        if active_user.as_deref() != Some(user) {
-            return Err(eyre!(
-                "GitHub CLI can only refresh scopes for the active account. Run `gh auth switch -u {user}` first, then `{}`.",
-                gh_auth_refresh_command(&scopes)
-            ));
+    let active_user = gh_user.and_then(|_| active_gh_user().ok());
+    for args in gh_auth_scope_repair_commands(gh_user, active_user.as_deref(), scopes.as_slice()) {
+        let status = Command::new("gh")
+            .args(&args)
+            .status()
+            .wrap_err_with(|| format!("failed to run `{}`", gh_command_display(&args)))?;
+        if !status.success() {
+            return Err(eyre!("`{}` failed", gh_command_display(&args)));
         }
     }
-
-    let args = gh_auth_refresh_args(&scopes);
-    let status = Command::new("gh")
-        .args(&args)
-        .status()
-        .wrap_err_with(|| format!("failed to run `{}`", gh_command_display(&args)))?;
-    if !status.success() {
-        return Err(eyre!("`{}` failed", gh_command_display(&args)));
-    }
     Ok(())
+}
+
+pub fn load_gh_auth_status(gh_user: Option<&str>) -> Result<GitHubAuthStatus> {
+    let output = Command::new("gh")
+        .args(["auth", "status", "--json", "hosts"])
+        .output()
+        .wrap_err("failed to inspect GitHub CLI auth status")?;
+    if !output.status.success() {
+        return Err(eyre!("`gh auth status --json hosts` failed"));
+    }
+    parse_gh_auth_status_json(String::from_utf8_lossy(&output.stdout).as_ref(), gh_user)
+}
+
+fn parse_gh_auth_status_json(output: &str, gh_user: Option<&str>) -> Result<GitHubAuthStatus> {
+    let value: serde_json::Value =
+        serde_json::from_str(output).wrap_err("failed to parse `gh auth status` JSON")?;
+    let accounts = value["hosts"]["github.com"]
+        .as_array()
+        .ok_or_else(|| eyre!("no github.com auth status found"))?;
+    let account = if let Some(user) = gh_user.filter(|user| !user.trim().is_empty()) {
+        accounts
+            .iter()
+            .find(|account| account["login"].as_str() == Some(user))
+            .ok_or_else(|| eyre!("GitHub CLI account `{user}` was not found"))?
+    } else {
+        accounts
+            .iter()
+            .find(|account| account["active"] == true)
+            .ok_or_else(|| eyre!("no active GitHub CLI account found"))?
+    };
+
+    let scopes = account["scopes"]
+        .as_str()
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|scope| !scope.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+
+    Ok(GitHubAuthStatus {
+        login: account["login"].as_str().unwrap_or("unknown").to_string(),
+        active: account["active"].as_bool().unwrap_or(false),
+        scopes,
+    })
 }
 
 fn active_gh_user() -> Result<String> {
@@ -1074,19 +1129,36 @@ fn gh_token_args(gh_user: Option<&str>) -> Vec<&str> {
     args
 }
 
-fn gh_auth_refresh_args<'a>(scopes: &'a [&'a str]) -> Vec<&'a str> {
-    let mut args = vec!["auth", "refresh"];
-    for scope in scopes {
-        args.extend(["-s", scope]);
+fn gh_auth_scope_repair_commands<S: AsRef<str>>(
+    gh_user: Option<&str>,
+    active_user: Option<&str>,
+    scopes: &[S],
+) -> Vec<Vec<String>> {
+    let mut commands = Vec::new();
+    if let Some(user) = gh_user.filter(|user| !user.trim().is_empty())
+        && active_user != Some(user)
+    {
+        commands.push(gh_auth_switch_args(user));
     }
-    args
+    let mut refresh = vec!["auth".to_string(), "refresh".to_string()];
+    for scope in scopes {
+        refresh.extend(["-s".to_string(), scope.as_ref().to_string()]);
+    }
+    commands.push(refresh);
+    commands
 }
 
-fn gh_auth_refresh_command(scopes: &[&str]) -> String {
-    gh_command_display(&gh_auth_refresh_args(scopes))
+fn gh_auth_switch_args(user: &str) -> Vec<String> {
+    vec![
+        "auth".to_string(),
+        "switch".to_string(),
+        "--user".to_string(),
+        user.to_string(),
+    ]
 }
 
-fn gh_command_display(args: &[&str]) -> String {
+fn gh_command_display<S: AsRef<str>>(args: &[S]) -> String {
+    let args = args.iter().map(AsRef::as_ref).collect::<Vec<_>>();
     format!("gh {}", args.join(" "))
 }
 
@@ -1189,6 +1261,29 @@ mod tests {
         assert_eq!(
             gh_token_args(Some("Kade-Powell")),
             vec!["auth", "token", "--user", "Kade-Powell"]
+        );
+    }
+
+    #[test]
+    fn auth_scope_repair_switches_to_configured_inactive_user_before_refreshing() {
+        let scopes = vec!["project".to_string()];
+
+        assert_eq!(
+            gh_auth_scope_repair_commands(Some("Kade-Powell"), Some("other-user"), &scopes),
+            vec![
+                vec!["auth", "switch", "--user", "Kade-Powell"],
+                vec!["auth", "refresh", "-s", "project"],
+            ]
+        );
+    }
+
+    #[test]
+    fn auth_scope_repair_skips_switch_when_configured_user_is_active() {
+        let scopes = vec!["read:project".to_string()];
+
+        assert_eq!(
+            gh_auth_scope_repair_commands(Some("Kade-Powell"), Some("Kade-Powell"), &scopes),
+            vec![vec!["auth", "refresh", "-s", "read:project"]]
         );
     }
 }
