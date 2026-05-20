@@ -2,6 +2,10 @@
 
 tissues is a Rust terminal app for working through GitHub issues in one repository at a time. It uses Ratatui for the interface, TachyonFX for terminal animations, Octocrab for GitHub API calls, and the GitHub CLI for authentication.
 
+It is built for maintainers who want a fast issue list, a GitHub Projects-style
+board, inline editing, labels, assignees, comments, and auth diagnostics without
+leaving the terminal.
+
 For setup, workflows, board movement, auth scopes, and troubleshooting, see the
 [user guide](docs/USER_GUIDE.md).
 
@@ -93,11 +97,7 @@ gh auth refresh -s project
 Install from crates.io:
 
 ```bash
-# Latest
 cargo install tissues --locked
-
-# Specific version
-cargo install tissues --version "0.2.0" --locked
 ```
 
 Validate:
@@ -230,6 +230,13 @@ prek install --hook-type pre-push
 The commit-message hook enforces Conventional Commits, and the pre-push hook runs the quick formatting and packaging checks. Conventional Commit messages also drive the release workflow.
 
 Releases are driven by Conventional Commit messages on `main`. Breaking changes create a major release, `feat:` creates a minor release, and any other Conventional Commit type creates a patch release. The release workflow commits the package version, tags `vX.Y.Z`, creates the GitHub release, and publishes `tissues` to crates.io with `CRATES_IO_TOKEN`.
+
+## Contributing
+
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the
+development loop, commit conventions, test expectations, and TUI architecture
+rules. Please report security issues through [SECURITY.md](SECURITY.md) rather
+than public issues.
 
 The core code is split by responsibility:
 
