@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::{process::Command, sync::RwLock};
 
 use async_trait::async_trait;
 use color_eyre::eyre::{Result, WrapErr, eyre};
@@ -94,7 +94,7 @@ impl GitHubAuthStatus {
 }
 
 pub struct GitHubClient {
-    crab: Octocrab,
+    crab: RwLock<Octocrab>,
     gh_user: Option<String>,
 }
 
@@ -112,20 +112,29 @@ impl GitHubClient {
     }
 
     fn from_token_for_user(token: String, gh_user: Option<&str>) -> Result<Self> {
-        let crab = Octocrab::builder()
-            .personal_token(token)
-            .build()
-            .wrap_err("failed to build GitHub client")?;
-
         Ok(Self {
-            crab,
+            crab: RwLock::new(build_github_client(token)?),
             gh_user: gh_user.map(ToOwned::to_owned),
         })
     }
 
+    fn crab(&self) -> Octocrab {
+        self.crab
+            .read()
+            .expect("GitHub client lock poisoned")
+            .clone()
+    }
+
+    fn reload_gh_client(&self) -> Result<()> {
+        let token = load_gh_token(self.gh_user.as_deref())?;
+        let crab = build_github_client(token)?;
+        *self.crab.write().expect("GitHub client lock poisoned") = crab;
+        Ok(())
+    }
+
     pub async fn load_current_login(&self) -> Result<String> {
-        let user = self
-            .crab
+        let crab = self.crab();
+        let user = crab
             .current()
             .user()
             .await
@@ -138,7 +147,7 @@ impl GitHubClient {
         repo: &Repository,
         path: impl Into<String>,
     ) -> Option<String> {
-        self.crab
+        self.crab()
             .repos(&repo.owner, &repo.name)
             .get_content()
             .path(path)
@@ -153,6 +162,13 @@ impl GitHubClient {
                     .and_then(|item| item.decoded_content())
             })
     }
+}
+
+fn build_github_client(token: String) -> Result<Octocrab> {
+    Octocrab::builder()
+        .personal_token(token)
+        .build()
+        .wrap_err("failed to build GitHub client")
 }
 
 #[async_trait]
@@ -178,7 +194,8 @@ impl IssueBackend for GitHubClient {
             AssigneeFilter::User(user) => Some(user.clone()),
         };
 
-        let handler = self.crab.issues(&repo.owner, &repo.name);
+        let crab = self.crab();
+        let handler = crab.issues(&repo.owner, &repo.name);
         let mut request = handler
             .list()
             .state(to_param_state(&filters.state))
@@ -198,8 +215,7 @@ impl IssueBackend for GitHubClient {
             .send()
             .await
             .wrap_err("failed to list GitHub issues")?;
-        let issues = self
-            .crab
+        let issues = crab
             .all_pages(page)
             .await
             .wrap_err("failed to load all GitHub issue pages")?;
@@ -214,8 +230,8 @@ impl IssueBackend for GitHubClient {
     }
 
     async fn get_issue(&self, repo: &Repository, number: u64) -> Result<IssueDetail> {
-        let issue = self
-            .crab
+        let crab = self.crab();
+        let issue = crab
             .issues(&repo.owner, &repo.name)
             .get(number)
             .await
@@ -231,16 +247,15 @@ impl IssueBackend for GitHubClient {
     }
 
     async fn list_comments(&self, repo: &Repository, number: u64) -> Result<Vec<IssueComment>> {
-        let page = self
-            .crab
+        let crab = self.crab();
+        let page = crab
             .issues(&repo.owner, &repo.name)
             .list_comments(number)
             .per_page(100)
             .send()
             .await
             .wrap_err_with(|| format!("failed to list comments for issue #{number}"))?;
-        let comments = self
-            .crab
+        let comments = crab
             .all_pages(page)
             .await
             .wrap_err("failed to load all comment pages")?;
@@ -249,16 +264,15 @@ impl IssueBackend for GitHubClient {
     }
 
     async fn list_labels(&self, repo: &Repository) -> Result<Vec<Label>> {
-        let page = self
-            .crab
+        let crab = self.crab();
+        let page = crab
             .issues(&repo.owner, &repo.name)
             .list_labels_for_repo()
             .per_page(100)
             .send()
             .await
             .wrap_err("failed to list repository labels")?;
-        let mut labels = self
-            .crab
+        let mut labels = crab
             .all_pages(page)
             .await
             .wrap_err("failed to load all repository labels")?
@@ -283,8 +297,8 @@ impl IssueBackend for GitHubClient {
             });
         }
 
-        if let Ok(mut directory) = self
-            .crab
+        let crab = self.crab();
+        if let Ok(mut directory) = crab
             .repos(&repo.owner, &repo.name)
             .get_content()
             .path(".github/ISSUE_TEMPLATE")
@@ -313,16 +327,15 @@ impl IssueBackend for GitHubClient {
     }
 
     async fn list_collaborators(&self, repo: &Repository) -> Result<Vec<User>> {
-        let page = self
-            .crab
+        let crab = self.crab();
+        let page = crab
             .repos(&repo.owner, &repo.name)
             .list_collaborators()
             .per_page(100)
             .send()
             .await
             .wrap_err("failed to list repository collaborators")?;
-        let mut collaborators = self
-            .crab
+        let mut collaborators = crab
             .all_pages(page)
             .await
             .wrap_err("failed to load all repository collaborators")?
@@ -349,8 +362,8 @@ impl IssueBackend for GitHubClient {
     }
 
     async fn list_project_boards(&self, repo: &Repository) -> Result<Vec<ProjectBoardSummary>> {
-        let response: RepositoryProjectChoicesResponse = self
-            .crab
+        let crab = self.crab();
+        let response: RepositoryProjectChoicesResponse = crab
             .graphql(&json!({
                 "query": REPOSITORY_PROJECT_CHOICES_QUERY,
                 "variables": { "owner": repo.owner, "name": repo.name }
@@ -380,8 +393,8 @@ impl IssueBackend for GitHubClient {
         field_id: &str,
         option_id: &str,
     ) -> Result<()> {
-        let _: serde_json::Value = self
-            .crab
+        let crab = self.crab();
+        let _: serde_json::Value = crab
             .graphql(&json!({
                 "query": UPDATE_PROJECT_ITEM_STATUS_MUTATION,
                 "variables": {
@@ -397,7 +410,8 @@ impl IssueBackend for GitHubClient {
     }
 
     async fn refresh_auth_scopes(&self, scopes: &[String]) -> Result<()> {
-        refresh_gh_auth_scopes(self.gh_user.as_deref(), scopes)
+        refresh_gh_auth_scopes(self.gh_user.as_deref(), scopes)?;
+        self.reload_gh_client()
     }
 
     async fn create_issue(
@@ -407,8 +421,8 @@ impl IssueBackend for GitHubClient {
         body: &str,
         labels: &[String],
     ) -> Result<IssueSummary> {
-        let issue = self
-            .crab
+        let crab = self.crab();
+        let issue = crab
             .issues(&repo.owner, &repo.name)
             .create(title)
             .body(body.to_string())
@@ -426,8 +440,8 @@ impl IssueBackend for GitHubClient {
         number: u64,
         body: &str,
     ) -> Result<IssueComment> {
-        let comment = self
-            .crab
+        let crab = self.crab();
+        let comment = crab
             .issues(&repo.owner, &repo.name)
             .create_comment(number, body)
             .await
@@ -442,8 +456,8 @@ impl IssueBackend for GitHubClient {
         number: u64,
         state: IssueState,
     ) -> Result<IssueSummary> {
-        let issue = self
-            .crab
+        let crab = self.crab();
+        let issue = crab
             .issues(&repo.owner, &repo.name)
             .update(number)
             .state(match state {
@@ -464,8 +478,8 @@ impl IssueBackend for GitHubClient {
         title: &str,
         body: &str,
     ) -> Result<IssueSummary> {
-        let issue = self
-            .crab
+        let crab = self.crab();
+        let issue = crab
             .issues(&repo.owner, &repo.name)
             .update(number)
             .title(title)
@@ -483,8 +497,8 @@ impl IssueBackend for GitHubClient {
         number: u64,
         assignees: &[String],
     ) -> Result<IssueSummary> {
-        let issue = self
-            .crab
+        let crab = self.crab();
+        let issue = crab
             .issues(&repo.owner, &repo.name)
             .update(number)
             .assignees(assignees)
@@ -501,8 +515,8 @@ impl IssueBackend for GitHubClient {
         number: u64,
         labels: &[String],
     ) -> Result<IssueSummary> {
-        let issue = self
-            .crab
+        let crab = self.crab();
+        let issue = crab
             .issues(&repo.owner, &repo.name)
             .update(number)
             .labels(labels)
@@ -528,8 +542,8 @@ impl GitHubClient {
             return self.owner_project_id(owner, number).await;
         }
 
-        let response: RepositoryProjectsResponse = self
-            .crab
+        let crab = self.crab();
+        let response: RepositoryProjectsResponse = crab
             .graphql(&json!({
                 "query": REPOSITORY_PROJECTS_QUERY,
                 "variables": { "owner": repo.owner, "name": repo.name }
@@ -554,8 +568,8 @@ impl GitHubClient {
     }
 
     async fn user_project_id(&self, owner: &str, number: u32) -> Result<Option<String>> {
-        let response: UserProjectLookupResponse = self
-            .crab
+        let crab = self.crab();
+        let response: UserProjectLookupResponse = crab
             .graphql(&json!({
                 "query": PROJECT_BY_USER_QUERY,
                 "variables": { "owner": owner, "number": number }
@@ -571,8 +585,8 @@ impl GitHubClient {
     }
 
     async fn organization_project_id(&self, owner: &str, number: u32) -> Result<Option<String>> {
-        let response: OrganizationProjectLookupResponse = self
-            .crab
+        let crab = self.crab();
+        let response: OrganizationProjectLookupResponse = crab
             .graphql(&json!({
                 "query": PROJECT_BY_ORGANIZATION_QUERY,
                 "variables": { "owner": owner, "number": number }
@@ -593,8 +607,8 @@ impl GitHubClient {
         owner: &str,
         number: u32,
     ) -> Result<Option<String>> {
-        let response: RepositoryProjectChoicesResponse = self
-            .crab
+        let crab = self.crab();
+        let response: RepositoryProjectChoicesResponse = crab
             .graphql(&json!({
                 "query": REPOSITORY_PROJECT_CHOICES_QUERY,
                 "variables": { "owner": repo.owner, "name": repo.name }
@@ -631,8 +645,8 @@ impl GitHubClient {
         let mut columns = Vec::<ProjectColumn>::new();
 
         loop {
-            let response: ProjectItemsResponse = self
-                .crab
+            let crab = self.crab();
+            let response: ProjectItemsResponse = crab
                 .graphql(&json!({
                     "query": PROJECT_ITEMS_QUERY,
                     "variables": {
