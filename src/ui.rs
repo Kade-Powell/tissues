@@ -1134,6 +1134,10 @@ fn footer_shortcuts(app: &App) -> String {
             ": commands | v view | t triage | n new | x close | j/k move | Enter open | q/ctrl+c quit"
                 .to_string()
         }
+        UiMode::IssueDetail if app.issue_view == IssueView::Board => {
+            "Esc board | Left/Right move | v view | Enter fold | j/k scroll | PgUp/PgDn detail | : commands"
+                .to_string()
+        }
         UiMode::IssueDetail => {
             "Esc list | v view | Enter fold | j/k scroll | PgUp/PgDn detail | : commands"
                 .to_string()
@@ -2558,6 +2562,10 @@ mod tests {
         assert!(!footer_shortcuts(&app).contains("A assign"));
 
         app.set_issue_view(IssueView::Board);
+        assert!(footer_shortcuts(&app).contains("Left/Right move"));
+
+        app.mode = UiMode::IssueDetail;
+        assert!(footer_shortcuts(&app).contains("Esc board"));
         assert!(footer_shortcuts(&app).contains("Left/Right move"));
 
         app.set_issue_view(IssueView::List);

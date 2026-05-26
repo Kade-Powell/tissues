@@ -700,6 +700,8 @@ impl GitHubClient {
             cursor = project.items.page_info.end_cursor;
         }
 
+        let columns = order_project_columns(columns, &status_options);
+
         Ok(Some(ProjectBoard {
             title: title.unwrap_or_else(|| "Project".to_string()),
             project_id: Some(project_id.to_string()),
@@ -720,6 +722,20 @@ fn upsert_project_column(columns: &mut Vec<ProjectColumn>, name: String) -> &mut
         issues: Vec::new(),
     });
     columns.last_mut().expect("column just pushed")
+}
+
+fn order_project_columns(
+    mut columns: Vec<ProjectColumn>,
+    status_options: &[ProjectStatusOption],
+) -> Vec<ProjectColumn> {
+    let mut ordered = Vec::with_capacity(columns.len());
+    for option in status_options {
+        if let Some(index) = columns.iter().position(|column| column.name == option.name) {
+            ordered.push(columns.remove(index));
+        }
+    }
+    ordered.extend(columns);
+    ordered
 }
 
 const REPOSITORY_PROJECTS_QUERY: &str = r#"
@@ -1422,6 +1438,52 @@ mod tests {
                 .unwrap()
                 .number,
             42
+        );
+    }
+
+    #[test]
+    fn project_columns_follow_status_option_order() {
+        let columns = vec![
+            ProjectColumn {
+                name: "Done".to_string(),
+                issues: Vec::new(),
+            },
+            ProjectColumn {
+                name: "Next Up".to_string(),
+                issues: Vec::new(),
+            },
+            ProjectColumn {
+                name: "Backlog".to_string(),
+                issues: Vec::new(),
+            },
+            ProjectColumn {
+                name: "No status".to_string(),
+                issues: Vec::new(),
+            },
+        ];
+        let status_options = vec![
+            ProjectStatusOption {
+                id: "backlog".to_string(),
+                name: "Backlog".to_string(),
+            },
+            ProjectStatusOption {
+                id: "next-up".to_string(),
+                name: "Next Up".to_string(),
+            },
+            ProjectStatusOption {
+                id: "done".to_string(),
+                name: "Done".to_string(),
+            },
+        ];
+
+        let ordered = order_project_columns(columns, &status_options);
+
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Backlog", "Next Up", "Done", "No status"]
         );
     }
 }

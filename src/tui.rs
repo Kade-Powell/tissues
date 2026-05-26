@@ -552,12 +552,14 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
         KeyCode::Char('c') if app.triage_mode && app.selected_issue().is_some() => {
             open_comment_composer(app, backend).await;
         }
-        KeyCode::Char('j') | KeyCode::Down => {
-            app.select_next();
+        KeyCode::Char('j') | KeyCode::Down if app.issue_view == IssueView::Board => {
+            select_next_board_issue(app);
         }
-        KeyCode::Char('k') | KeyCode::Up => {
-            app.select_previous();
+        KeyCode::Char('j') | KeyCode::Down => app.select_next(),
+        KeyCode::Char('k') | KeyCode::Up if app.issue_view == IssueView::Board => {
+            select_previous_board_issue(app);
         }
+        KeyCode::Char('k') | KeyCode::Up => app.select_previous(),
         KeyCode::Enter => open_selected_detail(app, backend).await,
         KeyCode::Char(':') => open_command_prompt(app),
         KeyCode::Char('n') => open_new_issue(app, backend).await,
@@ -604,6 +606,45 @@ async fn handle_issue_detail_key<B: IssueBackend>(app: &mut App, backend: &B, ke
     }
 }
 
+fn select_next_board_issue(app: &mut App) {
+    select_relative_board_issue(app, 1);
+}
+
+fn select_previous_board_issue(app: &mut App) {
+    select_relative_board_issue(app, -1);
+}
+
+fn select_relative_board_issue(app: &mut App, offset: isize) {
+    let numbers = visible_board_issue_numbers(app);
+    if numbers.is_empty() {
+        return;
+    }
+
+    let selected_number = app.selected_issue().map(|issue| issue.number);
+    let current_index = selected_number
+        .and_then(|number| numbers.iter().position(|candidate| *candidate == number));
+    let target_index = match (current_index, offset.is_positive()) {
+        (Some(index), true) => (index + 1).min(numbers.len() - 1),
+        (Some(index), false) => index.saturating_sub(1),
+        (None, true) => 0,
+        (None, false) => numbers.len() - 1,
+    };
+    app.select_issue_number(numbers[target_index]);
+}
+
+fn visible_board_issue_numbers(app: &App) -> Vec<u64> {
+    app.project_board
+        .as_ref()
+        .map(|board| {
+            board
+                .columns
+                .iter()
+                .flat_map(|column| column.issues.iter().map(|issue| issue.number))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 async fn handle_mouse<B: IssueBackend>(
     app: &mut App,
     backend: &B,
@@ -616,12 +657,18 @@ async fn handle_mouse<B: IssueBackend>(
                 handle_mouse_target(app, backend, target).await;
             }
         }
-        MouseEventKind::ScrollDown if app.mode == UiMode::Browsing => {
-            app.select_next();
+        MouseEventKind::ScrollDown
+            if app.mode == UiMode::Browsing && app.issue_view == IssueView::Board =>
+        {
+            select_next_board_issue(app);
         }
-        MouseEventKind::ScrollUp if app.mode == UiMode::Browsing => {
-            app.select_previous();
+        MouseEventKind::ScrollDown if app.mode == UiMode::Browsing => app.select_next(),
+        MouseEventKind::ScrollUp
+            if app.mode == UiMode::Browsing && app.issue_view == IssueView::Board =>
+        {
+            select_previous_board_issue(app);
         }
+        MouseEventKind::ScrollUp if app.mode == UiMode::Browsing => app.select_previous(),
         MouseEventKind::ScrollDown if app.mode == UiMode::IssueDetail => {
             if ui::mouse_target(app, area, mouse.column, mouse.row)
                 == Some(ui::MouseTarget::DetailPanel)
@@ -629,7 +676,11 @@ async fn handle_mouse<B: IssueBackend>(
                 app.scroll_detail_down();
                 return;
             }
-            app.select_next();
+            if app.issue_view == IssueView::Board {
+                select_next_board_issue(app);
+            } else {
+                app.select_next();
+            }
             open_selected_detail(app, backend).await;
         }
         MouseEventKind::ScrollUp if app.mode == UiMode::IssueDetail => {
@@ -639,7 +690,11 @@ async fn handle_mouse<B: IssueBackend>(
                 app.scroll_detail_up();
                 return;
             }
-            app.select_previous();
+            if app.issue_view == IssueView::Board {
+                select_previous_board_issue(app);
+            } else {
+                app.select_previous();
+            }
             open_selected_detail(app, backend).await;
         }
         _ => {}
@@ -4113,6 +4168,132 @@ mod tests {
         );
         assert_eq!(app.status, "Moved issue #1 to Doing");
         assert_eq!(app.project_board.as_ref().unwrap().columns[0].name, "Doing");
+    }
+
+    #[tokio::test]
+    async fn board_navigation_follows_visible_column_order() {
+        let backend = backend_with_issues(vec![
+            issue(1, "One", IssueState::Open, 1),
+            issue(2, "Two", IssueState::Open, 1),
+            issue(3, "Three", IssueState::Open, 1),
+        ]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_issues(vec![
+            issue(3, "Three", IssueState::Open, 1),
+            issue(1, "One", IssueState::Open, 1),
+            issue(2, "Two", IssueState::Open, 1),
+        ]);
+        app.select_issue_number(1);
+        app.set_project_board(crate::domain::ProjectBoard {
+            title: "Roadmap".to_string(),
+            project_id: Some("project-id".to_string()),
+            status_field_id: Some("status-field-id".to_string()),
+            status_options: Vec::new(),
+            item_statuses: Vec::new(),
+            columns: vec![
+                crate::domain::ProjectColumn {
+                    name: "Todo".to_string(),
+                    issues: vec![
+                        issue(1, "One", IssueState::Open, 1),
+                        issue(2, "Two", IssueState::Open, 1),
+                    ],
+                },
+                crate::domain::ProjectColumn {
+                    name: "Doing".to_string(),
+                    issues: vec![issue(3, "Three", IssueState::Open, 1)],
+                },
+            ],
+        });
+        app.set_issue_view(IssueView::Board);
+
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        )
+        .await;
+        assert_eq!(app.selected_issue().unwrap().number, 2);
+
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        )
+        .await;
+        assert_eq!(app.selected_issue().unwrap().number, 3);
+
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        )
+        .await;
+        assert_eq!(app.selected_issue().unwrap().number, 2);
+    }
+
+    #[tokio::test]
+    async fn board_mouse_wheel_follows_visible_column_order() {
+        let backend = backend_with_issues(vec![
+            issue(1, "One", IssueState::Open, 1),
+            issue(2, "Two", IssueState::Open, 1),
+            issue(3, "Three", IssueState::Open, 1),
+        ]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_issues(vec![
+            issue(3, "Three", IssueState::Open, 1),
+            issue(1, "One", IssueState::Open, 1),
+            issue(2, "Two", IssueState::Open, 1),
+        ]);
+        app.select_issue_number(1);
+        app.set_project_board(crate::domain::ProjectBoard {
+            title: "Roadmap".to_string(),
+            project_id: Some("project-id".to_string()),
+            status_field_id: Some("status-field-id".to_string()),
+            status_options: Vec::new(),
+            item_statuses: Vec::new(),
+            columns: vec![
+                crate::domain::ProjectColumn {
+                    name: "Todo".to_string(),
+                    issues: vec![
+                        issue(1, "One", IssueState::Open, 1),
+                        issue(2, "Two", IssueState::Open, 1),
+                    ],
+                },
+                crate::domain::ProjectColumn {
+                    name: "Doing".to_string(),
+                    issues: vec![issue(3, "Three", IssueState::Open, 1)],
+                },
+            ],
+        });
+        app.set_issue_view(IssueView::Board);
+
+        handle_mouse(
+            &mut app,
+            &backend,
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 10,
+                row: 12,
+                modifiers: KeyModifiers::NONE,
+            },
+            ratatui::layout::Rect::new(0, 0, 120, 32),
+        )
+        .await;
+        assert_eq!(app.selected_issue().unwrap().number, 2);
+
+        handle_mouse(
+            &mut app,
+            &backend,
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 10,
+                row: 12,
+                modifiers: KeyModifiers::NONE,
+            },
+            ratatui::layout::Rect::new(0, 0, 120, 32),
+        )
+        .await;
+        assert_eq!(app.selected_issue().unwrap().number, 3);
     }
 
     #[tokio::test]
