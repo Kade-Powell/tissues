@@ -14,6 +14,7 @@ use crossterm::{
         MouseEvent, MouseEventKind,
     },
     execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::DefaultTerminal;
 
@@ -33,6 +34,7 @@ use crate::{
 };
 
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const INPUT_LISTENER_PAUSE_GRACE: Duration = Duration::from_millis(50);
 #[cfg(target_os = "macos")]
 const MACOS_NOTIFICATION_SOUND: &str = "/System/Library/Sounds/Glass.aiff";
 
@@ -104,7 +106,24 @@ pub async fn run<B: IssueBackend>(
                             false,
                         )?;
                     }
+
+                    let external_auth_repair = external_auth_repair_command(app, key);
+                    if let Some(command) = external_auth_repair.as_deref() {
+                        suspend_tui_for_external_command(
+                            terminal,
+                            &mut realm,
+                            &mut mouse_capture_enabled,
+                            command,
+                        )?;
+                    }
                     handle_key(app, backend, key).await;
+                    if external_auth_repair.is_some() {
+                        resume_tui_after_external_command(
+                            terminal,
+                            &mut realm,
+                            &mut mouse_capture_enabled,
+                        )?;
+                    }
                 }
                 TissueMsg::Mouse(mouse) => {
                     handle_mouse(app, backend, mouse, terminal.size()?.into()).await;
@@ -157,6 +176,55 @@ fn sync_mouse_capture(app: &App, mouse_capture_enabled: &mut bool) -> Result<()>
 
 fn mouse_capture_should_be_enabled(app: &App) -> bool {
     app.mode != UiMode::Error
+}
+
+fn external_auth_repair_command(app: &App, key: KeyEvent) -> Option<String> {
+    if key.code != KeyCode::Char('r') {
+        return None;
+    }
+
+    match app.mode {
+        UiMode::Error => app
+            .error_detail
+            .as_ref()
+            .and_then(|error| error.remediation.as_ref())
+            .map(|remediation| remediation.command.clone()),
+        UiMode::Doctor => app
+            .selected_doctor_remediation()
+            .map(|remediation| remediation.command.clone()),
+        _ => None,
+    }
+}
+
+fn suspend_tui_for_external_command(
+    terminal: &mut DefaultTerminal,
+    realm: &mut TissueRealm,
+    mouse_capture_enabled: &mut bool,
+    command: &str,
+) -> Result<()> {
+    realm.lock_ports()?;
+    thread::sleep(INPUT_LISTENER_PAUSE_GRACE);
+    disable_raw_mode()?;
+    execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
+    *mouse_capture_enabled = false;
+    terminal.show_cursor()?;
+    println!("Running `{command}` outside tissues.");
+    println!("Complete the GitHub CLI prompt; tissues will return when it finishes.");
+    io::stdout().flush()?;
+    Ok(())
+}
+
+fn resume_tui_after_external_command(
+    terminal: &mut DefaultTerminal,
+    realm: &mut TissueRealm,
+    mouse_capture_enabled: &mut bool,
+) -> Result<()> {
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
+    terminal.clear()?;
+    realm.unlock_ports()?;
+    *mouse_capture_enabled = false;
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -4143,6 +4211,59 @@ mod tests {
         assert_eq!(
             app.status,
             "Refresh GitHub project access complete; retry the failed action"
+        );
+    }
+
+    #[test]
+    fn external_auth_repair_command_detects_error_repair_key() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.show_error_with_remediation(
+            "Project board load failed",
+            "GitHub denied project board access because the token is missing `read:project`.",
+            Some("Run `gh auth refresh -s read:project`.".to_string()),
+            Some(ErrorRemediation {
+                label: "Refresh GitHub project access".to_string(),
+                command: "gh auth refresh -s read:project".to_string(),
+                scopes: vec!["read:project".to_string()],
+                retry: Some(RetryAction::LoadProjectBoard),
+            }),
+        );
+
+        assert_eq!(
+            external_auth_repair_command(
+                &app,
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)
+            ),
+            Some("gh auth refresh -s read:project".to_string())
+        );
+        assert_eq!(
+            external_auth_repair_command(&app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            None
+        );
+    }
+
+    #[test]
+    fn external_auth_repair_command_detects_doctor_repair_key() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.mode = UiMode::Doctor;
+        app.set_doctor_checks(vec![doctor_check(
+            "Project board access",
+            DoctorCheckStatus::Fail,
+            "Missing read:project",
+            Some(ErrorRemediation {
+                label: "Refresh GitHub project access".to_string(),
+                command: "gh auth refresh -s read:project".to_string(),
+                scopes: vec!["read:project".to_string()],
+                retry: Some(RetryAction::RunDoctor),
+            }),
+        )]);
+
+        assert_eq!(
+            external_auth_repair_command(
+                &app,
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)
+            ),
+            Some("gh auth refresh -s read:project".to_string())
         );
     }
 

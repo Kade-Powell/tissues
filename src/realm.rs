@@ -89,6 +89,14 @@ impl TissueRealm {
         self.app.tick(PollStrategy::Once(timeout))
     }
 
+    pub fn lock_ports(&mut self) -> ApplicationResult<()> {
+        self.app.lock_ports()
+    }
+
+    pub fn unlock_ports(&mut self) -> ApplicationResult<()> {
+        self.app.unlock_ports()
+    }
+
     pub fn render(&mut self, app_state: &App, frame: &mut Frame, area: Rect) {
         self.sync_surfaces(app_state);
 
