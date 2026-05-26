@@ -359,8 +359,9 @@ impl IssueBackend for GitHubClient {
             .wrap_err("failed to list repository GitHub projects")?;
         Ok(response
             .repository
-            .projects_v2
-            .nodes
+            .and_then(|repository| repository.projects_v2)
+            .map(|projects| projects.nodes)
+            .unwrap_or_default()
             .into_iter()
             .map(|project| ProjectBoardSummary {
                 id: project.id,
@@ -537,8 +538,9 @@ impl GitHubClient {
             .wrap_err("failed to list repository GitHub projects")?;
         Ok(response
             .repository
-            .projects_v2
-            .nodes
+            .and_then(|repository| repository.projects_v2)
+            .map(|projects| projects.nodes)
+            .unwrap_or_default()
             .into_iter()
             .next()
             .map(|project| project.id))
@@ -601,8 +603,9 @@ impl GitHubClient {
             .wrap_err("failed to list repository GitHub projects")?;
         Ok(response
             .repository
-            .projects_v2
-            .nodes
+            .and_then(|repository| repository.projects_v2)
+            .map(|projects| projects.nodes)
+            .unwrap_or_default()
             .into_iter()
             .find(|project| {
                 project.number == number
@@ -808,13 +811,13 @@ mutation UpdateProjectItemStatus(
 
 #[derive(Debug, Deserialize)]
 struct RepositoryProjectsResponse {
-    repository: RepositoryProjects,
+    repository: Option<RepositoryProjects>,
 }
 
 #[derive(Debug, Deserialize)]
 struct RepositoryProjects {
     #[serde(rename = "projectsV2")]
-    projects_v2: ProjectNodes,
+    projects_v2: Option<ProjectNodes>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -829,13 +832,13 @@ struct ProjectNode {
 
 #[derive(Debug, Deserialize)]
 struct RepositoryProjectChoicesResponse {
-    repository: RepositoryProjectChoices,
+    repository: Option<RepositoryProjectChoices>,
 }
 
 #[derive(Debug, Deserialize)]
 struct RepositoryProjectChoices {
     #[serde(rename = "projectsV2")]
-    projects_v2: ProjectChoiceNodes,
+    projects_v2: Option<ProjectChoiceNodes>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1285,5 +1288,46 @@ mod tests {
             gh_auth_scope_repair_commands(Some("Kade-Powell"), Some("Kade-Powell"), &scopes),
             vec![vec!["auth", "refresh", "-s", "read:project"]]
         );
+    }
+
+    #[test]
+    fn project_choices_response_accepts_null_repository_on_graphql_error() {
+        let response: octocrab::GraphqlResponse<RepositoryProjectChoicesResponse> =
+            serde_json::from_str(
+                r#"{
+                    "data": { "repository": null },
+                    "errors": [
+                        {
+                            "type": "NOT_FOUND",
+                            "path": ["repository"],
+                            "locations": [{ "line": 1, "column": 67 }],
+                            "message": "Could not resolve to a Repository with the name 'owner/repo'."
+                        }
+                    ]
+                }"#,
+            )
+            .unwrap();
+
+        assert!(matches!(response, octocrab::GraphqlResponse::Err(_)));
+    }
+
+    #[test]
+    fn project_choices_response_accepts_null_projects_connection() {
+        let response: octocrab::GraphqlResponse<RepositoryProjectChoicesResponse> =
+            serde_json::from_str(
+                r#"{
+                    "data": {
+                        "repository": {
+                            "projectsV2": null
+                        }
+                    }
+                }"#,
+            )
+            .unwrap();
+
+        let octocrab::GraphqlResponse::Ok(response) = response else {
+            panic!("expected successful GraphQL envelope");
+        };
+        assert!(response.data.repository.unwrap().projects_v2.is_none());
     }
 }

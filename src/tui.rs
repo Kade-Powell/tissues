@@ -2045,7 +2045,7 @@ async fn auto_refresh<B: IssueBackend>(app: &mut App, backend: &B) -> AutoRefres
         }
         Err(err) => {
             app.finish_action();
-            app.flash = Some(FlashKind::Error);
+            app.flash = None;
             app.set_status(format!("Auto-refresh failed: {err:#}"));
             AutoRefreshOutcome::default()
         }
@@ -3012,6 +3012,7 @@ mod tests {
         labels: Mutex<Vec<Label>>,
         collaborators: Mutex<Vec<User>>,
         templates: Mutex<Vec<IssueTemplate>>,
+        list_error: Mutex<Option<String>>,
         create_error: Mutex<Option<String>>,
         project_error: Mutex<Option<String>>,
         project_boards: Mutex<Vec<crate::domain::ProjectBoardSummary>>,
@@ -3072,6 +3073,7 @@ mod tests {
                 name: "bug report".to_string(),
                 body: "## Expected\n\n## Actual\n".to_string(),
             }]),
+            list_error: Mutex::new(None),
             create_error: Mutex::new(None),
             project_error: Mutex::new(None),
             project_boards: Mutex::new(Vec::new()),
@@ -3120,6 +3122,9 @@ mod tests {
             _filters: &IssueFilters,
         ) -> Result<Vec<IssueSummary>> {
             *self.list_calls.lock().unwrap() += 1;
+            if let Some(message) = self.list_error.lock().unwrap().clone() {
+                return Err(color_eyre::eyre::eyre!(message));
+            }
             Ok(self.issues.lock().unwrap().clone())
         }
 
@@ -4904,6 +4909,21 @@ mod tests {
         assert_eq!(outcome, AutoRefreshOutcome::default());
         assert_eq!(app.status, "Auto-refreshed; no new issues");
         assert_eq!(app.flash, None);
+        assert_eq!(app.mode, UiMode::Browsing);
+    }
+
+    #[tokio::test]
+    async fn auto_refresh_failure_does_not_trigger_error_flash() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        refresh(&mut app, &backend).await;
+        *backend.list_error.lock().unwrap() = Some("temporary outage".to_string());
+
+        let outcome = auto_refresh(&mut app, &backend).await;
+
+        assert_eq!(outcome, AutoRefreshOutcome::default());
+        assert_eq!(app.flash, None);
+        assert_eq!(app.status, "Auto-refresh failed: temporary outage");
         assert_eq!(app.mode, UiMode::Browsing);
     }
 
