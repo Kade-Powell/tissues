@@ -926,6 +926,7 @@ impl ProjectItemsNode {
 
 #[derive(Clone, Debug, Deserialize)]
 struct ProjectFields {
+    #[serde(default)]
     nodes: Vec<ProjectFieldNode>,
 }
 
@@ -945,6 +946,7 @@ struct ProjectFieldOption {
 
 #[derive(Debug, Deserialize)]
 struct ProjectItems {
+    #[serde(default)]
     nodes: Vec<ProjectItem>,
     #[serde(rename = "pageInfo")]
     page_info: PageInfo,
@@ -982,29 +984,32 @@ struct ProjectStatusValue {
 
 #[derive(Debug, Deserialize)]
 struct ProjectItemContent {
-    number: u64,
-    title: String,
-    state: String,
+    number: Option<u64>,
+    title: Option<String>,
+    state: Option<String>,
     #[serde(rename = "createdAt")]
     created_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(rename = "updatedAt")]
     updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
     comments: ProjectCommentCount,
     author: Option<User>,
+    #[serde(default)]
     labels: ProjectLabelNodes,
+    #[serde(default)]
     assignees: ProjectUserNodes,
 }
 
 impl ProjectItemContent {
     fn into_issue_summary(self) -> Option<IssueSummary> {
-        let state = match self.state.as_str() {
+        let state = match self.state.as_deref()? {
             "OPEN" => IssueState::Open,
             "CLOSED" => IssueState::Closed,
             _ => return None,
         };
         Some(IssueSummary {
-            number: self.number,
-            title: self.title,
+            number: self.number?,
+            title: self.title?,
             state,
             labels: self.labels.nodes,
             assignees: self.assignees.nodes,
@@ -1016,19 +1021,21 @@ impl ProjectItemContent {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct ProjectCommentCount {
     #[serde(rename = "totalCount")]
     total_count: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct ProjectLabelNodes {
+    #[serde(default)]
     nodes: Vec<Label>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct ProjectUserNodes {
+    #[serde(default)]
     nodes: Vec<User>,
 }
 
@@ -1343,5 +1350,78 @@ mod tests {
             panic!("expected successful GraphQL envelope");
         };
         assert!(response.data.repository.unwrap().projects_v2.is_none());
+    }
+
+    #[test]
+    fn project_items_response_accepts_non_issue_project_items() {
+        let response: octocrab::GraphqlResponse<ProjectItemsResponse> = serde_json::from_str(
+            r#"{
+                "data": {
+                    "node": {
+                        "title": "Roadmap",
+                        "fields": {
+                            "nodes": [
+                                {},
+                                {
+                                    "id": "status-field",
+                                    "name": "Status",
+                                    "options": [{ "id": "todo", "name": "Todo" }]
+                                }
+                            ]
+                        },
+                        "items": {
+                            "nodes": [
+                                {
+                                    "id": "item-draft",
+                                    "content": {},
+                                    "fieldValueByName": {}
+                                },
+                                {
+                                    "id": "item-issue",
+                                    "content": {
+                                        "number": 42,
+                                        "title": "Fix board",
+                                        "state": "OPEN",
+                                        "comments": { "totalCount": 3 },
+                                        "author": { "login": "octocat" },
+                                        "labels": { "nodes": [{ "name": "bug" }] },
+                                        "assignees": { "nodes": [{ "login": "hubot" }] }
+                                    },
+                                    "fieldValueByName": { "name": "Todo" }
+                                }
+                            ],
+                            "pageInfo": {
+                                "hasNextPage": false,
+                                "endCursor": null
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let octocrab::GraphqlResponse::Ok(response) = response else {
+            panic!("expected successful GraphQL envelope");
+        };
+        let mut project = response.data.node.unwrap();
+        assert!(
+            project.items.nodes[0]
+                .content
+                .take()
+                .and_then(ProjectItemContent::into_issue_summary)
+                .is_none()
+        );
+        assert_eq!(
+            project
+                .items
+                .nodes
+                .remove(1)
+                .content
+                .and_then(ProjectItemContent::into_issue_summary)
+                .unwrap()
+                .number,
+            42
+        );
     }
 }
