@@ -1,4 +1,4 @@
-use std::time::Duration as StdDuration;
+use std::{collections::HashSet, time::Duration as StdDuration};
 
 use chrono::Utc;
 use ratatui::{
@@ -22,6 +22,7 @@ use crate::{
     app::{
         App, AssigneeChoice, AssigneeFilter, DoctorCheckStatus, FlashKind, IssueEditField,
         IssueHighlightKind, IssueStateFilter, IssueView, NewIssueField, PendingAction, UiMode,
+        dependency_issue_numbers,
     },
     domain::{IssueComment, IssueDetail, IssueState, IssueSummary},
 };
@@ -308,7 +309,15 @@ pub(crate) fn render_header(app: &App, area: Rect, buffer: &mut Buffer) {
 fn view_tabs_line(app: &App) -> Line<'static> {
     let list = tab_span("List", app.issue_view == IssueView::List);
     let board = tab_span("Board", app.issue_view == IssueView::Board);
-    Line::from(vec![list, Span::raw(" "), board])
+    let tree = if app.relationship_tree_enabled {
+        Span::styled(
+            " Tree ",
+            Style::new().fg(OPEN_ACCENT).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::raw("")
+    };
+    Line::from(vec![list, Span::raw(" "), board, Span::raw(" "), tree])
 }
 
 fn tab_span(label: &'static str, active: bool) -> Span<'static> {
@@ -408,6 +417,17 @@ fn render_browsing_workspace(app: &App, area: Rect, buffer: &mut Buffer) {
 }
 
 fn render_compact_issue_list(app: &App, area: Rect, buffer: &mut Buffer) {
+    if app.relationship_tree_enabled {
+        render_issue_tree_lines(
+            app,
+            app.issues.iter().map(|issue| issue.number),
+            frame_block("", ISSUE_ACCENT),
+            area,
+            buffer,
+        );
+        return;
+    }
+
     let rows = app.issues.iter().map(|issue| {
         let check = match issue.state {
             IssueState::Open => "[ ]",
@@ -455,6 +475,17 @@ fn render_compact_issue_list(app: &App, area: Rect, buffer: &mut Buffer) {
 }
 
 fn render_issue_list(app: &App, area: Rect, buffer: &mut Buffer) {
+    if app.relationship_tree_enabled {
+        render_issue_tree(
+            app,
+            "Issues Tree",
+            app.issues.iter().map(|issue| issue.number),
+            area,
+            buffer,
+        );
+        return;
+    }
+
     let widths = [
         Constraint::Length(6),
         Constraint::Length(5),
@@ -688,6 +719,17 @@ fn render_project_column(
     area: Rect,
     buffer: &mut Buffer,
 ) {
+    if app.relationship_tree_enabled {
+        render_issue_tree_lines(
+            app,
+            column.issues.iter().map(|issue| issue.number),
+            frame_block(column.name.clone(), PICKER_ACCENT),
+            area,
+            buffer,
+        );
+        return;
+    }
+
     let lines = if column.issues.is_empty() {
         vec![Line::from("No issues")]
     } else {
@@ -734,6 +776,17 @@ fn render_board_column(
         .iter()
         .filter(|issue| issue.state == state)
         .collect::<Vec<_>>();
+    if app.relationship_tree_enabled {
+        render_issue_tree_lines(
+            app,
+            issues.iter().map(|issue| issue.number),
+            frame_block(title, board_state_accent(state)),
+            area,
+            buffer,
+        );
+        return;
+    }
+
     let lines = if issues.is_empty() {
         vec![Line::from("No issues")]
     } else {
@@ -764,6 +817,238 @@ fn render_board_column(
         .style(surface_style())
         .wrap(Wrap { trim: true })
         .render(area, buffer);
+}
+
+fn render_issue_tree<I>(
+    app: &App,
+    title: impl Into<String>,
+    numbers: I,
+    area: Rect,
+    buffer: &mut Buffer,
+) where
+    I: IntoIterator<Item = u64>,
+{
+    let block = frame_block(title.into(), ISSUE_ACCENT);
+    let inner = block.inner(area);
+    block.render(area, buffer);
+    if inner.is_empty() {
+        return;
+    }
+
+    let numbers = numbers.into_iter().collect::<Vec<_>>();
+
+    if app.relationship_details.is_empty() {
+        Paragraph::new("Use :tree to load issue relationships.")
+            .style(surface_style())
+            .wrap(Wrap { trim: true })
+            .render(inner, buffer);
+        return;
+    }
+
+    let roots = issue_tree_roots(app, &numbers);
+    if roots.is_empty() {
+        Paragraph::new("No issues loaded.")
+            .style(surface_style())
+            .render(inner, buffer);
+        return;
+    }
+
+    let mut open_paths = Vec::new();
+    let mut seen = HashSet::new();
+    let items = roots
+        .iter()
+        .map(|root| {
+            issue_tree_item(
+                app,
+                *root,
+                format!("issue-{root}"),
+                vec![format!("issue-{root}")],
+                &mut seen,
+                &mut open_paths,
+            )
+        })
+        .collect::<Vec<_>>();
+    let tree = Tree::new(&items)
+        .expect("issue tree item identifiers are unique")
+        .style(surface_style())
+        .highlight_style(Style::new().fg(DEFAULT_FG).add_modifier(Modifier::REVERSED))
+        .node_open_symbol("▾ ")
+        .node_closed_symbol("▸ ")
+        .node_no_children_symbol("  ");
+
+    let mut state = TreeState::<String>::default();
+    for path in open_paths {
+        state.open(path);
+    }
+
+    let height = roots
+        .iter()
+        .map(|root| issue_tree_height(app, *root, &mut HashSet::new()))
+        .sum::<u16>()
+        .max(inner.height);
+    let content_size = Size::new(inner.width.max(1), height.max(1));
+    let mut scroll_view = ScrollView::new(content_size)
+        .vertical_scrollbar_visibility(ScrollbarVisibility::Automatic)
+        .horizontal_scrollbar_visibility(ScrollbarVisibility::Never);
+    scroll_view.render_stateful_widget(
+        tree,
+        Rect::new(0, 0, content_size.width, content_size.height),
+        &mut state,
+    );
+    let mut scroll_state = ScrollViewState::with_offset(Position::new(0, app.detail_scroll));
+    ratatui::widgets::StatefulWidget::render(scroll_view, inner, buffer, &mut scroll_state);
+}
+
+fn render_issue_tree_lines<I>(
+    app: &App,
+    numbers: I,
+    block: Block<'_>,
+    area: Rect,
+    buffer: &mut Buffer,
+) where
+    I: IntoIterator<Item = u64>,
+{
+    let numbers = numbers.into_iter().collect::<Vec<_>>();
+    let roots = issue_tree_roots(app, &numbers);
+    let mut lines = Vec::new();
+    let mut seen = HashSet::new();
+    for root in roots {
+        issue_tree_line_items(app, root, 0, &mut seen, &mut lines);
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from("No issues"));
+    }
+
+    Paragraph::new(lines)
+        .block(block)
+        .style(surface_style())
+        .wrap(Wrap { trim: true })
+        .render(area, buffer);
+}
+
+fn issue_tree_roots(app: &App, numbers: &[u64]) -> Vec<u64> {
+    let visible = numbers.iter().copied().collect::<HashSet<_>>();
+    let dependencies = numbers
+        .iter()
+        .filter_map(|number| app.relationship_details.get(number))
+        .flat_map(|detail| dependency_issue_numbers(&detail.body))
+        .filter(|number| visible.contains(number))
+        .collect::<HashSet<_>>();
+    let roots = numbers
+        .iter()
+        .copied()
+        .filter(|number| !dependencies.contains(number))
+        .collect::<Vec<_>>();
+
+    if roots.is_empty() {
+        numbers.to_vec()
+    } else {
+        roots
+    }
+}
+
+fn issue_tree_line_items(
+    app: &App,
+    number: u64,
+    depth: usize,
+    seen: &mut HashSet<u64>,
+    lines: &mut Vec<Line<'static>>,
+) {
+    if !seen.insert(number) {
+        lines.push(Line::from(format!(
+            "{}#{} circular dependency",
+            "  ".repeat(depth),
+            number
+        )));
+        return;
+    }
+
+    let marker = if app.selected_issue().map(|selected| selected.number) == Some(number) {
+        ">"
+    } else {
+        " "
+    };
+    lines.push(Line::from(vec![
+        Span::styled(marker, Style::new().fg(ACTION_ACCENT).bold()),
+        Span::raw(format!(
+            "{}{}",
+            "  ".repeat(depth),
+            issue_tree_label(app, number)
+        )),
+    ]));
+
+    if let Some(detail) = app.relationship_details.get(&number) {
+        for dependency in dependency_issue_numbers(&detail.body) {
+            issue_tree_line_items(app, dependency, depth + 1, seen, lines);
+        }
+    }
+    seen.remove(&number);
+}
+
+fn issue_tree_item(
+    app: &App,
+    number: u64,
+    id: String,
+    path: Vec<String>,
+    seen: &mut HashSet<u64>,
+    open_paths: &mut Vec<Vec<String>>,
+) -> TreeItem<'static, String> {
+    if !seen.insert(number) {
+        return TreeItem::new_leaf(id, format!("#{} circular dependency", number));
+    }
+
+    let label = issue_tree_label(app, number);
+    let dependencies = app
+        .relationship_details
+        .get(&number)
+        .map(|detail| dependency_issue_numbers(&detail.body))
+        .unwrap_or_default();
+
+    if dependencies.is_empty() {
+        seen.remove(&number);
+        return TreeItem::new_leaf(id, label);
+    }
+
+    open_paths.push(path.clone());
+    let children = dependencies
+        .into_iter()
+        .map(|dependency| {
+            let child_id = format!("{id}-{dependency}");
+            let mut child_path = path.clone();
+            child_path.push(child_id.clone());
+            issue_tree_item(app, dependency, child_id, child_path, seen, open_paths)
+        })
+        .collect::<Vec<_>>();
+    seen.remove(&number);
+    TreeItem::new(id, label, children).expect("issue tree item id is valid")
+}
+
+fn issue_tree_label(app: &App, number: u64) -> String {
+    if let Some(detail) = app.relationship_details.get(&number) {
+        return format!("#{} {}", detail.summary.number, detail.summary.title);
+    }
+    if let Some(issue) = app.issues.iter().find(|issue| issue.number == number) {
+        return format!("#{} {} (not loaded)", issue.number, issue.title);
+    }
+    format!("#{number} (not loaded)")
+}
+
+fn issue_tree_height(app: &App, number: u64, seen: &mut HashSet<u64>) -> u16 {
+    if !seen.insert(number) {
+        return 1;
+    }
+    let children = app
+        .relationship_details
+        .get(&number)
+        .map(|detail| dependency_issue_numbers(&detail.body))
+        .unwrap_or_default();
+    let height = 1 + children
+        .into_iter()
+        .map(|child| issue_tree_height(app, child, seen))
+        .sum::<u16>();
+    seen.remove(&number);
+    height
 }
 
 fn board_state_accent(state: IssueState) -> Color {
@@ -1128,14 +1413,14 @@ fn footer_shortcuts(app: &App) -> String {
                 .to_string()
         }
         UiMode::Browsing if app.issue_view == IssueView::Board => {
-            "Left/Right move | v view | j/k select | Enter open | : commands | q quit".to_string()
+            ":move state | v view | j/k select | Enter open | : commands | q quit".to_string()
         }
         UiMode::Browsing => {
             ": commands | v view | t triage | n new | x close | j/k move | Enter open | q/ctrl+c quit"
                 .to_string()
         }
         UiMode::IssueDetail if app.issue_view == IssueView::Board => {
-            "Esc board | Left/Right move | v view | Enter fold | j/k scroll | PgUp/PgDn detail | : commands"
+            "Esc board | :move state | v view | Enter fold | j/k scroll | PgUp/PgDn detail | : commands"
                 .to_string()
         }
         UiMode::IssueDetail => {
@@ -1288,6 +1573,11 @@ fn command_suggestions_line(input: &str) -> String {
         "triage",
         "list",
         "board",
+        "boards",
+        "tree",
+        "dependencies",
+        "branch",
+        "move ",
         "label ",
         "sort updated",
         "sort created",
@@ -1650,6 +1940,7 @@ fn pending_action_label(action: &PendingAction) -> &'static str {
         PendingAction::UpdateAssignees => "Updating assignees",
         PendingAction::UpdateLabels => "Updating labels",
         PendingAction::UpdateProjectItem => "Moving board item",
+        PendingAction::CreateBranch => "Creating branch",
         PendingAction::RepairAuth => "Repairing GitHub auth",
         PendingAction::RunDoctor => "Running doctor",
     }
@@ -2468,6 +2759,33 @@ mod tests {
     }
 
     #[test]
+    fn list_view_renders_issue_dependency_tree_when_enabled() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        let root = issue(1, "Release feature", IssueState::Open, &[]);
+        let dependency = issue(2, "Build backend", IssueState::Open, &[]);
+        app.set_issues(vec![root.clone(), dependency.clone()]);
+        app.enable_relationship_tree();
+        app.set_relationship_detail(IssueDetail {
+            summary: root,
+            body: "Depends on #2".to_string(),
+            comments: Vec::new(),
+        });
+        app.set_relationship_detail(IssueDetail {
+            summary: dependency,
+            body: "No blockers".to_string(),
+            comments: Vec::new(),
+        });
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 120, 28));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Issues Tree"));
+        assert!(rendered.contains("#1 Release feature"));
+        assert!(rendered.contains("#2 Build backend"));
+    }
+
+    #[test]
     fn renders_project_board_picker_choices() {
         let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_project_board_choices(vec![
@@ -2562,11 +2880,11 @@ mod tests {
         assert!(!footer_shortcuts(&app).contains("A assign"));
 
         app.set_issue_view(IssueView::Board);
-        assert!(footer_shortcuts(&app).contains("Left/Right move"));
+        assert!(footer_shortcuts(&app).contains(":move state"));
 
+        app.set_issue_view(IssueView::Board);
         app.mode = UiMode::IssueDetail;
         assert!(footer_shortcuts(&app).contains("Esc board"));
-        assert!(footer_shortcuts(&app).contains("Left/Right move"));
 
         app.set_issue_view(IssueView::List);
         app.mode = UiMode::NewIssue;

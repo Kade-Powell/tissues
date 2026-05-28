@@ -136,7 +136,9 @@ cargo run
 - `j` / `Down`: move to the next issue.
 - `k` / `Up`: move to the previous issue.
 - `v`: toggle between list and board view.
-- `Left` / `Right`: move the selected issue to the previous or next GitHub Project board state while in board view.
+- `:move <state>`: move the selected issue to a GitHub Project board state while in board view. Use `:move` to list available states.
+- `:tree`: render the current list or board as an issue relationship tree. Use `:tree off` to return to flat rows.
+- `:branch`: create and switch to a local git branch for the selected issue, then show the `Closes #123` PR body line GitHub needs to close it on merge.
 - `Enter`: collapse or expand comments in the detail tree.
 - `:`: open command mode at the bottom of the screen.
 - `Tab`: complete the highlighted command suggestion while in command mode.
@@ -160,6 +162,8 @@ Useful commands:
 - `:doctor`: check GitHub auth, issue access, and project board readiness.
 - `:board`: open the board view.
 - `:boards`: choose from repository GitHub Projects.
+- `:tree`: render the current issue list or board columns as a relationship tree.
+- `:branch`: create and switch to a local branch named from the selected issue. Add the shown `Closes #123` line to the PR body so GitHub closes the issue when the PR merges.
 - `:list`: return to the issue list.
 - `:all`, `:clear`, or `:clear filters`: clear state, assignee, label, and search filters.
 - `:fs` or `:filter state`: cycle state filter: open, closed, all.
