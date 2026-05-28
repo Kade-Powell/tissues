@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     io::{self, Write},
     process::Command,
     thread,
@@ -20,13 +20,14 @@ use ratatui::DefaultTerminal;
 
 use crate::{
     app::{
-        App, AssigneeChoice, AssigneeFilter, BoardMoveDirection, DoctorCheck, DoctorCheckStatus,
+        App, AssigneeChoice, AssigneeFilter, BoardMoveTarget, DoctorCheck, DoctorCheckStatus,
         ErrorRemediation, FlashKind, IssueEditField, IssueSort, IssueStateFilter, IssueView,
         NewIssueField, PendingAction, RetryAction, TextCursorMove, UiMode,
+        dependency_issue_numbers,
     },
     cache::IssueCache,
     config::AppConfig,
-    domain::{IssueComment, IssueState, IssueSummary, User},
+    domain::{IssueComment, IssueState, IssueSummary, ProjectStatusOption, User},
     github::{GitHubAuthStatus, IssueBackend},
     message::TissueMsg,
     realm::TissueRealm,
@@ -289,27 +290,8 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
                 PendingAction::LoadLabels,
                 "Loading repository labels".to_string(),
             )),
-            KeyCode::Left | KeyCode::Right if app.issue_view == IssueView::Board => {
-                app.selected_issue().map(|issue| {
-                    (
-                        PendingAction::UpdateProjectItem,
-                        format!("Moving issue #{}", issue.number),
-                    )
-                })
-            }
             _ => None,
         },
-        UiMode::IssueDetail
-            if app.issue_view == IssueView::Board
-                && matches!(key.code, KeyCode::Left | KeyCode::Right) =>
-        {
-            app.selected_issue().map(|issue| {
-                (
-                    PendingAction::UpdateProjectItem,
-                    format!("Moving issue #{}", issue.number),
-                )
-            })
-        }
         UiMode::Command if key.code == KeyCode::Enter => {
             let command = normalized_command(&app.input);
             if is_refresh_command(&command)
@@ -323,6 +305,13 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
                     PendingAction::LoadCollaborators,
                     "Loading collaborators".to_string(),
                 ))
+            } else if board_move_command(&command).is_some_and(|target| !target.is_empty()) {
+                app.selected_issue().map(|issue| {
+                    (
+                        PendingAction::UpdateProjectItem,
+                        format!("Moving issue #{}", issue.number),
+                    )
+                })
             } else {
                 match command.as_str() {
                     "n" | "new" | "new issue" => Some((
@@ -344,6 +333,15 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
                     "board" | "boards" => {
                         Some((PendingAction::Refresh, "Loading project boards".to_string()))
                     }
+                    "tree" | "dependencies" | "deps" => {
+                        Some((PendingAction::Refresh, "Loading issue tree".to_string()))
+                    }
+                    "branch" | "br" => app.selected_issue().map(|issue| {
+                        (
+                            PendingAction::CreateBranch,
+                            format!("Creating branch for #{}", issue.number),
+                        )
+                    }),
                     "doctor" | "check" => {
                         Some((PendingAction::RunDoctor, "Running doctor".to_string()))
                     }
@@ -445,6 +443,17 @@ fn search_query_command(command: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn board_move_command(command: &str) -> Option<&str> {
+    if command == "move" || command == "m" {
+        return Some("");
+    }
+
+    command
+        .strip_prefix("move ")
+        .or_else(|| command.strip_prefix("m "))
+        .map(str::trim)
+}
+
 fn pending_state_action(state: IssueState) -> PendingAction {
     match state {
         IssueState::Open => PendingAction::CloseIssue,
@@ -536,12 +545,6 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
         KeyCode::Char('t') => app.toggle_triage_mode(),
         KeyCode::Esc if app.triage_mode => app.toggle_triage_mode(),
         KeyCode::Char('v') => toggle_issue_view(app, backend).await,
-        KeyCode::Left if app.issue_view == IssueView::Board => {
-            move_selected_project_issue(app, backend, BoardMoveDirection::Previous).await;
-        }
-        KeyCode::Right if app.issue_view == IssueView::Board => {
-            move_selected_project_issue(app, backend, BoardMoveDirection::Next).await;
-        }
         KeyCode::Char('s') if app.triage_mode => app.skip_triage_issue(),
         KeyCode::Char('a') if app.triage_mode && app.selected_issue().is_some() => {
             assign_selected_issue_to_viewer(app, backend).await;
@@ -581,12 +584,6 @@ async fn handle_issue_detail_key<B: IssueBackend>(app: &mut App, backend: &B, ke
         KeyCode::Esc => close_issue_detail(app),
         KeyCode::Enter => app.toggle_comments(),
         KeyCode::Char('v') => toggle_issue_view(app, backend).await,
-        KeyCode::Left if app.issue_view == IssueView::Board => {
-            move_selected_project_issue(app, backend, BoardMoveDirection::Previous).await;
-        }
-        KeyCode::Right if app.issue_view == IssueView::Board => {
-            move_selected_project_issue(app, backend, BoardMoveDirection::Next).await;
-        }
         KeyCode::PageDown => app.scroll_detail_page_down(),
         KeyCode::PageUp => app.scroll_detail_page_up(),
         KeyCode::Char('j') | KeyCode::Down => app.scroll_detail_down(),
@@ -977,6 +974,25 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
         "list" => app.set_issue_view(IssueView::List),
         "board" => open_board_view(app, backend).await,
         "boards" => open_project_board_chooser(app, backend, true).await,
+        "tree off" | "dependencies off" | "deps off" => {
+            app.disable_relationship_tree();
+            app.mode = UiMode::Browsing;
+            app.set_status("Issue tree view off");
+        }
+        "tree" | "dependencies" | "deps" => open_tree_view(app, backend).await,
+        "branch" | "br" if app.selected_issue().is_some() => {
+            create_branch_for_selected_issue(app).await;
+        }
+        "branch" | "br" => {
+            app.mode = UiMode::Browsing;
+            app.flash = Some(FlashKind::Error);
+            app.set_status("Select an issue before creating a branch");
+        }
+        command if board_move_command(command).is_some() => {
+            let target = board_move_command(command).expect("move command checked");
+            app.mode = UiMode::Browsing;
+            move_selected_project_issue(app, backend, target).await;
+        }
         "doctor" | "check" => run_doctor(app, backend).await,
         "views" => {
             app.mode = UiMode::Browsing;
@@ -1073,6 +1089,90 @@ async fn open_board_view<B: IssueBackend>(app: &mut App, backend: &B) {
         load_project_board(app, backend).await;
     } else {
         open_project_board_chooser(app, backend, false).await;
+    }
+}
+
+const ISSUE_TREE_MAX_DEPTH: usize = 8;
+
+async fn open_tree_view<B: IssueBackend>(app: &mut App, backend: &B) {
+    if app.issues.is_empty() {
+        app.set_status("Load issues before opening the tree view");
+        return;
+    };
+
+    app.clear_relationship_details();
+    let roots = visible_tree_root_numbers(app);
+    app.begin_action(PendingAction::Refresh, "Loading issue tree");
+
+    let mut pending = roots
+        .iter()
+        .rev()
+        .map(|number| (*number, 0usize))
+        .collect::<Vec<_>>();
+    let mut seen = HashSet::new();
+    let mut failures = 0usize;
+
+    while let Some((number, depth)) = pending.pop() {
+        if depth > ISSUE_TREE_MAX_DEPTH || !seen.insert(number) {
+            continue;
+        }
+
+        let detail = if app
+            .selected_detail
+            .as_ref()
+            .is_some_and(|detail| detail.summary.number == number)
+        {
+            app.selected_detail
+                .clone()
+                .expect("selected detail checked")
+        } else {
+            match backend.get_issue(&app.repo, number).await {
+                Ok(detail) => detail,
+                Err(_) => {
+                    failures += 1;
+                    continue;
+                }
+            }
+        };
+
+        for dependency in dependency_issue_numbers(&detail.body).into_iter().rev() {
+            if !seen.contains(&dependency) {
+                pending.push((dependency, depth + 1));
+            }
+        }
+
+        if app
+            .selected_issue()
+            .is_some_and(|issue| issue.number == number)
+        {
+            app.set_selected_detail(detail.clone());
+        }
+        app.set_relationship_detail(detail);
+    }
+
+    app.finish_action();
+    app.mode = UiMode::Browsing;
+    app.enable_relationship_tree();
+    if failures == 0 {
+        app.set_status("Loaded issue tree");
+    } else {
+        app.set_status(format!(
+            "Loaded issue tree; {failures} linked issue(s) could not load"
+        ));
+    }
+}
+
+fn visible_tree_root_numbers(app: &App) -> Vec<u64> {
+    let numbers = if app.issue_view == IssueView::Board {
+        visible_board_issue_numbers(app)
+    } else {
+        app.issues.iter().map(|issue| issue.number).collect()
+    };
+
+    if numbers.is_empty() {
+        app.issues.iter().map(|issue| issue.number).collect()
+    } else {
+        numbers
     }
 }
 
@@ -1446,8 +1546,8 @@ async fn retry_action<B: IssueBackend>(app: &mut App, backend: &B, retry: RetryA
             open_project_board_chooser(app, backend, force_picker).await;
         }
         RetryAction::LoadProjectBoard => load_project_board(app, backend).await,
-        RetryAction::MoveBoardItem(direction) => {
-            move_selected_project_issue(app, backend, direction).await;
+        RetryAction::MoveBoardItem(target) => {
+            move_selected_project_issue_to(app, backend, target).await;
         }
         RetryAction::SubmitNewIssue { force_create } => {
             submit_new_issue(app, backend, force_create).await;
@@ -1459,7 +1559,68 @@ async fn retry_action<B: IssueBackend>(app: &mut App, backend: &B, retry: RetryA
 async fn move_selected_project_issue<B: IssueBackend>(
     app: &mut App,
     backend: &B,
-    direction: BoardMoveDirection,
+    requested_target: &str,
+) {
+    let Some(issue_number) = app.selected_issue().map(|issue| issue.number) else {
+        return;
+    };
+    let Some(board) = app.project_board.clone() else {
+        app.flash = Some(FlashKind::Error);
+        app.set_status("Load a GitHub project board before moving board items");
+        return;
+    };
+    let Some(item) = board
+        .item_statuses
+        .iter()
+        .find(|item| item.issue_number == issue_number)
+        .cloned()
+    else {
+        app.flash = Some(FlashKind::Error);
+        app.set_status(format!(
+            "Issue #{issue_number} is not on this GitHub project board"
+        ));
+        return;
+    };
+    let Some(current_index) = board
+        .status_options
+        .iter()
+        .position(|option| option.name == item.status_name)
+    else {
+        app.flash = Some(FlashKind::Error);
+        app.set_status(format!(
+            "Issue #{issue_number} is not in a known board state"
+        ));
+        return;
+    };
+
+    if requested_target.is_empty() {
+        app.set_status(format!(
+            "Move issue #{issue_number} to: {}",
+            board_move_choices(&board.status_options)
+        ));
+        return;
+    }
+
+    let Some(target) = resolve_board_move_target(app, &board.status_options, requested_target)
+    else {
+        return;
+    };
+
+    if board.status_options[current_index].id == target.option_id {
+        app.set_status(format!(
+            "Issue #{issue_number} is already in {}",
+            target.name
+        ));
+        return;
+    }
+
+    move_selected_project_issue_to(app, backend, target).await;
+}
+
+async fn move_selected_project_issue_to<B: IssueBackend>(
+    app: &mut App,
+    backend: &B,
+    target: BoardMoveTarget,
 ) {
     let Some(issue_number) = app.selected_issue().map(|issue| issue.number) else {
         return;
@@ -1491,42 +1652,13 @@ async fn move_selected_project_issue<B: IssueBackend>(
         ));
         return;
     };
-    let Some(current_index) = board
-        .status_options
-        .iter()
-        .position(|option| option.name == item.status_name)
-    else {
-        app.flash = Some(FlashKind::Error);
-        app.set_status(format!(
-            "Issue #{issue_number} is not in a known board state"
-        ));
-        return;
-    };
-
-    let target_index = match direction {
-        BoardMoveDirection::Previous if current_index == 0 => {
-            app.set_status(format!(
-                "Issue #{issue_number} is already in the first board state"
-            ));
-            return;
-        }
-        BoardMoveDirection::Previous => current_index - 1,
-        BoardMoveDirection::Next if current_index + 1 >= board.status_options.len() => {
-            app.set_status(format!(
-                "Issue #{issue_number} is already in the last board state"
-            ));
-            return;
-        }
-        BoardMoveDirection::Next => current_index + 1,
-    };
-    let target = board.status_options[target_index].clone();
 
     app.begin_action(
         PendingAction::UpdateProjectItem,
         format!("Moving issue #{issue_number} to {}", target.name),
     );
     match backend
-        .update_project_item_status(&project_id, &item.item_id, &field_id, &target.id)
+        .update_project_item_status(&project_id, &item.item_id, &field_id, &target.option_id)
         .await
     {
         Ok(()) => {
@@ -1548,11 +1680,169 @@ async fn move_selected_project_issue<B: IssueBackend>(
                     &details,
                     &["project"],
                     "Refresh GitHub project write access",
-                    Some(RetryAction::MoveBoardItem(direction)),
+                    Some(RetryAction::MoveBoardItem(target)),
                 ),
             );
         }
     }
+}
+
+fn resolve_board_move_target(
+    app: &mut App,
+    options: &[ProjectStatusOption],
+    requested_target: &str,
+) -> Option<BoardMoveTarget> {
+    if options.is_empty() {
+        app.flash = Some(FlashKind::Error);
+        app.set_status("This GitHub project does not expose board states");
+        return None;
+    }
+
+    if let Ok(index) = requested_target.parse::<usize>() {
+        if let Some(option) = index.checked_sub(1).and_then(|index| options.get(index)) {
+            return Some(board_move_target(option));
+        }
+        app.flash = Some(FlashKind::Error);
+        app.set_status(format!("Board state number must be 1-{}", options.len()));
+        return None;
+    }
+
+    let requested = requested_target.to_lowercase();
+    if let Some(option) = options
+        .iter()
+        .find(|option| option.name.to_lowercase() == requested)
+    {
+        return Some(board_move_target(option));
+    }
+
+    let matches = options
+        .iter()
+        .filter(|option| option.name.to_lowercase().contains(&requested))
+        .collect::<Vec<_>>();
+
+    match matches.as_slice() {
+        [option] => Some(board_move_target(option)),
+        [] => {
+            app.flash = Some(FlashKind::Error);
+            app.set_status(format!("Unknown board state: {requested_target}"));
+            None
+        }
+        matches => {
+            app.flash = Some(FlashKind::Error);
+            app.set_status(format!(
+                "Move destination matches multiple states: {}",
+                matches
+                    .iter()
+                    .map(|option| option.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            None
+        }
+    }
+}
+
+fn board_move_target(option: &ProjectStatusOption) -> BoardMoveTarget {
+    BoardMoveTarget {
+        option_id: option.id.clone(),
+        name: option.name.clone(),
+    }
+}
+
+fn board_move_choices(options: &[ProjectStatusOption]) -> String {
+    if options.is_empty() {
+        return "no board states available".to_string();
+    }
+
+    options
+        .iter()
+        .enumerate()
+        .map(|(index, option)| format!("{} {}", index + 1, option.name))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+async fn create_branch_for_selected_issue(app: &mut App) {
+    let Some(issue) = app.selected_issue().cloned() else {
+        app.mode = UiMode::Browsing;
+        app.flash = Some(FlashKind::Error);
+        app.set_status("Select an issue before creating a branch");
+        return;
+    };
+    let branch = issue_branch_name(issue.number, &issue.title);
+
+    app.begin_action(
+        PendingAction::CreateBranch,
+        format!("Creating branch {branch}"),
+    );
+    match create_git_branch(&branch) {
+        Ok(()) => {
+            app.finish_action();
+            app.mode = UiMode::Browsing;
+            app.flash = Some(FlashKind::Success);
+            app.set_status(format!(
+                "Created and switched to branch {branch}; use PR body `{}`",
+                issue_pr_close_reference(issue.number)
+            ));
+        }
+        Err(err) => {
+            app.finish_action();
+            app.mode = UiMode::Browsing;
+            app.flash = Some(FlashKind::Error);
+            app.set_status(format!("Branch create failed: {err}"));
+        }
+    }
+}
+
+fn create_git_branch(branch: &str) -> std::result::Result<(), String> {
+    let output = Command::new("git")
+        .args(["switch", "-c", branch])
+        .output()
+        .map_err(|err| format!("failed to run `git switch -c {branch}`: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            Err(format!("`git switch -c {branch}` failed"))
+        } else {
+            Err(stderr)
+        }
+    }
+}
+
+fn issue_branch_name(number: u64, title: &str) -> String {
+    let slug = slugify_branch_title(title);
+    if slug.is_empty() {
+        format!("issue/{number}")
+    } else {
+        format!("issue/{number}-{slug}")
+    }
+}
+
+fn issue_pr_close_reference(number: u64) -> String {
+    format!("Closes #{number}")
+}
+
+fn slugify_branch_title(title: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_separator = false;
+    for character in title.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character);
+            last_was_separator = false;
+        } else if !last_was_separator && !slug.is_empty() {
+            slug.push('-');
+            last_was_separator = true;
+        }
+
+        if slug.len() >= 48 {
+            break;
+        }
+    }
+
+    slug.trim_matches('-').to_string()
 }
 
 fn command_suggestions(input: &str) -> Vec<String> {
@@ -1572,6 +1862,10 @@ fn command_suggestions(input: &str) -> Vec<String> {
         "list",
         "board",
         "boards",
+        "tree",
+        "dependencies",
+        "branch",
+        "move ",
         "doctor",
         "label ",
         "sort updated",
@@ -3806,6 +4100,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn issue_branch_name_uses_issue_number_and_sanitized_title() {
+        assert_eq!(
+            issue_branch_name(42, "Fix login redraw!"),
+            "issue/42-fix-login-redraw"
+        );
+        assert_eq!(issue_branch_name(42, "!!!"), "issue/42");
+    }
+
+    #[test]
+    fn issue_pr_close_reference_uses_github_closing_keyword() {
+        assert_eq!(issue_pr_close_reference(42), "Closes #42");
+    }
+
+    #[tokio::test]
+    async fn branch_command_requires_selected_issue() {
+        let backend = backend_with_issues(Vec::new());
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.mode = UiMode::Command;
+        app.input = "branch".to_string();
+
+        run_command(&mut app, &backend).await;
+
+        assert_eq!(app.mode, UiMode::Browsing);
+        assert_eq!(app.flash, Some(FlashKind::Error));
+        assert_eq!(app.status, "Select an issue before creating a branch");
+    }
+
     #[tokio::test]
     async fn colon_command_issue_number_jumps_to_detail() {
         let backend = backend_with_issues(vec![
@@ -3957,6 +4279,7 @@ mod tests {
     async fn browsing_shortcut_toggles_between_list_and_board_views() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
 
         handle_browsing_key(
             &mut app,
@@ -3976,9 +4299,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn board_and_list_commands_switch_issue_views() {
+    async fn board_tree_and_list_commands_switch_views_and_tree_rendering() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         app.mode = UiMode::Command;
         app.input = "board".to_string();
 
@@ -3987,10 +4311,53 @@ mod tests {
         assert_eq!(app.mode, UiMode::Browsing);
 
         app.mode = UiMode::Command;
+        app.input = "tree".to_string();
+        run_command(&mut app, &backend).await;
+        assert_eq!(app.issue_view, IssueView::Board);
+        assert!(app.relationship_tree_enabled);
+        assert!(app.relationship_details.contains_key(&1));
+
+        app.mode = UiMode::Command;
         app.input = "list".to_string();
         run_command(&mut app, &backend).await;
         assert_eq!(app.issue_view, IssueView::List);
         assert_eq!(app.mode, UiMode::Browsing);
+    }
+
+    #[tokio::test]
+    async fn tree_command_loads_dependency_chain_from_issue_bodies() {
+        let backend = backend_with_issues(vec![
+            issue(1, "Release feature", IssueState::Open, 1),
+            issue(2, "Build backend", IssueState::Open, 0),
+            issue(3, "Prepare schema", IssueState::Open, 0),
+        ]);
+        backend
+            .detail_bodies
+            .lock()
+            .unwrap()
+            .insert(1, "Depends on #2".to_string());
+        backend
+            .detail_bodies
+            .lock()
+            .unwrap()
+            .insert(2, "Blocked by #3".to_string());
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_issues(vec![
+            issue(1, "Release feature", IssueState::Open, 1),
+            issue(2, "Build backend", IssueState::Open, 0),
+            issue(3, "Prepare schema", IssueState::Open, 0),
+        ]);
+        app.mode = UiMode::Command;
+        app.input = "tree".to_string();
+
+        run_command(&mut app, &backend).await;
+
+        assert_eq!(app.issue_view, IssueView::List);
+        assert!(app.relationship_tree_enabled);
+        assert_eq!(app.status, "Loaded issue tree");
+        assert!(app.relationship_details.contains_key(&1));
+        assert!(app.relationship_details.contains_key(&2));
+        assert!(app.relationship_details.contains_key(&3));
     }
 
     #[tokio::test]
@@ -4095,7 +4462,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn right_arrow_moves_selected_project_issue_to_next_board_state() {
+    async fn move_command_moves_selected_project_issue_to_named_board_state() {
         let first_issue = issue(1, "Fix redraw", IssueState::Open, 1);
         let backend = backend_with_issues(vec![first_issue.clone()]);
         *backend.project_board.lock().unwrap() = Some(crate::domain::ProjectBoard {
@@ -4149,13 +4516,10 @@ mod tests {
             }],
         });
         app.set_issue_view(IssueView::Board);
+        app.mode = UiMode::Command;
+        app.input = "move Doing".to_string();
 
-        handle_browsing_key(
-            &mut app,
-            &backend,
-            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
-        )
-        .await;
+        run_command(&mut app, &backend).await;
 
         assert_eq!(
             *backend.project_moves.lock().unwrap(),
@@ -4168,6 +4532,47 @@ mod tests {
         );
         assert_eq!(app.status, "Moved issue #1 to Doing");
         assert_eq!(app.project_board.as_ref().unwrap().columns[0].name, "Doing");
+    }
+
+    #[tokio::test]
+    async fn arrow_keys_do_not_move_project_board_items() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        app.set_project_board(crate::domain::ProjectBoard {
+            title: "Roadmap".to_string(),
+            project_id: Some("project-id".to_string()),
+            status_field_id: Some("status-field-id".to_string()),
+            status_options: vec![
+                crate::domain::ProjectStatusOption {
+                    id: "todo-option".to_string(),
+                    name: "Todo".to_string(),
+                },
+                crate::domain::ProjectStatusOption {
+                    id: "doing-option".to_string(),
+                    name: "Doing".to_string(),
+                },
+            ],
+            item_statuses: vec![crate::domain::ProjectItemStatus {
+                issue_number: 1,
+                item_id: "item-id".to_string(),
+                status_name: "Todo".to_string(),
+            }],
+            columns: vec![crate::domain::ProjectColumn {
+                name: "Todo".to_string(),
+                issues: vec![issue(1, "Fix redraw", IssueState::Open, 1)],
+            }],
+        });
+        app.set_issue_view(IssueView::Board);
+
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert!(backend.project_moves.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -4297,7 +4702,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn left_arrow_on_first_project_state_does_not_mutate() {
+    async fn move_command_to_current_project_state_does_not_mutate() {
         let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
         let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
@@ -4326,16 +4731,52 @@ mod tests {
             }],
         });
         app.set_issue_view(IssueView::Board);
+        app.mode = UiMode::Command;
+        app.input = "move 1".to_string();
 
-        handle_browsing_key(
-            &mut app,
-            &backend,
-            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
-        )
-        .await;
+        run_command(&mut app, &backend).await;
 
         assert!(backend.project_moves.lock().unwrap().is_empty());
-        assert_eq!(app.status, "Issue #1 is already in the first board state");
+        assert_eq!(app.status, "Issue #1 is already in Todo");
+    }
+
+    #[tokio::test]
+    async fn bare_move_command_lists_project_board_states() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        app.set_project_board(crate::domain::ProjectBoard {
+            title: "Roadmap".to_string(),
+            project_id: Some("project-id".to_string()),
+            status_field_id: Some("status-field-id".to_string()),
+            status_options: vec![
+                crate::domain::ProjectStatusOption {
+                    id: "todo-option".to_string(),
+                    name: "Todo".to_string(),
+                },
+                crate::domain::ProjectStatusOption {
+                    id: "doing-option".to_string(),
+                    name: "Doing".to_string(),
+                },
+            ],
+            item_statuses: vec![crate::domain::ProjectItemStatus {
+                issue_number: 1,
+                item_id: "item-id".to_string(),
+                status_name: "Todo".to_string(),
+            }],
+            columns: vec![crate::domain::ProjectColumn {
+                name: "Todo".to_string(),
+                issues: vec![issue(1, "Fix redraw", IssueState::Open, 1)],
+            }],
+        });
+        app.set_issue_view(IssueView::Board);
+        app.mode = UiMode::Command;
+        app.input = "move".to_string();
+
+        run_command(&mut app, &backend).await;
+
+        assert!(backend.project_moves.lock().unwrap().is_empty());
+        assert_eq!(app.status, "Move issue #1 to: 1 Todo, 2 Doing");
     }
 
     #[tokio::test]
@@ -4841,13 +5282,19 @@ mod tests {
         app.set_issue_view(IssueView::Board);
         assert_eq!(
             loading_preview(&app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
+            None
+        );
+
+        app.mode = UiMode::Command;
+        app.input = "move Doing".to_string();
+        assert_eq!(
+            loading_preview(&app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             Some((
                 PendingAction::UpdateProjectItem,
                 "Moving issue #1".to_string()
             ))
         );
         app.set_issue_view(IssueView::List);
-
         app.mode = UiMode::Command;
         app.input = "refresh".to_string();
         assert_eq!(

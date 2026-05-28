@@ -114,6 +114,8 @@ key is needed for the current mode, it should be visible there.
   comments.
 - `Esc`: close the current modal or return from detail to the issue list.
 - `v`: toggle between list and board view.
+- `:branch`: create and switch to a git branch for the selected issue, then
+  show the `Closes #123` PR body line GitHub needs to close it on merge.
 - `:`: open command mode.
 - `q`: quit when you are not editing text.
 
@@ -143,6 +145,9 @@ Useful commands:
 - `:label any`: clear label filters.
 - `:sort updated`, `:sort created`, `:sort comments`, or `:sort assignee`:
   change issue ordering.
+- `:branch`: create and switch to a local git branch for the selected issue.
+  Add the shown `Closes #123` line to the PR body so GitHub closes the issue
+  when the PR merges.
 
 ## Board view
 
@@ -163,13 +168,26 @@ also open that picker directly:
 Use:
 
 - `j` / `k`: select issues inside the board.
-- `Left` / `Right`: move the selected issue to the previous or next GitHub
-  Project board state.
+- `:move <state>`: move the selected issue to a GitHub Project board state.
+  Use `:move` to list available states, or `:move 2` to pick by number.
 - `Enter`: open the selected issue detail.
 - `v`: return to list view.
 
 Board movement updates GitHub Projects directly, then reloads the board so the
 terminal view matches GitHub.
+
+## Tree view
+
+Tree view turns the current list or board columns into issue relationship
+trees. Open it with:
+
+```text
+:tree
+```
+
+The tree is built from relationship lines in issue bodies, such as `Depends on
+#12`, `Blocked by #12`, or `Requires #12`. Use `:tree off` to return to flat
+issue rows.
 
 ### Pin a board
 
