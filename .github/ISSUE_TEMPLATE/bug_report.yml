@@ -1,0 +1,55 @@
+name: Bug report
+description: Report something that is broken or confusing in tissues.
+title: "fix: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please include enough detail for someone else to reproduce it.
+  - type: input
+    id: version
+    attributes:
+      label: tissues version
+      description: Run `tissues --version`.
+      placeholder: "tissues 0.4.2"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: "macOS 15, iTerm2, zsh"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: List the exact commands, keys, and repository state needed to reproduce the issue.
+      placeholder: |
+        1. Run `tissues owner/repo`
+        2. Press `v`
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error details or screenshots
+      description: Redact tokens, private repository names, and sensitive issue content.
+    validations:
+      required: false

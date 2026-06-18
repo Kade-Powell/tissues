@@ -45,18 +45,41 @@ impl TissueRealm {
             EventListenerCfg::default()
                 .crossterm_input_listener(INPUT_POLL_INTERVAL, INPUT_MAX_POLL),
         );
-        mount_surface(&mut app, RealmId::Page, SurfaceKind::Page, app_state)?;
-        mount_surface(&mut app, RealmId::Header, SurfaceKind::Header, app_state)?;
-        mount_surface(&mut app, RealmId::Filters, SurfaceKind::Filters, app_state)?;
-        mount_surface(&mut app, RealmId::Body, SurfaceKind::Body, app_state)?;
-        mount_surface(
-            &mut app,
-            RealmId::CommandBar,
-            SurfaceKind::CommandBar,
-            app_state,
+        app.mount(
+            RealmId::Page,
+            Box::new(PageComponent::new(app_state.clone())),
+            Vec::new(),
         )?;
-        mount_surface(&mut app, RealmId::Footer, SurfaceKind::Footer, app_state)?;
-        mount_surface(&mut app, RealmId::Overlay, SurfaceKind::Overlay, app_state)?;
+        app.mount(
+            RealmId::Header,
+            Box::new(HeaderComponent::new(app_state.clone())),
+            Vec::new(),
+        )?;
+        app.mount(
+            RealmId::Filters,
+            Box::new(FiltersComponent::new(app_state.clone())),
+            Vec::new(),
+        )?;
+        app.mount(
+            RealmId::Body,
+            Box::new(BodyComponent::new(app_state.clone())),
+            Vec::new(),
+        )?;
+        app.mount(
+            RealmId::CommandBar,
+            Box::new(CommandBarComponent::new(app_state.clone())),
+            Vec::new(),
+        )?;
+        app.mount(
+            RealmId::Footer,
+            Box::new(FooterComponent::new(app_state.clone())),
+            Vec::new(),
+        )?;
+        app.mount(
+            RealmId::Overlay,
+            Box::new(OverlayComponent::new(app_state.clone())),
+            Vec::new(),
+        )?;
         app.mount(RealmId::Input, Box::<InputBridge>::default(), Vec::new())?;
         app.active(&RealmId::Input)?;
         Ok(Self { app })
@@ -64,6 +87,14 @@ impl TissueRealm {
 
     pub fn tick(&mut self, timeout: Duration) -> ApplicationResult<Vec<TissueMsg>> {
         self.app.tick(PollStrategy::Once(timeout))
+    }
+
+    pub fn lock_ports(&mut self) -> ApplicationResult<()> {
+        self.app.lock_ports()
+    }
+
+    pub fn unlock_ports(&mut self) -> ApplicationResult<()> {
+        self.app.unlock_ports()
     }
 
     pub fn render(&mut self, app_state: &App, frame: &mut Frame, area: Rect) {
@@ -82,96 +113,87 @@ impl TissueRealm {
     }
 
     fn sync_surfaces(&mut self, app_state: &App) {
-        for id in [
-            RealmId::Page,
-            RealmId::Header,
-            RealmId::Filters,
-            RealmId::Body,
-            RealmId::CommandBar,
-            RealmId::Footer,
-            RealmId::Overlay,
-        ] {
-            if let Some(component) = self.app.get_component_mut(&id)
-                && let Some(surface) = component.as_any_mut().downcast_mut::<SurfaceBridge>()
-            {
-                surface.app_state = app_state.clone();
-            }
-        }
+        sync_component::<PageComponent>(&mut self.app, RealmId::Page, app_state);
+        sync_component::<HeaderComponent>(&mut self.app, RealmId::Header, app_state);
+        sync_component::<FiltersComponent>(&mut self.app, RealmId::Filters, app_state);
+        sync_component::<BodyComponent>(&mut self.app, RealmId::Body, app_state);
+        sync_component::<CommandBarComponent>(&mut self.app, RealmId::CommandBar, app_state);
+        sync_component::<FooterComponent>(&mut self.app, RealmId::Footer, app_state);
+        sync_component::<OverlayComponent>(&mut self.app, RealmId::Overlay, app_state);
     }
 }
 
-fn mount_surface(
+trait AppStateComponent {
+    fn set_app_state(&mut self, app_state: App);
+}
+
+fn sync_component<T>(
     app: &mut Application<RealmId, TissueMsg, NoUserEvent>,
     id: RealmId,
-    surface: SurfaceKind,
     app_state: &App,
-) -> ApplicationResult<()> {
-    app.mount(
-        id,
-        Box::new(SurfaceBridge::new(surface, app_state.clone())),
-        Vec::new(),
-    )
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SurfaceKind {
-    Page,
-    Header,
-    Filters,
-    Body,
-    CommandBar,
-    Footer,
-    Overlay,
-}
-
-struct SurfaceBridge {
-    surface: SurfaceKind,
-    app_state: App,
-}
-
-impl SurfaceBridge {
-    fn new(surface: SurfaceKind, app_state: App) -> Self {
-        Self { surface, app_state }
+) where
+    T: AppStateComponent + 'static,
+{
+    if let Some(component) = app.get_component_mut(&id)
+        && let Some(surface) = component.as_any_mut().downcast_mut::<T>()
+    {
+        surface.set_app_state(app_state.clone());
     }
 }
 
-impl Component for SurfaceBridge {
-    fn view(&mut self, frame: &mut Frame, area: Rect) {
-        match self.surface {
-            SurfaceKind::Page => {
-                ui::render_page_background(&self.app_state, area, frame.buffer_mut())
-            }
-            SurfaceKind::Header => ui::render_header(&self.app_state, area, frame.buffer_mut()),
-            SurfaceKind::Filters => ui::render_filters(&self.app_state, area, frame.buffer_mut()),
-            SurfaceKind::Body => ui::render_body(&self.app_state, area, frame.buffer_mut()),
-            SurfaceKind::CommandBar => {
-                ui::render_command_bar(&self.app_state, area, frame.buffer_mut());
-            }
-            SurfaceKind::Footer => ui::render_footer(&self.app_state, area, frame.buffer_mut()),
-            SurfaceKind::Overlay => ui::render_overlay(&self.app_state, area, frame.buffer_mut()),
+macro_rules! surface_component {
+    ($name:ident, $render:path) => {
+        struct $name {
+            app_state: App,
         }
-    }
 
-    fn query<'a>(&'a self, _attr: Attribute) -> Option<QueryResult<'a>> {
-        None
-    }
+        impl $name {
+            fn new(app_state: App) -> Self {
+                Self { app_state }
+            }
+        }
 
-    fn attr(&mut self, _attr: Attribute, _value: AttrValue) {}
+        impl Component for $name {
+            fn view(&mut self, frame: &mut Frame, area: Rect) {
+                $render(&self.app_state, area, frame.buffer_mut());
+            }
 
-    fn state(&self) -> State {
-        State::None
-    }
+            fn query<'a>(&'a self, _attr: Attribute) -> Option<QueryResult<'a>> {
+                None
+            }
 
-    fn perform(&mut self, _cmd: Cmd) -> CmdResult {
-        CmdResult::NoChange
-    }
+            fn attr(&mut self, _attr: Attribute, _value: AttrValue) {}
+
+            fn state(&self) -> State {
+                State::None
+            }
+
+            fn perform(&mut self, _cmd: Cmd) -> CmdResult {
+                CmdResult::NoChange
+            }
+        }
+
+        impl AppComponent<TissueMsg, NoUserEvent> for $name {
+            fn on(&mut self, _ev: &Event<NoUserEvent>) -> Option<TissueMsg> {
+                None
+            }
+        }
+
+        impl AppStateComponent for $name {
+            fn set_app_state(&mut self, app_state: App) {
+                self.app_state = app_state;
+            }
+        }
+    };
 }
 
-impl AppComponent<TissueMsg, NoUserEvent> for SurfaceBridge {
-    fn on(&mut self, _ev: &Event<NoUserEvent>) -> Option<TissueMsg> {
-        None
-    }
-}
+surface_component!(PageComponent, ui::render_page_background);
+surface_component!(HeaderComponent, ui::render_header);
+surface_component!(FiltersComponent, ui::render_filters);
+surface_component!(BodyComponent, ui::render_body);
+surface_component!(CommandBarComponent, ui::render_command_bar);
+surface_component!(FooterComponent, ui::render_footer);
+surface_component!(OverlayComponent, ui::render_overlay);
 
 #[derive(Default)]
 struct InputBridge;
@@ -325,5 +347,17 @@ mod tests {
         assert_eq!(event.column, 8);
         assert_eq!(event.row, 13);
         assert!(event.modifiers.contains(CrosstermKeyModifiers::ALT));
+    }
+
+    #[test]
+    fn realm_mounts_named_components_without_generic_surface_bridge() {
+        let realm_source = include_str!("realm.rs");
+        let ui_source = include_str!("ui.rs");
+
+        assert!(!realm_source.contains(concat!("Surface", "Bridge")));
+        assert!(!ui_source.contains(concat!("pub fn ", "render(app: &App")));
+        assert!(realm_source.contains("struct HeaderComponent"));
+        assert!(realm_source.contains("struct BodyComponent"));
+        assert!(realm_source.contains("struct OverlayComponent"));
     }
 }

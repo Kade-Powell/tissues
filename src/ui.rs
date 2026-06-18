@@ -1,4 +1,4 @@
-use std::time::Duration as StdDuration;
+use std::{collections::HashSet, time::Duration as StdDuration};
 
 use chrono::Utc;
 use ratatui::{
@@ -23,8 +23,9 @@ use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::{
     app::{
-        App, AssigneeChoice, AssigneeFilter, FlashKind, IssueEditField, IssueHighlightKind,
-        IssueStateFilter, IssueView, NewIssueField, PendingAction, UiMode,
+        App, AssigneeChoice, AssigneeFilter, DoctorCheckStatus, FlashKind, IssueEditField,
+        IssueHighlightKind, IssueStateFilter, IssueView, NewIssueField, PendingAction, UiMode,
+        dependency_issue_numbers,
     },
     config::LoadingEffectStyle,
     domain::{IssueComment, IssueDetail, IssueState, IssueSummary},
@@ -214,21 +215,6 @@ pub fn trigger_flash_effect(app: &mut App, effects: &mut TissueEffects) {
     }
 }
 
-pub fn render(app: &App, area: Rect, buffer: &mut Buffer) {
-    render_page_background(app, area, buffer);
-
-    let areas = screen_areas(app, area);
-    render_header(app, areas.header, buffer);
-    render_filters(app, areas.filters, buffer);
-    render_body(app, areas.body, buffer);
-    if let Some(command_bar) = areas.command_bar {
-        render_command_bar(app, command_bar, buffer);
-    }
-    render_footer(app, areas.footer, buffer);
-
-    render_overlay(app, area, buffer);
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ScreenAreas {
     pub header: Rect,
@@ -319,6 +305,7 @@ pub fn effect_area(app: &App, area: Rect) -> Rect {
         | UiMode::AssigneeEditor
         | UiMode::IssueLabelEditor
         | UiMode::ProjectBoardPicker
+        | UiMode::Doctor
         | UiMode::ConfirmClose
         | UiMode::Success
         | UiMode::Error => centered_rect(72, 55, area),
@@ -383,7 +370,15 @@ pub(crate) fn render_header(app: &App, area: Rect, buffer: &mut Buffer) {
 fn view_tabs_line(app: &App) -> Line<'static> {
     let list = tab_span("List", app.issue_view == IssueView::List);
     let board = tab_span("Board", app.issue_view == IssueView::Board);
-    Line::from(vec![list, Span::raw(" "), board])
+    let tree = if app.relationship_tree_enabled {
+        Span::styled(
+            " Tree ",
+            Style::new().fg(OPEN_ACCENT).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::raw("")
+    };
+    Line::from(vec![list, Span::raw(" "), board, Span::raw(" "), tree])
 }
 
 fn tab_span(label: &'static str, active: bool) -> Span<'static> {
@@ -483,6 +478,17 @@ fn render_browsing_workspace(app: &App, area: Rect, buffer: &mut Buffer) {
 }
 
 fn render_compact_issue_list(app: &App, area: Rect, buffer: &mut Buffer) {
+    if app.relationship_tree_enabled {
+        render_issue_tree_lines(
+            app,
+            app.issues.iter().map(|issue| issue.number),
+            frame_block("", ISSUE_ACCENT),
+            area,
+            buffer,
+        );
+        return;
+    }
+
     let rows = app.issues.iter().map(|issue| {
         let check = match issue.state {
             IssueState::Open => "[ ]",
@@ -530,6 +536,17 @@ fn render_compact_issue_list(app: &App, area: Rect, buffer: &mut Buffer) {
 }
 
 fn render_issue_list(app: &App, area: Rect, buffer: &mut Buffer) {
+    if app.relationship_tree_enabled {
+        render_issue_tree(
+            app,
+            "Issues Tree",
+            app.issues.iter().map(|issue| issue.number),
+            area,
+            buffer,
+        );
+        return;
+    }
+
     let widths = [
         Constraint::Length(6),
         Constraint::Length(5),
@@ -763,6 +780,17 @@ fn render_project_column(
     area: Rect,
     buffer: &mut Buffer,
 ) {
+    if app.relationship_tree_enabled {
+        render_issue_tree_lines(
+            app,
+            column.issues.iter().map(|issue| issue.number),
+            frame_block(column.name.clone(), PICKER_ACCENT),
+            area,
+            buffer,
+        );
+        return;
+    }
+
     let lines = if column.issues.is_empty() {
         vec![Line::from("No issues")]
     } else {
@@ -809,6 +837,17 @@ fn render_board_column(
         .iter()
         .filter(|issue| issue.state == state)
         .collect::<Vec<_>>();
+    if app.relationship_tree_enabled {
+        render_issue_tree_lines(
+            app,
+            issues.iter().map(|issue| issue.number),
+            frame_block(title, board_state_accent(state)),
+            area,
+            buffer,
+        );
+        return;
+    }
+
     let lines = if issues.is_empty() {
         vec![Line::from("No issues")]
     } else {
@@ -839,6 +878,238 @@ fn render_board_column(
         .style(surface_style())
         .wrap(Wrap { trim: true })
         .render(area, buffer);
+}
+
+fn render_issue_tree<I>(
+    app: &App,
+    title: impl Into<String>,
+    numbers: I,
+    area: Rect,
+    buffer: &mut Buffer,
+) where
+    I: IntoIterator<Item = u64>,
+{
+    let block = frame_block(title.into(), ISSUE_ACCENT);
+    let inner = block.inner(area);
+    block.render(area, buffer);
+    if inner.is_empty() {
+        return;
+    }
+
+    let numbers = numbers.into_iter().collect::<Vec<_>>();
+
+    if app.relationship_details.is_empty() {
+        Paragraph::new("Use :tree to load issue relationships.")
+            .style(surface_style())
+            .wrap(Wrap { trim: true })
+            .render(inner, buffer);
+        return;
+    }
+
+    let roots = issue_tree_roots(app, &numbers);
+    if roots.is_empty() {
+        Paragraph::new("No issues loaded.")
+            .style(surface_style())
+            .render(inner, buffer);
+        return;
+    }
+
+    let mut open_paths = Vec::new();
+    let mut seen = HashSet::new();
+    let items = roots
+        .iter()
+        .map(|root| {
+            issue_tree_item(
+                app,
+                *root,
+                format!("issue-{root}"),
+                vec![format!("issue-{root}")],
+                &mut seen,
+                &mut open_paths,
+            )
+        })
+        .collect::<Vec<_>>();
+    let tree = Tree::new(&items)
+        .expect("issue tree item identifiers are unique")
+        .style(surface_style())
+        .highlight_style(Style::new().fg(DEFAULT_FG).add_modifier(Modifier::REVERSED))
+        .node_open_symbol("▾ ")
+        .node_closed_symbol("▸ ")
+        .node_no_children_symbol("  ");
+
+    let mut state = TreeState::<String>::default();
+    for path in open_paths {
+        state.open(path);
+    }
+
+    let height = roots
+        .iter()
+        .map(|root| issue_tree_height(app, *root, &mut HashSet::new()))
+        .sum::<u16>()
+        .max(inner.height);
+    let content_size = Size::new(inner.width.max(1), height.max(1));
+    let mut scroll_view = ScrollView::new(content_size)
+        .vertical_scrollbar_visibility(ScrollbarVisibility::Automatic)
+        .horizontal_scrollbar_visibility(ScrollbarVisibility::Never);
+    scroll_view.render_stateful_widget(
+        tree,
+        Rect::new(0, 0, content_size.width, content_size.height),
+        &mut state,
+    );
+    let mut scroll_state = ScrollViewState::with_offset(Position::new(0, app.detail_scroll));
+    ratatui::widgets::StatefulWidget::render(scroll_view, inner, buffer, &mut scroll_state);
+}
+
+fn render_issue_tree_lines<I>(
+    app: &App,
+    numbers: I,
+    block: Block<'_>,
+    area: Rect,
+    buffer: &mut Buffer,
+) where
+    I: IntoIterator<Item = u64>,
+{
+    let numbers = numbers.into_iter().collect::<Vec<_>>();
+    let roots = issue_tree_roots(app, &numbers);
+    let mut lines = Vec::new();
+    let mut seen = HashSet::new();
+    for root in roots {
+        issue_tree_line_items(app, root, 0, &mut seen, &mut lines);
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from("No issues"));
+    }
+
+    Paragraph::new(lines)
+        .block(block)
+        .style(surface_style())
+        .wrap(Wrap { trim: true })
+        .render(area, buffer);
+}
+
+fn issue_tree_roots(app: &App, numbers: &[u64]) -> Vec<u64> {
+    let visible = numbers.iter().copied().collect::<HashSet<_>>();
+    let dependencies = numbers
+        .iter()
+        .filter_map(|number| app.relationship_details.get(number))
+        .flat_map(|detail| dependency_issue_numbers(&detail.body))
+        .filter(|number| visible.contains(number))
+        .collect::<HashSet<_>>();
+    let roots = numbers
+        .iter()
+        .copied()
+        .filter(|number| !dependencies.contains(number))
+        .collect::<Vec<_>>();
+
+    if roots.is_empty() {
+        numbers.to_vec()
+    } else {
+        roots
+    }
+}
+
+fn issue_tree_line_items(
+    app: &App,
+    number: u64,
+    depth: usize,
+    seen: &mut HashSet<u64>,
+    lines: &mut Vec<Line<'static>>,
+) {
+    if !seen.insert(number) {
+        lines.push(Line::from(format!(
+            "{}#{} circular dependency",
+            "  ".repeat(depth),
+            number
+        )));
+        return;
+    }
+
+    let marker = if app.selected_issue().map(|selected| selected.number) == Some(number) {
+        ">"
+    } else {
+        " "
+    };
+    lines.push(Line::from(vec![
+        Span::styled(marker, Style::new().fg(ACTION_ACCENT).bold()),
+        Span::raw(format!(
+            "{}{}",
+            "  ".repeat(depth),
+            issue_tree_label(app, number)
+        )),
+    ]));
+
+    if let Some(detail) = app.relationship_details.get(&number) {
+        for dependency in dependency_issue_numbers(&detail.body) {
+            issue_tree_line_items(app, dependency, depth + 1, seen, lines);
+        }
+    }
+    seen.remove(&number);
+}
+
+fn issue_tree_item(
+    app: &App,
+    number: u64,
+    id: String,
+    path: Vec<String>,
+    seen: &mut HashSet<u64>,
+    open_paths: &mut Vec<Vec<String>>,
+) -> TreeItem<'static, String> {
+    if !seen.insert(number) {
+        return TreeItem::new_leaf(id, format!("#{} circular dependency", number));
+    }
+
+    let label = issue_tree_label(app, number);
+    let dependencies = app
+        .relationship_details
+        .get(&number)
+        .map(|detail| dependency_issue_numbers(&detail.body))
+        .unwrap_or_default();
+
+    if dependencies.is_empty() {
+        seen.remove(&number);
+        return TreeItem::new_leaf(id, label);
+    }
+
+    open_paths.push(path.clone());
+    let children = dependencies
+        .into_iter()
+        .map(|dependency| {
+            let child_id = format!("{id}-{dependency}");
+            let mut child_path = path.clone();
+            child_path.push(child_id.clone());
+            issue_tree_item(app, dependency, child_id, child_path, seen, open_paths)
+        })
+        .collect::<Vec<_>>();
+    seen.remove(&number);
+    TreeItem::new(id, label, children).expect("issue tree item id is valid")
+}
+
+fn issue_tree_label(app: &App, number: u64) -> String {
+    if let Some(detail) = app.relationship_details.get(&number) {
+        return format!("#{} {}", detail.summary.number, detail.summary.title);
+    }
+    if let Some(issue) = app.issues.iter().find(|issue| issue.number == number) {
+        return format!("#{} {} (not loaded)", issue.number, issue.title);
+    }
+    format!("#{number} (not loaded)")
+}
+
+fn issue_tree_height(app: &App, number: u64, seen: &mut HashSet<u64>) -> u16 {
+    if !seen.insert(number) {
+        return 1;
+    }
+    let children = app
+        .relationship_details
+        .get(&number)
+        .map(|detail| dependency_issue_numbers(&detail.body))
+        .unwrap_or_default();
+    let height = 1 + children
+        .into_iter()
+        .map(|child| issue_tree_height(app, child, seen))
+        .sum::<u16>();
+    seen.remove(&number);
+    height
 }
 
 fn board_state_accent(state: IssueState) -> Color {
@@ -1199,14 +1470,18 @@ pub(crate) fn render_footer(app: &App, area: Rect, buffer: &mut Buffer) {
 fn footer_shortcuts(app: &App) -> String {
     match app.mode {
         UiMode::Browsing if app.triage_mode => {
-            "triage | v view | a assign me | l labels | c comment | x close | s skip | t exit"
+            "triage | v view | a assign me | l labels | c comment | x close | s skip | t/esc exit"
                 .to_string()
         }
         UiMode::Browsing if app.issue_view == IssueView::Board => {
-            "Left/Right move | v view | j/k select | Enter open | : commands | q quit".to_string()
+            ":move state | v view | j/k select | Enter open | : commands | q quit".to_string()
         }
         UiMode::Browsing => {
             ": commands | v view | t triage | n new | x close | j/k move | Enter open | q/ctrl+c quit"
+                .to_string()
+        }
+        UiMode::IssueDetail if app.issue_view == IssueView::Board => {
+            "Esc board | :move state | v view | Enter fold | j/k scroll | PgUp/PgDn detail | : commands"
                 .to_string()
         }
         UiMode::IssueDetail => {
@@ -1242,6 +1517,10 @@ fn footer_shortcuts(app: &App) -> String {
             "Enter toggle label | Ctrl+S save | type search | j/k move | Esc cancel".to_string()
         }
         UiMode::ProjectBoardPicker => "Enter open board | j/k move | Esc cancel".to_string(),
+        UiMode::Doctor if app.selected_doctor_remediation().is_some() => {
+            "r repair | j/k move | Esc close".to_string()
+        }
+        UiMode::Doctor => "j/k move | Esc close".to_string(),
         UiMode::ConfirmClose => "y/Enter reopen | Esc cancel".to_string(),
         UiMode::Success => "Any key continue".to_string(),
         UiMode::Loading => "Working".to_string(),
@@ -1262,6 +1541,7 @@ pub(crate) fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         UiMode::AssigneeEditor => Some("Assign Issue"),
         UiMode::IssueLabelEditor => Some("Edit Labels"),
         UiMode::ProjectBoardPicker => Some("Select Board"),
+        UiMode::Doctor => Some("Doctor"),
         UiMode::ConfirmClose => Some("Confirm"),
         UiMode::Success => Some("Done"),
         UiMode::Loading => Some("Working"),
@@ -1284,6 +1564,7 @@ pub(crate) fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
             }
             UiMode::IssueLabelEditor => render_issue_label_editor(app, popup, buffer),
             UiMode::ProjectBoardPicker => render_project_board_picker(app, popup, buffer),
+            UiMode::Doctor => render_doctor(app, popup, buffer),
             UiMode::Loading => render_loading_overlay(app, popup, buffer),
             UiMode::ConfirmClose => Paragraph::new("Press y to reopen, Esc to cancel")
                 .block(modal_block(title, WARNING_ACCENT))
@@ -1353,6 +1634,11 @@ fn command_suggestions_line(input: &str) -> String {
         "triage",
         "list",
         "board",
+        "boards",
+        "tree",
+        "dependencies",
+        "branch",
+        "move ",
         "label ",
         "sort updated",
         "sort created",
@@ -1630,6 +1916,44 @@ fn render_project_board_picker(app: &App, area: Rect, buffer: &mut Buffer) {
     render_action_buttons("Open", rows[1], buffer);
 }
 
+fn render_doctor(app: &App, area: Rect, buffer: &mut Buffer) {
+    let rows = picker_rows_from_popup(area);
+    let mut lines = vec![Line::from(format!("repo: {}", app.repo)), Line::raw("")];
+    if app.doctor_checks.is_empty() {
+        lines.push(Line::from("No checks have run yet."));
+    } else {
+        for (index, check) in app.doctor_checks.iter().enumerate() {
+            let marker = if index == app.picker_index { ">" } else { " " };
+            let style = match check.status {
+                DoctorCheckStatus::Pass => Style::new().fg(OPEN_ACCENT),
+                DoctorCheckStatus::Warn => Style::new().fg(WARNING_ACCENT),
+                DoctorCheckStatus::Fail => Style::new().fg(ERROR_ACCENT),
+            };
+            lines.push(Line::from(vec![
+                Span::raw(marker),
+                Span::raw(" "),
+                Span::styled(check.status.label(), style.add_modifier(Modifier::BOLD)),
+                Span::raw(format!(" {}", check.name)),
+            ]));
+            lines.push(Line::from(format!("  {}", check.detail)));
+            if index == app.picker_index {
+                if let Some(remediation) = check.remediation.as_ref() {
+                    lines.push(Line::from(format!(
+                        "  Press r to run `{}`.",
+                        remediation.command
+                    )));
+                }
+            }
+        }
+    }
+
+    Paragraph::new(lines)
+        .block(modal_block("Doctor", NOTICE_ACCENT))
+        .style(modal_style())
+        .wrap(Wrap { trim: false })
+        .render(rows[0], buffer);
+}
+
 fn assignee_choice_is_active(app: &App, choice: &AssigneeChoice) -> bool {
     match (app.mode.clone(), choice) {
         (UiMode::AssigneeFilter, AssigneeChoice::Any) => {
@@ -1677,7 +2001,9 @@ fn pending_action_label(action: &PendingAction) -> &'static str {
         PendingAction::UpdateAssignees => "Updating assignees",
         PendingAction::UpdateLabels => "Updating labels",
         PendingAction::UpdateProjectItem => "Moving board item",
+        PendingAction::CreateBranch => "Creating branch",
         PendingAction::RepairAuth => "Repairing GitHub auth",
+        PendingAction::RunDoctor => "Running doctor",
     }
 }
 
@@ -2331,6 +2657,20 @@ mod tests {
     use chrono::Duration;
     use ratatui::{buffer::Buffer, layout::Rect};
 
+    fn render(app: &App, area: Rect, buffer: &mut Buffer) {
+        render_page_background(app, area, buffer);
+
+        let areas = screen_areas(app, area);
+        render_header(app, areas.header, buffer);
+        render_filters(app, areas.filters, buffer);
+        render_body(app, areas.body, buffer);
+        if let Some(command_bar) = areas.command_bar {
+            render_command_bar(app, command_bar, buffer);
+        }
+        render_footer(app, areas.footer, buffer);
+        render_overlay(app, area, buffer);
+    }
+
     fn issue(number: u64, title: &str, state: IssueState, labels: &[&str]) -> IssueSummary {
         IssueSummary {
             number,
@@ -2481,6 +2821,33 @@ mod tests {
     }
 
     #[test]
+    fn list_view_renders_issue_dependency_tree_when_enabled() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        let root = issue(1, "Release feature", IssueState::Open, &[]);
+        let dependency = issue(2, "Build backend", IssueState::Open, &[]);
+        app.set_issues(vec![root.clone(), dependency.clone()]);
+        app.enable_relationship_tree();
+        app.set_relationship_detail(IssueDetail {
+            summary: root,
+            body: "Depends on #2".to_string(),
+            comments: Vec::new(),
+        });
+        app.set_relationship_detail(IssueDetail {
+            summary: dependency,
+            body: "No blockers".to_string(),
+            comments: Vec::new(),
+        });
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 120, 28));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(rendered.contains("Issues Tree"));
+        assert!(rendered.contains("#1 Release feature"));
+        assert!(rendered.contains("#2 Build backend"));
+    }
+
+    #[test]
     fn renders_project_board_picker_choices() {
         let mut app = App::new("owner/tissues".parse().unwrap());
         app.set_project_board_choices(vec![
@@ -2575,7 +2942,11 @@ mod tests {
         assert!(!footer_shortcuts(&app).contains("A assign"));
 
         app.set_issue_view(IssueView::Board);
-        assert!(footer_shortcuts(&app).contains("Left/Right move"));
+        assert!(footer_shortcuts(&app).contains(":move state"));
+
+        app.set_issue_view(IssueView::Board);
+        app.mode = UiMode::IssueDetail;
+        assert!(footer_shortcuts(&app).contains("Esc board"));
 
         app.set_issue_view(IssueView::List);
         app.mode = UiMode::NewIssue;
@@ -3077,6 +3448,7 @@ mod tests {
                 label: "Refresh GitHub project access".to_string(),
                 command: "gh auth refresh -s read:project".to_string(),
                 scopes: vec!["read:project".to_string()],
+                retry: None,
             }),
         );
 
@@ -3088,6 +3460,42 @@ mod tests {
         assert!(rendered.contains("Repair"));
         assert!(rendered.contains("Press r to run"));
         assert!(rendered.contains("gh auth refresh -s read:project"));
+    }
+
+    #[test]
+    fn renders_doctor_checks_with_repair_hint() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.set_doctor_checks(vec![
+            crate::app::DoctorCheck {
+                name: "GitHub account".to_string(),
+                status: crate::app::DoctorCheckStatus::Pass,
+                detail: "Authenticated as alice".to_string(),
+                remediation: None,
+            },
+            crate::app::DoctorCheck {
+                name: "Project board access".to_string(),
+                status: crate::app::DoctorCheckStatus::Fail,
+                detail: "Missing read:project".to_string(),
+                remediation: Some(crate::app::ErrorRemediation {
+                    label: "Refresh GitHub project access".to_string(),
+                    command: "gh auth refresh -s read:project".to_string(),
+                    scopes: vec!["read:project".to_string()],
+                    retry: Some(crate::app::RetryAction::RunDoctor),
+                }),
+            },
+        ]);
+        app.mode = UiMode::Doctor;
+        app.picker_index = 1;
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+        render(&app, buffer.area, &mut buffer);
+        let rendered = buffer_to_string(&buffer);
+
+        assert!(footer_shortcuts(&app).contains("r repair"));
+        assert!(rendered.contains("Doctor"));
+        assert!(rendered.contains("pass GitHub account"));
+        assert!(rendered.contains("fail Project board access"));
+        assert!(rendered.contains("Press r to run"));
     }
 
     #[test]

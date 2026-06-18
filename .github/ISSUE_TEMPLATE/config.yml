@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: User guide
+    url: https://github.com/Kade-Powell/tissues/blob/main/docs/USER_GUIDE.md
+    about: Check setup, auth, controls, board movement, and troubleshooting docs.
+  - name: Security report
+    url: https://github.com/Kade-Powell/tissues/security/advisories/new
+    about: Report vulnerabilities or token-handling bugs privately.
