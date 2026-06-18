@@ -59,6 +59,7 @@ pub trait IssueBackend {
         number: u64,
         state: IssueState,
     ) -> Result<IssueSummary>;
+    async fn delete_issue(&self, repo: &Repository, number: u64) -> Result<()>;
     async fn update_issue(
         &self,
         repo: &Repository,
@@ -471,6 +472,36 @@ impl IssueBackend for GitHubClient {
         Ok(issue_summary_from_octocrab(issue))
     }
 
+    async fn delete_issue(&self, repo: &Repository, number: u64) -> Result<()> {
+        let response: IssueIdResponse = self
+            .crab
+            .graphql(&json!({
+                "query": ISSUE_ID_QUERY,
+                "variables": {
+                    "owner": repo.owner,
+                    "name": repo.name,
+                    "number": number as i64,
+                }
+            }))
+            .await
+            .wrap_err_with(|| format!("failed to load issue #{number}"))?;
+        let issue_id = response
+            .repository
+            .and_then(|repo| repo.issue)
+            .map(|issue| issue.id)
+            .ok_or_else(|| eyre!("issue #{number} not found"))?;
+
+        let _: serde_json::Value = self
+            .crab
+            .graphql(&json!({
+                "query": DELETE_ISSUE_MUTATION,
+                "variables": { "issueId": issue_id }
+            }))
+            .await
+            .wrap_err_with(|| format!("failed to delete issue #{number}"))?;
+        Ok(())
+    }
+
     async fn update_issue(
         &self,
         repo: &Repository,
@@ -839,6 +870,24 @@ mutation UpdateProjectItemStatus(
 }
 "#;
 
+const ISSUE_ID_QUERY: &str = r#"
+query IssueId($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      id
+    }
+  }
+}
+"#;
+
+const DELETE_ISSUE_MUTATION: &str = r#"
+mutation DeleteIssue($issueId: ID!) {
+  deleteIssue(input: { issueId: $issueId }) {
+    clientMutationId
+  }
+}
+"#;
+
 #[derive(Debug, Deserialize)]
 struct RepositoryProjectsResponse {
     repository: Option<RepositoryProjects>,
@@ -853,6 +902,21 @@ struct RepositoryProjects {
 #[derive(Debug, Deserialize)]
 struct ProjectNodes {
     nodes: Vec<ProjectNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IssueIdResponse {
+    repository: Option<IssueIdRepository>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IssueIdRepository {
+    issue: Option<IssueIdNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IssueIdNode {
+    id: String,
 }
 
 #[derive(Debug, Deserialize)]

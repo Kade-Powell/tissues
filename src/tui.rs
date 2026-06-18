@@ -405,6 +405,16 @@ fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> 
                 )
             })
         }
+        UiMode::ConfirmDeleteIssue
+            if key.code == KeyCode::Enter || matches!(key.code, KeyCode::Char('y')) =>
+        {
+            app.selected_issue().map(|issue| {
+                (
+                    PendingAction::DeleteIssue,
+                    format!("Deleting issue #{}", issue.number),
+                )
+            })
+        }
         _ => None,
     }
 }
@@ -516,6 +526,7 @@ async fn handle_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) 
         UiMode::ProjectBoardPicker => handle_project_board_picker_key(app, backend, key).await,
         UiMode::Doctor => handle_doctor_key(app, backend, key).await,
         UiMode::ConfirmClose => handle_confirm_key(app, backend, key).await,
+        UiMode::ConfirmDeleteIssue => handle_confirm_delete_key(app, backend, key).await,
         UiMode::Success => {
             app.mode = UiMode::Browsing;
         }
@@ -554,6 +565,9 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
         }
         KeyCode::Char('c') if app.triage_mode && app.selected_issue().is_some() => {
             open_comment_composer(app, backend).await;
+        }
+        KeyCode::Char('d') if app.triage_mode && app.selected_issue().is_some() => {
+            app.mode = UiMode::ConfirmDeleteIssue;
         }
         KeyCode::Char('j') | KeyCode::Down if app.issue_view == IssueView::Board => {
             select_next_board_issue(app);
@@ -725,6 +739,7 @@ async fn handle_mouse_target<B: IssueBackend>(app: &mut App, backend: &B, target
             UiMode::IssueLabelEditor => save_issue_labels(app, backend).await,
             UiMode::ProjectBoardPicker => select_project_board_choice(app, backend).await,
             UiMode::ConfirmClose => toggle_issue_state(app, backend).await,
+            UiMode::ConfirmDeleteIssue => delete_issue(app, backend).await,
             UiMode::Success => app.mode = UiMode::Browsing,
             _ => {}
         },
@@ -831,7 +846,7 @@ fn cancel_active_screen(app: &mut App) {
             app.editing_assignees.clear();
             app.editing_issue_labels.clear();
         }
-        UiMode::Success | UiMode::Error | UiMode::ConfirmClose => {
+        UiMode::Success | UiMode::Error | UiMode::ConfirmClose | UiMode::ConfirmDeleteIssue => {
             app.mode = UiMode::Browsing;
         }
         UiMode::Command | UiMode::Search => {
@@ -1022,6 +1037,9 @@ async fn run_command<B: IssueBackend>(app: &mut App, backend: &B) {
                 }
                 None => {}
             }
+        }
+        "d" | "delete" if app.triage_mode && app.selected_issue().is_some() => {
+            app.mode = UiMode::ConfirmDeleteIssue;
         }
         _ => {
             app.mode = UiMode::Browsing;
@@ -2312,6 +2330,14 @@ async fn handle_confirm_key<B: IssueBackend>(app: &mut App, backend: &B, key: Ke
     }
 }
 
+async fn handle_confirm_delete_key<B: IssueBackend>(app: &mut App, backend: &B, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('n') => app.mode = UiMode::Browsing,
+        KeyCode::Char('y') | KeyCode::Enter => delete_issue(app, backend).await,
+        _ => {}
+    }
+}
+
 pub async fn refresh<B: IssueBackend>(app: &mut App, backend: &B) {
     app.begin_action(PendingAction::Refresh, "Refreshing issues");
     match backend.list_issues(&app.repo, &app.filters).await {
@@ -3225,6 +3251,41 @@ async fn toggle_issue_state<B: IssueBackend>(app: &mut App, backend: &B) {
     }
 }
 
+async fn delete_issue<B: IssueBackend>(app: &mut App, backend: &B) {
+    let Some(number) = app.selected_issue().map(|issue| issue.number) else {
+        app.mode = UiMode::Browsing;
+        return;
+    };
+
+    app.begin_action(
+        PendingAction::DeleteIssue,
+        format!("Deleting issue #{number}"),
+    );
+    match backend.delete_issue(&app.repo, number).await {
+        Ok(()) => {
+            refresh_after_action(
+                app,
+                backend,
+                None,
+                format!("Deleted issue #{number}"),
+                None,
+                None,
+            )
+            .await;
+        }
+        Err(err) => {
+            app.finish_action();
+            let details = format!("{err:#}");
+            app.show_error_with_remediation(
+                "Delete issue failed",
+                github_scope_error_details(&details, &["repo"], "issue deletion"),
+                Some("Run `gh auth status` to inspect scopes and account access.".to_string()),
+                github_scope_remediation(&details, &["repo"], "Refresh GitHub repository access"),
+            );
+        }
+    }
+}
+
 async fn assign_selected_issue_to_viewer<B: IssueBackend>(app: &mut App, backend: &B) {
     let Some(number) = app.selected_issue().map(|issue| issue.number) else {
         app.mode = UiMode::Browsing;
@@ -3353,6 +3414,7 @@ mod tests {
         commented_body: Mutex<Option<String>>,
         updated_issue: Mutex<Option<(u64, String, String)>>,
         state_updates: Mutex<Vec<(u64, IssueState)>>,
+        deleted_issues: Mutex<Vec<u64>>,
         assignee_updates: Mutex<Vec<(u64, Vec<String>)>>,
         label_updates: Mutex<Vec<(u64, Vec<String>)>>,
         issues: Mutex<Vec<IssueSummary>>,
@@ -3397,6 +3459,7 @@ mod tests {
             commented_body: Mutex::new(None),
             updated_issue: Mutex::new(None),
             state_updates: Mutex::new(Vec::new()),
+            deleted_issues: Mutex::new(Vec::new()),
             assignee_updates: Mutex::new(Vec::new()),
             label_updates: Mutex::new(Vec::new()),
             issues: Mutex::new(issues),
@@ -3636,6 +3699,15 @@ mod tests {
                 .expect("test issue should exist");
             issue.state = state;
             Ok(issue.clone())
+        }
+
+        async fn delete_issue(&self, _repo: &Repository, number: u64) -> Result<()> {
+            self.deleted_issues.lock().unwrap().push(number);
+            self.issues
+                .lock()
+                .unwrap()
+                .retain(|issue| issue.number != number);
+            Ok(())
         }
 
         async fn update_issue(
@@ -5870,6 +5942,67 @@ mod tests {
         .await;
 
         assert_eq!(app.mode, UiMode::ConfirmClose);
+    }
+
+    #[tokio::test]
+    async fn deleting_issue_requires_confirmation_and_removes_issue() {
+        let backend = backend_with_issues(vec![
+            issue(1, "Fix redraw", IssueState::Open, 1),
+            issue(2, "Needs review", IssueState::Open, 0),
+        ]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        refresh(&mut app, &backend).await;
+
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+        )
+        .await;
+        handle_browsing_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+        )
+        .await;
+        assert_eq!(app.mode, UiMode::ConfirmDeleteIssue);
+
+        handle_confirm_delete_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(*backend.deleted_issues.lock().unwrap(), vec![1]);
+        assert_eq!(
+            app.issues
+                .iter()
+                .map(|issue| issue.number)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+        assert_eq!(app.status, "Deleted issue #1");
+        assert_eq!(app.mode, UiMode::Success);
+    }
+
+    #[tokio::test]
+    async fn cancel_delete_confirmation_keeps_issue_unchanged() {
+        let backend = backend_with_issues(vec![issue(1, "Fix redraw", IssueState::Open, 1)]);
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        refresh(&mut app, &backend).await;
+        app.mode = UiMode::ConfirmDeleteIssue;
+
+        handle_confirm_delete_key(
+            &mut app,
+            &backend,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        )
+        .await;
+
+        assert_eq!(app.mode, UiMode::Browsing);
+        assert!(backend.deleted_issues.lock().unwrap().is_empty());
+        assert_eq!(app.issues.len(), 1);
     }
 
     #[tokio::test]

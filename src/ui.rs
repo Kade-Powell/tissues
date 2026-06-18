@@ -252,6 +252,7 @@ pub fn effect_area(app: &App, area: Rect) -> Rect {
         | UiMode::ProjectBoardPicker
         | UiMode::Doctor
         | UiMode::ConfirmClose
+        | UiMode::ConfirmDeleteIssue
         | UiMode::Success
         | UiMode::Loading
         | UiMode::Error => centered_rect(72, 55, area),
@@ -1409,7 +1410,7 @@ pub(crate) fn render_footer(app: &App, area: Rect, buffer: &mut Buffer) {
 fn footer_shortcuts(app: &App) -> String {
     match app.mode {
         UiMode::Browsing if app.triage_mode => {
-            "triage | v view | a assign me | l labels | c comment | x close | s skip | t/esc exit"
+            "triage | v view | a assign me | l labels | c comment | x close | d delete | s skip | t/esc exit"
                 .to_string()
         }
         UiMode::Browsing if app.issue_view == IssueView::Board => {
@@ -1461,6 +1462,7 @@ fn footer_shortcuts(app: &App) -> String {
         }
         UiMode::Doctor => "j/k move | Esc close".to_string(),
         UiMode::ConfirmClose => "y/Enter reopen | Esc cancel".to_string(),
+        UiMode::ConfirmDeleteIssue => "y/Enter delete | Esc cancel".to_string(),
         UiMode::Success => "Any key continue".to_string(),
         UiMode::Loading => "Working".to_string(),
         UiMode::Error if app.error_detail_has_remediation() => "r repair | Esc dismiss".to_string(),
@@ -1482,6 +1484,7 @@ pub(crate) fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
         UiMode::ProjectBoardPicker => Some("Select Board"),
         UiMode::Doctor => Some("Doctor"),
         UiMode::ConfirmClose => Some("Confirm"),
+        UiMode::ConfirmDeleteIssue => Some("Confirm Delete"),
         UiMode::Success => Some("Done"),
         UiMode::Loading => Some("Working"),
         UiMode::Error => Some("Error"),
@@ -1510,6 +1513,19 @@ pub(crate) fn render_overlay(app: &App, area: Rect, buffer: &mut Buffer) {
                 .style(modal_style())
                 .wrap(Wrap { trim: false })
                 .render(popup, buffer),
+            UiMode::ConfirmDeleteIssue => {
+                let issue_label = app
+                    .selected_issue()
+                    .map(|issue| format!("issue #{}", issue.number))
+                    .unwrap_or_else(|| "this issue".to_string());
+                Paragraph::new(format!(
+                    "Are you sure you want to permanently delete {issue_label}?\n\nPress y to delete, Esc to cancel"
+                ))
+                .block(modal_block(title, ERROR_ACCENT))
+                .style(Style::new().fg(ERROR_ACCENT))
+                .wrap(Wrap { trim: false })
+                .render(popup, buffer)
+            }
             UiMode::Error => render_error_overlay(app, title, popup, buffer),
             UiMode::Success => Paragraph::new(format!("{}\n\nState reloaded.", app.status))
                 .block(modal_block(title, OPEN_ACCENT))
@@ -1587,6 +1603,7 @@ fn command_suggestions_line(input: &str) -> String {
         "comment",
         "assign",
         "labels",
+        "delete",
         "new",
         "close",
         "all",
@@ -1935,6 +1952,7 @@ fn pending_action_label(action: &PendingAction) -> &'static str {
         PendingAction::CreateIssue => "Creating issue",
         PendingAction::AddComment => "Adding comment",
         PendingAction::CloseIssue => "Closing issue",
+        PendingAction::DeleteIssue => "Deleting issue",
         PendingAction::ReopenIssue => "Reopening issue",
         PendingAction::UpdateIssue => "Updating issue",
         PendingAction::UpdateAssignees => "Updating assignees",
