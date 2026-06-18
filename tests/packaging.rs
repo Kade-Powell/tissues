@@ -152,3 +152,43 @@ fn workflows_do_not_reference_internal_infra() {
         assert!(!workflow.contains("gha-reusable-workflows"), "{path:?}");
     }
 }
+
+#[test]
+fn homebrew_workflow_is_reusable_publish_step() {
+    let workflow = fs::read_to_string(".github/workflows/publish-cli-homebrew.yaml")
+        .expect("read homebrew publish workflow");
+
+    assert!(workflow.contains("workflow_call:"));
+    assert!(!workflow.contains("workflow_dispatch:"));
+    assert!(workflow.contains("version_tag:"));
+    assert!(workflow.contains("HOMEBREW_TAP_TOKEN:"));
+    assert!(workflow.contains("homebrew-tissues"));
+    assert!(workflow.contains("Formula/tissues.rb"));
+    assert!(workflow.contains("class Tissues < Formula"));
+    assert!(workflow.contains("dry_run:"));
+    assert!(workflow.contains("allow_existing:"));
+}
+
+#[test]
+fn release_workflow_builds_macos_binaries_and_publishes_to_homebrew() {
+    let workflow = fs::read_to_string(".github/workflows/cd.yaml").expect("read release workflow");
+
+    // Verify binary build job exists
+    assert!(workflow.contains("build-binaries:"));
+    assert!(workflow.contains("macos-latest"));
+    assert!(workflow.contains("aarch64-apple-darwin"));
+    assert!(workflow.contains("x86_64-apple-darwin"));
+    assert!(workflow.contains("cargo build --release --target"));
+    assert!(workflow.contains("tar -czf"));
+    assert!(workflow.contains("gh release upload"));
+
+    // Verify Homebrew publish job exists
+    assert!(workflow.contains("publish-cli-homebrew:"));
+    assert!(workflow.contains("./.github/workflows/publish-cli-homebrew.yaml"));
+    assert!(workflow.contains("needs: [create-release, build-binaries]"));
+    assert!(workflow.contains("HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}"));
+
+    // Verify crates-io still exists and publishes
+    assert!(workflow.contains("publish-cli-crates-io:"));
+    assert!(workflow.contains("./.github/workflows/publish-cli-crates-io.yaml"));
+}

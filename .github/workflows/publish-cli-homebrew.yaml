@@ -1,0 +1,221 @@
+name: Publish CLI to Homebrew
+
+on:
+  workflow_call:
+    inputs:
+      version_tag:
+        description: "Release version tag from caller workflow"
+        type: string
+        required: true
+      checkout_ref:
+        description: "Git ref to check out before publishing"
+        type: string
+        required: false
+        default: ""
+      runner_label:
+        description: "GitHub runner label"
+        type: string
+        required: false
+        default: ubuntu-latest
+      timeout_minutes:
+        description: "Job timeout in minutes"
+        type: number
+        required: false
+        default: 20
+      allow_existing:
+        description: "Treat already-published formula as success"
+        type: boolean
+        required: false
+        default: false
+      dry_run:
+        description: "Verify formula generation without pushing to tap"
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      HOMEBREW_TAP_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ${{ inputs.runner_label || 'ubuntu-latest' }}
+    timeout-minutes: ${{ inputs.timeout_minutes || 20 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref || github.ref }}
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION_TAG="${{ inputs.version_tag }}"
+          TARGET_VERSION="$(printf '%s\n' "$VERSION_TAG" | sed 's/^[^0-9]*//')"
+          if [[ -z "$TARGET_VERSION" ]]; then
+            echo "Unable to derive semver from version tag: $VERSION_TAG"
+            exit 1
+          fi
+          echo "version=$TARGET_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$VERSION_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Download release assets
+        id: assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p homebrew-assets
+          cd homebrew-assets
+
+          # Download the macOS binaries
+          gh release download "${{ steps.version.outputs.tag }}" \
+            --pattern "tissues-*-darwin*.tar.gz" \
+            --repo "${{ github.repository }}"
+
+          # Create checksums file
+          for archive in tissues-*-darwin*.tar.gz; do
+            if [[ -f "$archive" ]]; then
+              shasum -a 256 "$archive" >> checksums.txt
+            fi
+          done
+
+          if [[ ! -f checksums.txt ]] || [[ ! -s checksums.txt ]]; then
+            echo "No macOS binaries found in release ${{ steps.version.outputs.tag }}"
+            exit 1
+          fi
+
+          cd ..
+          echo "assets_dir=homebrew-assets" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Homebrew formula
+        id: formula
+        run: |
+          set -euo pipefail
+
+          # Extract package metadata from Cargo.toml
+          DESCRIPTION=$(grep '^description' Cargo.toml | head -1 | sed 's/description = "//; s/"$//')
+          HOMEPAGE=$(grep '^repository' Cargo.toml | head -1 | sed 's/repository = "//; s/"$//')
+
+          # Read checksums and extract SHAs
+          ASSETS_DIR="${{ steps.assets.outputs.assets_dir }}"
+
+          # Find aarch64 and x86_64 archives and their SHA256 values
+          ARM64_SHA=$(grep "aarch64-apple-darwin" "$ASSETS_DIR/checksums.txt" | awk '{print $1}')
+          X86_64_SHA=$(grep "x86_64-apple-darwin" "$ASSETS_DIR/checksums.txt" | awk '{print $1}')
+
+          if [[ -z "$ARM64_SHA" ]] || [[ -z "$X86_64_SHA" ]]; then
+            echo "Could not extract SHA256 checksums for both architectures"
+            exit 1
+          fi
+
+          # Create formula
+          FORMULA_FILE="tissues.rb"
+          cat > "$FORMULA_FILE" << 'FORMULA'
+class Tissues < Formula
+  desc "A Rust terminal app for working through GitHub issues in one repository at a time"
+  homepage "https://github.com/Kade-Powell/tissues"
+  version "TISSUES_VERSION"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/Kade-Powell/tissues/releases/download/TISSUES_TAG/tissues-TISSUES_VERSION-aarch64-apple-darwin.tar.gz"
+      sha256 "ARM64_SHA256"
+    end
+    on_intel do
+      url "https://github.com/Kade-Powell/tissues/releases/download/TISSUES_TAG/tissues-TISSUES_VERSION-x86_64-apple-darwin.tar.gz"
+      sha256 "X86_64_SHA256"
+    end
+  end
+
+  def install
+    bin.install "tissues"
+  end
+
+  test do
+    system "#{bin}/tissues", "--version"
+  end
+end
+FORMULA
+
+          # Replace placeholders
+          sed -i '' "s/TISSUES_VERSION/${{ steps.version.outputs.version }}/g" "$FORMULA_FILE"
+          sed -i '' "s|TISSUES_TAG|${{ steps.version.outputs.tag }}|g" "$FORMULA_FILE"
+          sed -i '' "s/ARM64_SHA256/$ARM64_SHA/g" "$FORMULA_FILE"
+          sed -i '' "s/X86_64_SHA256/$X86_64_SHA/g" "$FORMULA_FILE"
+
+          echo "formula_file=$FORMULA_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Show generated formula
+        run: |
+          echo "Generated formula for version ${{ steps.version.outputs.version }}:"
+          cat tissues.rb
+
+      - name: Push formula to Homebrew tap
+        if: inputs.dry_run != true
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          ALLOW_EXISTING: ${{ inputs.allow_existing && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${HOMEBREW_TAP_TOKEN}" ]]; then
+            echo "A Homebrew TAP token is required. Configure HOMEBREW_TAP_TOKEN secret."
+            exit 1
+          fi
+
+          # Determine username from repository
+          REPO_OWNER=$(echo "${{ github.repository }}" | cut -d/ -f1)
+
+          # Clone the homebrew tap repository
+          git clone \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${REPO_OWNER}/homebrew-tissues.git" \
+            homebrew-tap
+
+          cd homebrew-tap
+
+          # Configure git for commit
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Ensure Formula directory exists
+          mkdir -p Formula
+
+          # Copy the generated formula
+          cp ../tissues.rb Formula/tissues.rb
+
+          # Check if formula already exists and is identical
+          if git diff --quiet Formula/tissues.rb 2>/dev/null; then
+            if [[ "$ALLOW_EXISTING" == "true" ]]; then
+              echo "Formula already exists and is identical; continuing because allow_existing=true"
+              exit 0
+            else
+              echo "Formula already exists and is identical"
+              exit 1
+            fi
+          fi
+
+          # Stage, commit, and push
+          git add Formula/tissues.rb
+          git commit -m "Update formula for ${{ steps.version.outputs.tag }}"
+          git push origin HEAD:main
+
+      - name: Show install command
+        run: |
+          REPO_OWNER=$(echo "${{ github.repository }}" | cut -d/ -f1)
+          {
+            echo "Publish request tag: ${{ steps.version.outputs.tag }}"
+            if [[ "${{ inputs.dry_run && 'true' || 'false' }}" == "true" ]]; then
+              echo "Verified tissues ${{ steps.version.outputs.version }} Homebrew formula generation with dry-run."
+            else
+              echo "Published tissues ${{ steps.version.outputs.version }} to Homebrew tap."
+            fi
+            echo
+            echo "Install with:"
+            echo "brew tap ${REPO_OWNER}/tissues"
+            echo "brew install tissues"
+          } >> "$GITHUB_STEP_SUMMARY"

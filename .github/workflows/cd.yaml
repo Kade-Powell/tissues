@@ -109,6 +109,61 @@ jobs:
         if: steps.plan.outputs.should_release != 'true'
         run: echo "No release-worthy Conventional Commit messages found since the latest v* tag." >> "$GITHUB_STEP_SUMMARY"
 
+  build-binaries:
+    name: Build macOS binaries
+    needs: create-release
+    if: needs.create-release.outputs.should_publish == 'true' && needs.create-release.outputs.dry_run != 'true'
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-release.outputs.version_tag }}
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: |
+          set -euo pipefail
+          cargo build --release --target ${{ matrix.target }} --locked
+
+      - name: Create tarball
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.create-release.outputs.version_tag }}"
+          VERSION="${VERSION#v}"  # Strip 'v' prefix
+          TARGET="${{ matrix.target }}"
+          ARCHIVE_NAME="tissues-${VERSION}-${TARGET}.tar.gz"
+
+          cd target/$TARGET/release
+          tar -czf "../../../${ARCHIVE_NAME}" tissues
+          cd ../../../
+
+          # Calculate and display SHA256
+          shasum -a 256 "${ARCHIVE_NAME}"
+
+      - name: Upload to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.create-release.outputs.version_tag }}"
+          VERSION="${VERSION#v}"  # Strip 'v' prefix
+          TARGET="${{ matrix.target }}"
+          ARCHIVE_NAME="tissues-${VERSION}-${TARGET}.tar.gz"
+
+          gh release upload "${{ needs.create-release.outputs.version_tag }}" \
+            "${ARCHIVE_NAME}" \
+            --repo "${{ github.repository }}"
+
   publish-cli-crates-io:
     needs: create-release
     if: needs.create-release.outputs.should_publish == 'true'
@@ -122,3 +177,17 @@ jobs:
       dry_run: ${{ needs.create-release.outputs.dry_run == 'true' }}
     secrets:
       CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+
+  publish-cli-homebrew:
+    needs: [create-release, build-binaries]
+    if: needs.create-release.outputs.should_publish == 'true' && needs.create-release.outputs.dry_run != 'true'
+    uses: ./.github/workflows/publish-cli-homebrew.yaml
+    with:
+      version_tag: ${{ needs.create-release.outputs.version_tag }}
+      checkout_ref: ${{ needs.create-release.outputs.version_tag }}
+      runner_label: ubuntu-latest
+      timeout_minutes: 20
+      allow_existing: ${{ needs.create-release.outputs.allow_existing == 'true' }}
+      dry_run: false
+    secrets:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
