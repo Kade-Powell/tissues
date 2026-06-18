@@ -1413,18 +1413,18 @@ fn footer_shortcuts(app: &App) -> String {
                 .to_string()
         }
         UiMode::Browsing if app.issue_view == IssueView::Board => {
-            ":move state | v view | j/k select | Enter open | : commands | q quit".to_string()
+            ":move state | v/Tab view | j/k select | Enter open | : commands | q quit".to_string()
         }
         UiMode::Browsing => {
-            ": commands | v view | t triage | n new | x close | j/k move | Enter open | q/ctrl+c quit"
+            ": commands | v/Tab view | t triage | n new | x close | j/k move | Enter open | q/ctrl+c quit"
                 .to_string()
         }
         UiMode::IssueDetail if app.issue_view == IssueView::Board => {
-            "Esc board | :move state | v view | Enter fold | j/k scroll | PgUp/PgDn detail | : commands"
+            "Esc board | :move state | v/Tab view | Enter fold | j/k scroll | PgUp/PgDn detail | : commands"
                 .to_string()
         }
         UiMode::IssueDetail => {
-            "Esc list | v view | Enter fold | j/k scroll | PgUp/PgDn detail | : commands"
+            "Esc list | v/Tab view | Enter fold | j/k scroll | PgUp/PgDn detail | : commands"
                 .to_string()
         }
         UiMode::IssueDetailClosing => "Returning to list".to_string(),
@@ -2874,7 +2874,7 @@ mod tests {
         let mut app = App::new("owner/tissues".parse().unwrap());
 
         assert!(footer_shortcuts(&app).contains(": commands"));
-        assert!(footer_shortcuts(&app).contains("v view"));
+        assert!(footer_shortcuts(&app).contains("v/Tab view"));
         assert!(footer_shortcuts(&app).contains("n new"));
         assert!(footer_shortcuts(&app).contains("x close"));
         assert!(!footer_shortcuts(&app).contains("A assign"));
@@ -2889,7 +2889,7 @@ mod tests {
         app.set_issue_view(IssueView::List);
         app.mode = UiMode::NewIssue;
         assert!(footer_shortcuts(&app).contains("Ctrl+S create"));
-        assert!(!footer_shortcuts(&app).contains("v view"));
+        assert!(!footer_shortcuts(&app).contains("v/Tab view"));
         assert!(!footer_shortcuts(&app).contains("q quit"));
 
         app.mode = UiMode::CommentComposer;

@@ -493,6 +493,14 @@ impl App {
         self.mode = UiMode::Browsing;
     }
 
+    pub fn cycle_issue_view_reverse(&mut self) {
+        self.issue_view = match self.issue_view {
+            IssueView::Board => IssueView::List,
+            IssueView::List => IssueView::Board,
+        };
+        self.mode = UiMode::Browsing;
+    }
+
     pub fn cycle_state_filter(&mut self) {
         self.active_view = None;
         self.filters.state = match self.filters.state {
@@ -1547,6 +1555,17 @@ mod tests {
         assert_eq!(app.issue_view, IssueView::Board);
 
         app.cycle_issue_view();
+        assert_eq!(app.issue_view, IssueView::List);
+    }
+
+    #[test]
+    fn cycles_between_list_and_board_issue_views_in_reverse() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+
+        app.cycle_issue_view_reverse();
+        assert_eq!(app.issue_view, IssueView::Board);
+
+        app.cycle_issue_view_reverse();
         assert_eq!(app.issue_view, IssueView::List);
     }
 
