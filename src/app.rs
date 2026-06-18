@@ -3,7 +3,7 @@ use std::{cmp::Ordering, collections::HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{ProjectBoardConfig, SavedView},
+    config::{LoadingEffectStyle, ProjectBoardConfig, SavedView, UiEffectsConfig},
     domain::{
         IssueDetail, IssueSummary, IssueTemplate, Label, ProjectBoard, ProjectBoardSummary, User,
     },
@@ -357,6 +357,8 @@ pub struct App {
     pub active_view: Option<String>,
     pub triage_mode: bool,
     pub pending_writes: Vec<String>,
+    pub all_effects_disabled: bool,
+    pub loading_effect: LoadingEffectStyle,
     pub new_issue_animation_frame: u8,
     pub activity_frame: u8,
     pub detail_scroll: u16,
@@ -406,6 +408,8 @@ impl App {
             active_view: None,
             triage_mode: false,
             pending_writes: Vec::new(),
+            all_effects_disabled: false,
+            loading_effect: LoadingEffectStyle::default(),
             new_issue_animation_frame: 0,
             activity_frame: 0,
             detail_scroll: 0,
@@ -619,6 +623,11 @@ impl App {
     pub fn set_project_board_config(&mut self, config: ProjectBoardConfig) {
         self.project_board_config = config;
         self.clear_project_board();
+    }
+
+    pub fn set_ui_effects_config(&mut self, config: UiEffectsConfig) {
+        self.all_effects_disabled = config.all_effects_disabled;
+        self.loading_effect = config.loading_effect;
     }
 
     pub fn begin_action(&mut self, action: PendingAction, status: impl Into<String>) {

@@ -18,6 +18,27 @@ pub struct AppConfig {
     pub auth: GitHubAuthConfig,
     #[serde(default)]
     pub project_board: ProjectBoardConfig,
+    #[serde(default)]
+    pub ui: UiEffectsConfig,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadingEffectStyle {
+    Disabled,
+    #[default]
+    Coalesce,
+    Paint,
+    Evolve,
+    Explode,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UiEffectsConfig {
+    #[serde(default)]
+    pub all_effects_disabled: bool,
+    #[serde(default)]
+    pub loading_effect: LoadingEffectStyle,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -90,6 +111,7 @@ impl AppConfig {
             ],
             auth: GitHubAuthConfig::default(),
             project_board: ProjectBoardConfig::default(),
+            ui: UiEffectsConfig::default(),
         }
     }
 
@@ -134,6 +156,9 @@ impl AppConfig {
         }
         if user_config.project_board != ProjectBoardConfig::default() {
             self.project_board = user_config.project_board;
+        }
+        if user_config.ui != UiEffectsConfig::default() {
+            self.ui = user_config.ui;
         }
     }
 }

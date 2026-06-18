@@ -49,9 +49,10 @@ pub async fn run<B: IssueBackend>(
     let config = AppConfig::load();
     app.set_project_board_config(config.project_board);
     app.set_saved_views(config.views);
+    app.set_ui_effects_config(config.ui);
     load_cached_issues(app);
     app.begin_action(PendingAction::Refresh, "Starting tissues");
-    effects.trigger_startup_loading();
+    effects.trigger_startup_loading(app);
     draw_app(
         terminal,
         &mut realm,
@@ -274,13 +275,9 @@ fn draw_app(
 fn draw_effect_area(
     app: &App,
     area: ratatui::layout::Rect,
-    startup_loading: bool,
+    _startup_loading: bool,
 ) -> ratatui::layout::Rect {
-    if startup_loading {
-        area
-    } else {
-        ui::effect_area(app, area)
-    }
+    ui::effect_area(app, area)
 }
 
 fn loading_preview(app: &App, key: KeyEvent) -> Option<(PendingAction, String)> {

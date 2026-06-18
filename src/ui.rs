@@ -13,7 +13,10 @@ use ratatui::{
     },
 };
 use ratatui_textarea::{CursorMove, TextArea};
-use tachyonfx::{EffectManager, Interpolation, Motion, fx};
+use tachyonfx::{
+    EffectManager, Interpolation, Motion, fx,
+    pattern::{DiagonalPattern, RadialPattern},
+};
 use throbber_widgets_tui::{BRAILLE_ONE, Throbber, ThrobberState, WhichUse};
 use tui_scrollview::{ScrollView, ScrollViewState, ScrollbarVisibility};
 use tui_tree_widget::{Tree, TreeItem, TreeState};
@@ -24,6 +27,7 @@ use crate::{
         IssueHighlightKind, IssueStateFilter, IssueView, NewIssueField, PendingAction, UiMode,
         dependency_issue_numbers,
     },
+    config::LoadingEffectStyle,
     domain::{IssueComment, IssueDetail, IssueState, IssueSummary},
 };
 
@@ -82,32 +86,42 @@ pub struct TissueEffects {
 }
 
 impl TissueEffects {
-    pub fn trigger_startup_loading(&mut self) {
-        self.manager.add_unique_effect(
+    pub fn trigger_startup_loading(&mut self, app: &App) {
+        self.add_loading_effect(
             "startup-loading",
-            fx::fade_from_fg(DIM_FG, (500, Interpolation::SineOut)),
+            app,
+            startup_loading_style(app.loading_effect),
         );
     }
 
-    pub fn trigger_refresh(&mut self) {
-        self.add_coalesce_effect("routine-loading");
+    pub fn trigger_refresh(&mut self, app: &App) {
+        self.add_loading_effect("routine-loading", app, app.loading_effect);
     }
 
-    pub fn trigger_success(&mut self) {
+    pub fn trigger_success(&mut self, app: &App) {
+        if app.all_effects_disabled {
+            return;
+        }
         self.manager.add_unique_effect(
             "success",
             fx::fade_to_fg(OPEN_ACCENT, (260, Interpolation::SineOut)),
         );
     }
 
-    pub fn trigger_error(&mut self) {
+    pub fn trigger_error(&mut self, app: &App) {
+        if app.all_effects_disabled {
+            return;
+        }
         self.manager.add_unique_effect(
             "error",
             fx::fade_to_fg(ERROR_ACCENT, (350, Interpolation::SineOut)),
         );
     }
 
-    pub fn trigger_detail_open(&mut self) {
+    pub fn trigger_detail_open(&mut self, app: &App) {
+        if app.all_effects_disabled {
+            return;
+        }
         self.manager.add_unique_effect(
             "detail-open",
             fx::slide_in(
@@ -120,7 +134,10 @@ impl TissueEffects {
         );
     }
 
-    pub fn trigger_detail_close(&mut self) {
+    pub fn trigger_detail_close(&mut self, app: &App) {
+        if app.all_effects_disabled {
+            return;
+        }
         self.manager.add_unique_effect(
             "detail-close",
             fx::slide_out(
@@ -141,21 +158,59 @@ impl TissueEffects {
         self.manager.is_running()
     }
 
-    fn add_coalesce_effect(&mut self, id: &'static str) {
-        self.manager.add_unique_effect(
-            id,
-            fx::coalesce_from(Style::new().fg(DIM_FG), (600, Interpolation::BounceInOut)),
-        );
+    fn add_loading_effect(&mut self, id: &'static str, app: &App, style: LoadingEffectStyle) {
+        if app.all_effects_disabled {
+            return;
+        }
+        let Some(effect) = build_loading_effect(style) else {
+            return;
+        };
+        self.manager.add_unique_effect(id, effect);
+    }
+}
+
+fn startup_loading_style(style: LoadingEffectStyle) -> LoadingEffectStyle {
+    style
+}
+
+fn build_loading_effect(style: LoadingEffectStyle) -> Option<tachyonfx::Effect> {
+    match style {
+        LoadingEffectStyle::Disabled => None,
+        LoadingEffectStyle::Coalesce => Some(fx::coalesce_from(
+            Style::new().fg(DIM_FG),
+            (600, Interpolation::BounceInOut),
+        )),
+        LoadingEffectStyle::Paint => Some(
+            fx::paint(
+                Color::from_u32(0x32302F),
+                Color::from_u32(0x1D2021),
+                (1000, Interpolation::SineOut),
+            )
+            .with_pattern(DiagonalPattern::bottom_left_to_top_right()),
+        ),
+        LoadingEffectStyle::Evolve => Some(
+            fx::evolve(
+                (
+                    fx::EvolveSymbolSet::Shaded,
+                    Style::new()
+                        .fg(Color::from_u32(0x32302F))
+                        .bg(Color::from_u32(0x1D2021)),
+                ),
+                (450, Interpolation::QuartIn),
+            )
+            .with_pattern(RadialPattern::with_transition((0.5, 0.5), 10.0)),
+        ),
+        LoadingEffectStyle::Explode => Some(fx::explode(1.0, 0.5, (450, Interpolation::QuadOut))),
     }
 }
 
 pub fn trigger_flash_effect(app: &mut App, effects: &mut TissueEffects) {
     match app.flash.take() {
-        Some(FlashKind::Refresh) => effects.trigger_refresh(),
-        Some(FlashKind::Success) => effects.trigger_success(),
-        Some(FlashKind::Error) => effects.trigger_error(),
-        Some(FlashKind::DetailOpen) => effects.trigger_detail_open(),
-        Some(FlashKind::DetailClose) => effects.trigger_detail_close(),
+        Some(FlashKind::Refresh) => effects.trigger_refresh(app),
+        Some(FlashKind::Success) => effects.trigger_success(app),
+        Some(FlashKind::Error) => effects.trigger_error(app),
+        Some(FlashKind::DetailOpen) => effects.trigger_detail_open(app),
+        Some(FlashKind::DetailClose) => effects.trigger_detail_close(app),
         None => {}
     }
 }
@@ -253,8 +308,14 @@ pub fn effect_area(app: &App, area: Rect) -> Rect {
         | UiMode::Doctor
         | UiMode::ConfirmClose
         | UiMode::Success
-        | UiMode::Loading
         | UiMode::Error => centered_rect(72, 55, area),
+        UiMode::Loading => {
+            if matches!(app.pending_action, Some(PendingAction::Refresh)) {
+                issue_list_area(area)
+            } else {
+                centered_rect(72, 55, area)
+            }
+        }
         UiMode::Command => command_bar_area(area),
         UiMode::IssueDetail | UiMode::IssueDetailClosing => detail_area(area),
         UiMode::Browsing => issue_list_area(area),
@@ -2590,6 +2651,7 @@ mod tests {
     use super::*;
     use crate::{
         app::App,
+        config::LoadingEffectStyle,
         domain::{IssueState, IssueSummary, IssueTemplate, Label, User},
     };
     use chrono::Duration;
@@ -3229,20 +3291,81 @@ mod tests {
 
     #[test]
     fn routine_refresh_starts_contained_loading_effects() {
+        let app = App::new("owner/tissues".parse().unwrap());
         let mut effects = TissueEffects::default();
 
-        effects.trigger_refresh();
+        effects.trigger_refresh(&app);
 
         assert!(effects.has_effects());
     }
 
     #[test]
     fn creates_startup_loading_effects() {
+        let app = App::new("owner/tissues".parse().unwrap());
         let mut effects = TissueEffects::default();
 
-        effects.trigger_startup_loading();
+        effects.trigger_startup_loading(&app);
 
         assert!(effects.has_effects());
+    }
+
+    #[test]
+    fn loading_effect_style_disabled_skips_loading_effects() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.loading_effect = LoadingEffectStyle::Disabled;
+        let mut effects = TissueEffects::default();
+
+        effects.trigger_startup_loading(&app);
+        effects.trigger_refresh(&app);
+
+        assert!(!effects.has_effects());
+    }
+
+    #[test]
+    fn all_effects_disabled_skips_all_triggers() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.all_effects_disabled = true;
+        let mut effects = TissueEffects::default();
+
+        effects.trigger_startup_loading(&app);
+        effects.trigger_refresh(&app);
+        effects.trigger_success(&app);
+        effects.trigger_error(&app);
+        effects.trigger_detail_open(&app);
+        effects.trigger_detail_close(&app);
+
+        assert!(!effects.has_effects());
+    }
+
+    #[test]
+    fn each_loading_effect_style_is_supported() {
+        let styles = [
+            LoadingEffectStyle::Coalesce,
+            LoadingEffectStyle::Paint,
+            LoadingEffectStyle::Evolve,
+            LoadingEffectStyle::Explode,
+        ];
+
+        for style in styles {
+            let mut app = App::new("owner/tissues".parse().unwrap());
+            app.loading_effect = style;
+            let mut effects = TissueEffects::default();
+
+            effects.trigger_refresh(&app);
+
+            assert!(
+                effects.has_effects(),
+                "style should trigger effect: {style:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn startup_loading_style_matches_configured_loading_style() {
+        assert_eq!(
+            startup_loading_style(LoadingEffectStyle::Paint),
+            LoadingEffectStyle::Paint
+        );
     }
 
     #[test]
@@ -3250,11 +3373,24 @@ mod tests {
         let mut app = App::new("owner/tissues".parse().unwrap());
         app.begin_action(PendingAction::Refresh, "Refreshing issues");
 
+        app.pending_action = Some(PendingAction::CreateIssue);
+
         let area = Rect::new(0, 0, 120, 40);
         let target = effect_area(&app, area);
 
         assert!(target.width < area.width);
         assert!(target.height < area.height);
+    }
+
+    #[test]
+    fn refresh_loading_effect_targets_workspace_area() {
+        let mut app = App::new("owner/tissues".parse().unwrap());
+        app.begin_action(PendingAction::Refresh, "Refreshing issues");
+
+        let area = Rect::new(0, 0, 120, 40);
+        let target = effect_area(&app, area);
+
+        assert_eq!(target, issue_list_area(area));
     }
 
     #[test]
