@@ -100,6 +100,13 @@ Install from crates.io:
 cargo install tissues --locked
 ```
 
+Or on macOS with Homebrew:
+
+```bash
+brew tap Kade-Powell/tissues
+brew install tissues
+```
+
 Validate:
 
 ```bash
