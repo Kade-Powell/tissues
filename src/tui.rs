@@ -545,6 +545,10 @@ async fn handle_browsing_key<B: IssueBackend>(app: &mut App, backend: &B, key: K
         KeyCode::Char('t') => app.toggle_triage_mode(),
         KeyCode::Esc if app.triage_mode => app.toggle_triage_mode(),
         KeyCode::Char('v') => toggle_issue_view(app, backend).await,
+        KeyCode::Tab => toggle_issue_view(app, backend).await,
+        KeyCode::BackTab => {
+            app.cycle_issue_view_reverse();
+        }
         KeyCode::Char('s') if app.triage_mode => app.skip_triage_issue(),
         KeyCode::Char('a') if app.triage_mode && app.selected_issue().is_some() => {
             assign_selected_issue_to_viewer(app, backend).await;
@@ -584,6 +588,10 @@ async fn handle_issue_detail_key<B: IssueBackend>(app: &mut App, backend: &B, ke
         KeyCode::Esc => close_issue_detail(app),
         KeyCode::Enter => app.toggle_comments(),
         KeyCode::Char('v') => toggle_issue_view(app, backend).await,
+        KeyCode::Tab => toggle_issue_view(app, backend).await,
+        KeyCode::BackTab => {
+            app.cycle_issue_view_reverse();
+        }
         KeyCode::PageDown => app.scroll_detail_page_down(),
         KeyCode::PageUp => app.scroll_detail_page_up(),
         KeyCode::Char('j') | KeyCode::Down => app.scroll_detail_down(),
