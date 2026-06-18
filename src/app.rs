@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -104,6 +104,7 @@ pub enum UiMode {
     ProjectBoardPicker,
     ConfirmClose,
     ConfirmDeleteIssue,
+    Doctor,
     Success,
     Loading,
     Error,
@@ -153,7 +154,9 @@ pub enum PendingAction {
     UpdateAssignees,
     UpdateLabels,
     UpdateProjectItem,
+    CreateBranch,
     RepairAuth,
+    RunDoctor,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -184,6 +187,66 @@ pub enum FlashKind {
     DetailClose,
 }
 
+pub fn dependency_issue_numbers(text: &str) -> Vec<u64> {
+    let mut numbers = Vec::new();
+    for line in text.lines() {
+        let normalized = line.to_lowercase();
+        if !relationship_line(&normalized) {
+            continue;
+        }
+        for number in issue_references(line) {
+            if !numbers.contains(&number) {
+                numbers.push(number);
+            }
+        }
+    }
+    numbers
+}
+
+fn relationship_line(line: &str) -> bool {
+    [
+        "depends on",
+        "dependency",
+        "dependencies",
+        "blocked by",
+        "blocker",
+        "requires",
+        "required by",
+        "parent",
+        "after",
+    ]
+    .iter()
+    .any(|marker| line.contains(marker))
+}
+
+fn issue_references(line: &str) -> Vec<u64> {
+    let mut numbers = Vec::new();
+    let chars = line.char_indices().collect::<Vec<_>>();
+    let mut cursor = 0;
+    while cursor < chars.len() {
+        let (_, character) = chars[cursor];
+        if character != '#' {
+            cursor += 1;
+            continue;
+        }
+
+        let start = cursor + 1;
+        let mut end = start;
+        while end < chars.len() && chars[end].1.is_ascii_digit() {
+            end += 1;
+        }
+        if end > start {
+            let byte_start = chars[start].0;
+            let byte_end = chars.get(end).map_or(line.len(), |(index, _)| *index);
+            if let Ok(number) = line[byte_start..byte_end].parse::<u64>() {
+                numbers.push(number);
+            }
+        }
+        cursor = end.max(cursor + 1);
+    }
+    numbers
+}
+
 const NEW_ISSUE_ANIMATION_FRAMES: u8 = 90;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -211,6 +274,47 @@ pub struct ErrorRemediation {
     pub label: String,
     pub command: String,
     pub scopes: Vec<String>,
+    pub retry: Option<RetryAction>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RetryAction {
+    OpenProjectBoardChooser { force_picker: bool },
+    LoadProjectBoard,
+    MoveBoardItem(BoardMoveTarget),
+    SubmitNewIssue { force_create: bool },
+    RunDoctor,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoardMoveTarget {
+    pub option_id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DoctorCheckStatus {
+    Pass,
+    Warn,
+    Fail,
+}
+
+impl DoctorCheckStatus {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Warn => "warn",
+            Self::Fail => "fail",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DoctorCheck {
+    pub name: String,
+    pub status: DoctorCheckStatus,
+    pub detail: String,
+    pub remediation: Option<ErrorRemediation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -239,6 +343,8 @@ pub struct App {
     pub editing_issue_labels: Vec<String>,
     pub issue_edit_field: IssueEditField,
     pub selected_detail: Option<IssueDetail>,
+    pub relationship_details: HashMap<u64, IssueDetail>,
+    pub relationship_tree_enabled: bool,
     pub comments_expanded: bool,
     pub pending_action: Option<PendingAction>,
     pub flash: Option<FlashKind>,
@@ -248,6 +354,7 @@ pub struct App {
     pub project_board_choices: Vec<ProjectBoardSummary>,
     pub project_board_config: ProjectBoardConfig,
     pub error_detail: Option<ErrorDetail>,
+    pub doctor_checks: Vec<DoctorCheck>,
     pub saved_views: Vec<SavedView>,
     pub active_view: Option<String>,
     pub triage_mode: bool,
@@ -285,6 +392,8 @@ impl App {
             editing_issue_labels: Vec::new(),
             issue_edit_field: IssueEditField::Title,
             selected_detail: None,
+            relationship_details: HashMap::new(),
+            relationship_tree_enabled: false,
             comments_expanded: true,
             pending_action: None,
             flash: None,
@@ -294,6 +403,7 @@ impl App {
             project_board_choices: Vec::new(),
             project_board_config: ProjectBoardConfig::default(),
             error_detail: None,
+            doctor_checks: Vec::new(),
             saved_views: Vec::new(),
             active_view: None,
             triage_mode: false,
@@ -472,6 +582,19 @@ impl App {
             .is_some()
     }
 
+    pub fn set_doctor_checks(&mut self, checks: Vec<DoctorCheck>) {
+        self.doctor_checks = checks;
+        self.picker_index = self
+            .picker_index
+            .min(self.doctor_checks.len().saturating_sub(1));
+    }
+
+    pub fn selected_doctor_remediation(&self) -> Option<&ErrorRemediation> {
+        self.doctor_checks
+            .get(self.picker_index)
+            .and_then(|check| check.remediation.as_ref())
+    }
+
     pub fn set_project_board(&mut self, board: ProjectBoard) {
         self.project_board = Some(board);
     }
@@ -605,6 +728,8 @@ impl App {
         if previous != Some(detail.summary.number) {
             self.detail_scroll = 0;
         }
+        self.relationship_details
+            .insert(detail.summary.number, detail.clone());
         self.selected_detail = Some(detail);
         self.comments_expanded = true;
     }
@@ -612,6 +737,24 @@ impl App {
     pub fn clear_selected_detail(&mut self) {
         self.selected_detail = None;
         self.detail_scroll = 0;
+    }
+
+    pub fn clear_relationship_details(&mut self) {
+        self.relationship_details.clear();
+    }
+
+    pub fn set_relationship_detail(&mut self, detail: IssueDetail) {
+        self.relationship_details
+            .insert(detail.summary.number, detail);
+    }
+
+    pub fn enable_relationship_tree(&mut self) {
+        self.relationship_tree_enabled = true;
+    }
+
+    pub fn disable_relationship_tree(&mut self) {
+        self.relationship_tree_enabled = false;
+        self.relationship_details.clear();
     }
 
     pub fn toggle_comments(&mut self) {
@@ -1151,6 +1294,7 @@ impl App {
             UiMode::AssigneeEditor => self.assignee_assignment_choices().len(),
             UiMode::IssueLabelEditor => self.issue_label_choices().len(),
             UiMode::ProjectBoardPicker => self.project_board_choices.len(),
+            UiMode::Doctor => self.doctor_checks.len(),
             _ => 0,
         };
         if item_count == 0 {
@@ -1406,6 +1550,15 @@ mod tests {
 
         app.cycle_issue_view();
         assert_eq!(app.issue_view, IssueView::List);
+    }
+
+    #[test]
+    fn parses_dependency_issue_references_from_relationship_lines() {
+        let numbers = dependency_issue_numbers(
+            "Depends on #12 and #34\nMentioned by #99\nBlocked by #12\nRequires #56.",
+        );
+
+        assert_eq!(numbers, vec![12, 34, 56]);
     }
 
     #[test]

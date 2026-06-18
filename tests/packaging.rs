@@ -111,6 +111,37 @@ fn package_metadata_points_at_public_repository() {
 }
 
 #[test]
+fn repository_is_set_up_for_public_contributions() {
+    for path in [
+        "CONTRIBUTING.md",
+        "CODE_OF_CONDUCT.md",
+        "SECURITY.md",
+        ".github/PULL_REQUEST_TEMPLATE.md",
+        ".github/ISSUE_TEMPLATE/bug_report.yml",
+        ".github/ISSUE_TEMPLATE/feature_request.yml",
+        ".github/ISSUE_TEMPLATE/docs.yml",
+        ".github/ISSUE_TEMPLATE/config.yml",
+        ".github/dependabot.yml",
+    ] {
+        assert!(fs::exists(path).expect("check contribution file"), "{path}");
+    }
+
+    let contributing = fs::read_to_string("CONTRIBUTING.md").expect("read CONTRIBUTING.md");
+    assert!(contributing.contains("Conventional Commits"));
+    assert!(contributing.contains("cargo fmt --check"));
+    assert!(contributing.contains("cargo test"));
+    assert!(contributing.contains("tui-realm"));
+}
+
+#[test]
+fn readme_install_instructions_do_not_pin_a_stale_version() {
+    let readme = fs::read_to_string("README.md").expect("read README.md");
+
+    assert!(readme.contains("cargo install tissues --locked"));
+    assert!(!readme.contains("cargo install tissues --version \"0.2.0\""));
+}
+
+#[test]
 fn workflows_do_not_reference_internal_infra() {
     for entry in fs::read_dir(".github/workflows").expect("read workflows directory") {
         let path = entry.expect("read workflow entry").path();

@@ -90,6 +90,10 @@ Then `tissues` reads:
 gh auth token --user Kade-Powell
 ```
 
+When a repair action needs to refresh scopes, GitHub CLI requires the target
+account to be active. If `auth.gh_user` is configured, `tissues` switches to that
+account first and then runs `gh auth refresh`.
+
 The `.tissues` directory is ignored by git, so this setting stays local to your
 machine.
 
@@ -110,11 +114,17 @@ key is needed for the current mode, it should be visible there.
   comments.
 - `Esc`: close the current modal or return from detail to the issue list.
 - `v`: toggle between list and board view.
+- `:branch`: create and switch to a git branch for the selected issue, then
+  show the `Closes #123` PR body line GitHub needs to close it on merge.
 - `:`: open command mode.
 - `q`: quit when you are not editing text.
 
 Mouse selection also works for issue rows, picker rows, modal fields, and action
 buttons.
+
+When an error popup is open, `tissues` temporarily releases mouse capture so you
+can select and copy the error details and next-step guidance with your terminal's
+normal text selection.
 
 ## List view
 
@@ -124,6 +134,7 @@ for triage, search, quick edits, comments, and issue creation.
 Useful commands:
 
 - `:refresh`: reload issues.
+- `:doctor`: check GitHub auth, issue access, and project board readiness.
 - `:all`, `:clear`, or `:clear filters`: clear filters.
 - `:fs` or `:filter state`: cycle open, closed, and all issues.
 - `:fa` or `:filter assignee`: choose an assignee filter.
@@ -134,6 +145,9 @@ Useful commands:
 - `:label any`: clear label filters.
 - `:sort updated`, `:sort created`, `:sort comments`, or `:sort assignee`:
   change issue ordering.
+- `:branch`: create and switch to a local git branch for the selected issue.
+  Add the shown `Closes #123` line to the PR body so GitHub closes the issue
+  when the PR merges.
 
 ## Board view
 
@@ -154,13 +168,26 @@ also open that picker directly:
 Use:
 
 - `j` / `k`: select issues inside the board.
-- `Left` / `Right`: move the selected issue to the previous or next GitHub
-  Project board state.
+- `:move <state>`: move the selected issue to a GitHub Project board state.
+  Use `:move` to list available states, or `:move 2` to pick by number.
 - `Enter`: open the selected issue detail.
 - `v`: return to list view.
 
 Board movement updates GitHub Projects directly, then reloads the board so the
 terminal view matches GitHub.
+
+## Tree view
+
+Tree view turns the current list or board columns into issue relationship
+trees. Open it with:
+
+```text
+:tree
+```
+
+The tree is built from relationship lines in issue bodies, such as `Depends on
+#12`, `Blocked by #12`, or `Requires #12`. Use `:tree off` to return to flat
+issue rows.
 
 ### Pin a board
 
@@ -238,9 +265,26 @@ When GitHub rejects an operation, `tissues` shows a standard error modal with:
 
 If the error is caused by a missing GitHub CLI scope, the modal shows a repair
 action. Press `r` to run the matching `gh auth refresh -s ...` command, then
-retry the failed action.
+`tissues` retries the failed action when it can. If `auth.gh_user` is configured
+for this checkout, repair switches `gh` to that account before refreshing scopes.
 
 Press `Esc` to dismiss the error and return to the previous workflow.
+
+## Doctor
+
+Run `:doctor` when a repository behaves unexpectedly. Doctor checks:
+
+- the GitHub CLI account being used,
+- issue list access,
+- issue write scope,
+- project board read scope,
+- project board movement scope,
+- repository project board discovery.
+
+Failed checks include a repair action when `tissues` knows the matching
+`gh auth refresh -s ...` command. Select the check and press `r` to repair it.
+After a repair, Doctor reruns the checks. If `auth.gh_user` is configured for
+this checkout, repair switches `gh` to that account before refreshing scopes.
 
 ## Troubleshooting
 

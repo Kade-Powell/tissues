@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::{process::Command, sync::RwLock};
 
 use async_trait::async_trait;
 use color_eyre::eyre::{Result, WrapErr, eyre};
@@ -19,6 +19,7 @@ use crate::{
 #[async_trait]
 pub trait IssueBackend {
     async fn current_login(&self) -> Result<String>;
+    async fn auth_status(&self) -> Result<GitHubAuthStatus>;
     async fn list_issues(
         &self,
         repo: &Repository,
@@ -80,8 +81,21 @@ pub trait IssueBackend {
     ) -> Result<IssueSummary>;
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitHubAuthStatus {
+    pub login: String,
+    pub active: bool,
+    pub scopes: Vec<String>,
+}
+
+impl GitHubAuthStatus {
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.scopes.iter().any(|candidate| candidate == scope)
+    }
+}
+
 pub struct GitHubClient {
-    crab: Octocrab,
+    crab: RwLock<Octocrab>,
     gh_user: Option<String>,
 }
 
@@ -99,20 +113,29 @@ impl GitHubClient {
     }
 
     fn from_token_for_user(token: String, gh_user: Option<&str>) -> Result<Self> {
-        let crab = Octocrab::builder()
-            .personal_token(token)
-            .build()
-            .wrap_err("failed to build GitHub client")?;
-
         Ok(Self {
-            crab,
+            crab: RwLock::new(build_github_client(token)?),
             gh_user: gh_user.map(ToOwned::to_owned),
         })
     }
 
+    fn crab(&self) -> Octocrab {
+        self.crab
+            .read()
+            .expect("GitHub client lock poisoned")
+            .clone()
+    }
+
+    fn reload_gh_client(&self) -> Result<()> {
+        let token = load_gh_token(self.gh_user.as_deref())?;
+        let crab = build_github_client(token)?;
+        *self.crab.write().expect("GitHub client lock poisoned") = crab;
+        Ok(())
+    }
+
     pub async fn load_current_login(&self) -> Result<String> {
-        let user = self
-            .crab
+        let crab = self.crab();
+        let user = crab
             .current()
             .user()
             .await
@@ -125,7 +148,7 @@ impl GitHubClient {
         repo: &Repository,
         path: impl Into<String>,
     ) -> Option<String> {
-        self.crab
+        self.crab()
             .repos(&repo.owner, &repo.name)
             .get_content()
             .path(path)
@@ -142,10 +165,21 @@ impl GitHubClient {
     }
 }
 
+fn build_github_client(token: String) -> Result<Octocrab> {
+    Octocrab::builder()
+        .personal_token(token)
+        .build()
+        .wrap_err("failed to build GitHub client")
+}
+
 #[async_trait]
 impl IssueBackend for GitHubClient {
     async fn current_login(&self) -> Result<String> {
         self.load_current_login().await
+    }
+
+    async fn auth_status(&self) -> Result<GitHubAuthStatus> {
+        load_gh_auth_status(self.gh_user.as_deref())
     }
 
     async fn list_issues(
@@ -161,7 +195,8 @@ impl IssueBackend for GitHubClient {
             AssigneeFilter::User(user) => Some(user.clone()),
         };
 
-        let handler = self.crab.issues(&repo.owner, &repo.name);
+        let crab = self.crab();
+        let handler = crab.issues(&repo.owner, &repo.name);
         let mut request = handler
             .list()
             .state(to_param_state(&filters.state))
@@ -181,8 +216,7 @@ impl IssueBackend for GitHubClient {
             .send()
             .await
             .wrap_err("failed to list GitHub issues")?;
-        let issues = self
-            .crab
+        let issues = crab
             .all_pages(page)
             .await
             .wrap_err("failed to load all GitHub issue pages")?;
@@ -197,8 +231,8 @@ impl IssueBackend for GitHubClient {
     }
 
     async fn get_issue(&self, repo: &Repository, number: u64) -> Result<IssueDetail> {
-        let issue = self
-            .crab
+        let crab = self.crab();
+        let issue = crab
             .issues(&repo.owner, &repo.name)
             .get(number)
             .await
@@ -214,16 +248,15 @@ impl IssueBackend for GitHubClient {
     }
 
     async fn list_comments(&self, repo: &Repository, number: u64) -> Result<Vec<IssueComment>> {
-        let page = self
-            .crab
+        let crab = self.crab();
+        let page = crab
             .issues(&repo.owner, &repo.name)
             .list_comments(number)
             .per_page(100)
             .send()
             .await
             .wrap_err_with(|| format!("failed to list comments for issue #{number}"))?;
-        let comments = self
-            .crab
+        let comments = crab
             .all_pages(page)
             .await
             .wrap_err("failed to load all comment pages")?;
@@ -232,16 +265,15 @@ impl IssueBackend for GitHubClient {
     }
 
     async fn list_labels(&self, repo: &Repository) -> Result<Vec<Label>> {
-        let page = self
-            .crab
+        let crab = self.crab();
+        let page = crab
             .issues(&repo.owner, &repo.name)
             .list_labels_for_repo()
             .per_page(100)
             .send()
             .await
             .wrap_err("failed to list repository labels")?;
-        let mut labels = self
-            .crab
+        let mut labels = crab
             .all_pages(page)
             .await
             .wrap_err("failed to load all repository labels")?
@@ -266,8 +298,8 @@ impl IssueBackend for GitHubClient {
             });
         }
 
-        if let Ok(mut directory) = self
-            .crab
+        let crab = self.crab();
+        if let Ok(mut directory) = crab
             .repos(&repo.owner, &repo.name)
             .get_content()
             .path(".github/ISSUE_TEMPLATE")
@@ -296,16 +328,15 @@ impl IssueBackend for GitHubClient {
     }
 
     async fn list_collaborators(&self, repo: &Repository) -> Result<Vec<User>> {
-        let page = self
-            .crab
+        let crab = self.crab();
+        let page = crab
             .repos(&repo.owner, &repo.name)
             .list_collaborators()
             .per_page(100)
             .send()
             .await
             .wrap_err("failed to list repository collaborators")?;
-        let mut collaborators = self
-            .crab
+        let mut collaborators = crab
             .all_pages(page)
             .await
             .wrap_err("failed to load all repository collaborators")?
@@ -332,8 +363,8 @@ impl IssueBackend for GitHubClient {
     }
 
     async fn list_project_boards(&self, repo: &Repository) -> Result<Vec<ProjectBoardSummary>> {
-        let response: RepositoryProjectChoicesResponse = self
-            .crab
+        let crab = self.crab();
+        let response: RepositoryProjectChoicesResponse = crab
             .graphql(&json!({
                 "query": REPOSITORY_PROJECT_CHOICES_QUERY,
                 "variables": { "owner": repo.owner, "name": repo.name }
@@ -342,8 +373,9 @@ impl IssueBackend for GitHubClient {
             .wrap_err("failed to list repository GitHub projects")?;
         Ok(response
             .repository
-            .projects_v2
-            .nodes
+            .and_then(|repository| repository.projects_v2)
+            .map(|projects| projects.nodes)
+            .unwrap_or_default()
             .into_iter()
             .map(|project| ProjectBoardSummary {
                 id: project.id,
@@ -362,8 +394,8 @@ impl IssueBackend for GitHubClient {
         field_id: &str,
         option_id: &str,
     ) -> Result<()> {
-        let _: serde_json::Value = self
-            .crab
+        let crab = self.crab();
+        let _: serde_json::Value = crab
             .graphql(&json!({
                 "query": UPDATE_PROJECT_ITEM_STATUS_MUTATION,
                 "variables": {
@@ -379,7 +411,8 @@ impl IssueBackend for GitHubClient {
     }
 
     async fn refresh_auth_scopes(&self, scopes: &[String]) -> Result<()> {
-        refresh_gh_auth_scopes(self.gh_user.as_deref(), scopes)
+        refresh_gh_auth_scopes(self.gh_user.as_deref(), scopes)?;
+        self.reload_gh_client()
     }
 
     async fn create_issue(
@@ -389,8 +422,8 @@ impl IssueBackend for GitHubClient {
         body: &str,
         labels: &[String],
     ) -> Result<IssueSummary> {
-        let issue = self
-            .crab
+        let crab = self.crab();
+        let issue = crab
             .issues(&repo.owner, &repo.name)
             .create(title)
             .body(body.to_string())
@@ -408,8 +441,8 @@ impl IssueBackend for GitHubClient {
         number: u64,
         body: &str,
     ) -> Result<IssueComment> {
-        let comment = self
-            .crab
+        let crab = self.crab();
+        let comment = crab
             .issues(&repo.owner, &repo.name)
             .create_comment(number, body)
             .await
@@ -424,8 +457,8 @@ impl IssueBackend for GitHubClient {
         number: u64,
         state: IssueState,
     ) -> Result<IssueSummary> {
-        let issue = self
-            .crab
+        let crab = self.crab();
+        let issue = crab
             .issues(&repo.owner, &repo.name)
             .update(number)
             .state(match state {
@@ -476,8 +509,8 @@ impl IssueBackend for GitHubClient {
         title: &str,
         body: &str,
     ) -> Result<IssueSummary> {
-        let issue = self
-            .crab
+        let crab = self.crab();
+        let issue = crab
             .issues(&repo.owner, &repo.name)
             .update(number)
             .title(title)
@@ -495,8 +528,8 @@ impl IssueBackend for GitHubClient {
         number: u64,
         assignees: &[String],
     ) -> Result<IssueSummary> {
-        let issue = self
-            .crab
+        let crab = self.crab();
+        let issue = crab
             .issues(&repo.owner, &repo.name)
             .update(number)
             .assignees(assignees)
@@ -513,8 +546,8 @@ impl IssueBackend for GitHubClient {
         number: u64,
         labels: &[String],
     ) -> Result<IssueSummary> {
-        let issue = self
-            .crab
+        let crab = self.crab();
+        let issue = crab
             .issues(&repo.owner, &repo.name)
             .update(number)
             .labels(labels)
@@ -540,8 +573,8 @@ impl GitHubClient {
             return self.owner_project_id(owner, number).await;
         }
 
-        let response: RepositoryProjectsResponse = self
-            .crab
+        let crab = self.crab();
+        let response: RepositoryProjectsResponse = crab
             .graphql(&json!({
                 "query": REPOSITORY_PROJECTS_QUERY,
                 "variables": { "owner": repo.owner, "name": repo.name }
@@ -550,8 +583,9 @@ impl GitHubClient {
             .wrap_err("failed to list repository GitHub projects")?;
         Ok(response
             .repository
-            .projects_v2
-            .nodes
+            .and_then(|repository| repository.projects_v2)
+            .map(|projects| projects.nodes)
+            .unwrap_or_default()
             .into_iter()
             .next()
             .map(|project| project.id))
@@ -565,8 +599,8 @@ impl GitHubClient {
     }
 
     async fn user_project_id(&self, owner: &str, number: u32) -> Result<Option<String>> {
-        let response: UserProjectLookupResponse = self
-            .crab
+        let crab = self.crab();
+        let response: UserProjectLookupResponse = crab
             .graphql(&json!({
                 "query": PROJECT_BY_USER_QUERY,
                 "variables": { "owner": owner, "number": number }
@@ -582,8 +616,8 @@ impl GitHubClient {
     }
 
     async fn organization_project_id(&self, owner: &str, number: u32) -> Result<Option<String>> {
-        let response: OrganizationProjectLookupResponse = self
-            .crab
+        let crab = self.crab();
+        let response: OrganizationProjectLookupResponse = crab
             .graphql(&json!({
                 "query": PROJECT_BY_ORGANIZATION_QUERY,
                 "variables": { "owner": owner, "number": number }
@@ -604,8 +638,8 @@ impl GitHubClient {
         owner: &str,
         number: u32,
     ) -> Result<Option<String>> {
-        let response: RepositoryProjectChoicesResponse = self
-            .crab
+        let crab = self.crab();
+        let response: RepositoryProjectChoicesResponse = crab
             .graphql(&json!({
                 "query": REPOSITORY_PROJECT_CHOICES_QUERY,
                 "variables": { "owner": repo.owner, "name": repo.name }
@@ -614,8 +648,9 @@ impl GitHubClient {
             .wrap_err("failed to list repository GitHub projects")?;
         Ok(response
             .repository
-            .projects_v2
-            .nodes
+            .and_then(|repository| repository.projects_v2)
+            .map(|projects| projects.nodes)
+            .unwrap_or_default()
             .into_iter()
             .find(|project| {
                 project.number == number
@@ -641,8 +676,8 @@ impl GitHubClient {
         let mut columns = Vec::<ProjectColumn>::new();
 
         loop {
-            let response: ProjectItemsResponse = self
-                .crab
+            let crab = self.crab();
+            let response: ProjectItemsResponse = crab
                 .graphql(&json!({
                     "query": PROJECT_ITEMS_QUERY,
                     "variables": {
@@ -696,6 +731,8 @@ impl GitHubClient {
             cursor = project.items.page_info.end_cursor;
         }
 
+        let columns = order_project_columns(columns, &status_options);
+
         Ok(Some(ProjectBoard {
             title: title.unwrap_or_else(|| "Project".to_string()),
             project_id: Some(project_id.to_string()),
@@ -716,6 +753,20 @@ fn upsert_project_column(columns: &mut Vec<ProjectColumn>, name: String) -> &mut
         issues: Vec::new(),
     });
     columns.last_mut().expect("column just pushed")
+}
+
+fn order_project_columns(
+    mut columns: Vec<ProjectColumn>,
+    status_options: &[ProjectStatusOption],
+) -> Vec<ProjectColumn> {
+    let mut ordered = Vec::with_capacity(columns.len());
+    for option in status_options {
+        if let Some(index) = columns.iter().position(|column| column.name == option.name) {
+            ordered.push(columns.remove(index));
+        }
+    }
+    ordered.extend(columns);
+    ordered
 }
 
 const REPOSITORY_PROJECTS_QUERY: &str = r#"
@@ -839,13 +890,13 @@ mutation DeleteIssue($issueId: ID!) {
 
 #[derive(Debug, Deserialize)]
 struct RepositoryProjectsResponse {
-    repository: RepositoryProjects,
+    repository: Option<RepositoryProjects>,
 }
 
 #[derive(Debug, Deserialize)]
 struct RepositoryProjects {
     #[serde(rename = "projectsV2")]
-    projects_v2: ProjectNodes,
+    projects_v2: Option<ProjectNodes>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -875,13 +926,13 @@ struct ProjectNode {
 
 #[derive(Debug, Deserialize)]
 struct RepositoryProjectChoicesResponse {
-    repository: RepositoryProjectChoices,
+    repository: Option<RepositoryProjectChoices>,
 }
 
 #[derive(Debug, Deserialize)]
 struct RepositoryProjectChoices {
     #[serde(rename = "projectsV2")]
-    projects_v2: ProjectChoiceNodes,
+    projects_v2: Option<ProjectChoiceNodes>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -955,6 +1006,7 @@ impl ProjectItemsNode {
 
 #[derive(Clone, Debug, Deserialize)]
 struct ProjectFields {
+    #[serde(default)]
     nodes: Vec<ProjectFieldNode>,
 }
 
@@ -974,6 +1026,7 @@ struct ProjectFieldOption {
 
 #[derive(Debug, Deserialize)]
 struct ProjectItems {
+    #[serde(default)]
     nodes: Vec<ProjectItem>,
     #[serde(rename = "pageInfo")]
     page_info: PageInfo,
@@ -1011,29 +1064,32 @@ struct ProjectStatusValue {
 
 #[derive(Debug, Deserialize)]
 struct ProjectItemContent {
-    number: u64,
-    title: String,
-    state: String,
+    number: Option<u64>,
+    title: Option<String>,
+    state: Option<String>,
     #[serde(rename = "createdAt")]
     created_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(rename = "updatedAt")]
     updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
     comments: ProjectCommentCount,
     author: Option<User>,
+    #[serde(default)]
     labels: ProjectLabelNodes,
+    #[serde(default)]
     assignees: ProjectUserNodes,
 }
 
 impl ProjectItemContent {
     fn into_issue_summary(self) -> Option<IssueSummary> {
-        let state = match self.state.as_str() {
+        let state = match self.state.as_deref()? {
             "OPEN" => IssueState::Open,
             "CLOSED" => IssueState::Closed,
             _ => return None,
         };
         Some(IssueSummary {
-            number: self.number,
-            title: self.title,
+            number: self.number?,
+            title: self.title?,
             state,
             labels: self.labels.nodes,
             assignees: self.assignees.nodes,
@@ -1045,19 +1101,21 @@ impl ProjectItemContent {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct ProjectCommentCount {
     #[serde(rename = "totalCount")]
     total_count: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct ProjectLabelNodes {
+    #[serde(default)]
     nodes: Vec<Label>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct ProjectUserNodes {
+    #[serde(default)]
     nodes: Vec<User>,
 }
 
@@ -1090,25 +1148,62 @@ pub fn refresh_gh_auth_scopes(gh_user: Option<&str>, scopes: &[String]) -> Resul
         return Ok(());
     }
 
-    if let Some(user) = gh_user.filter(|user| !user.trim().is_empty()) {
-        let active_user = active_gh_user().ok();
-        if active_user.as_deref() != Some(user) {
-            return Err(eyre!(
-                "GitHub CLI can only refresh scopes for the active account. Run `gh auth switch -u {user}` first, then `{}`.",
-                gh_auth_refresh_command(&scopes)
-            ));
+    let active_user = gh_user.and_then(|_| active_gh_user().ok());
+    for args in gh_auth_scope_repair_commands(gh_user, active_user.as_deref(), scopes.as_slice()) {
+        let status = Command::new("gh")
+            .args(&args)
+            .status()
+            .wrap_err_with(|| format!("failed to run `{}`", gh_command_display(&args)))?;
+        if !status.success() {
+            return Err(eyre!("`{}` failed", gh_command_display(&args)));
         }
     }
-
-    let args = gh_auth_refresh_args(&scopes);
-    let status = Command::new("gh")
-        .args(&args)
-        .status()
-        .wrap_err_with(|| format!("failed to run `{}`", gh_command_display(&args)))?;
-    if !status.success() {
-        return Err(eyre!("`{}` failed", gh_command_display(&args)));
-    }
     Ok(())
+}
+
+pub fn load_gh_auth_status(gh_user: Option<&str>) -> Result<GitHubAuthStatus> {
+    let output = Command::new("gh")
+        .args(["auth", "status", "--json", "hosts"])
+        .output()
+        .wrap_err("failed to inspect GitHub CLI auth status")?;
+    if !output.status.success() {
+        return Err(eyre!("`gh auth status --json hosts` failed"));
+    }
+    parse_gh_auth_status_json(String::from_utf8_lossy(&output.stdout).as_ref(), gh_user)
+}
+
+fn parse_gh_auth_status_json(output: &str, gh_user: Option<&str>) -> Result<GitHubAuthStatus> {
+    let value: serde_json::Value =
+        serde_json::from_str(output).wrap_err("failed to parse `gh auth status` JSON")?;
+    let accounts = value["hosts"]["github.com"]
+        .as_array()
+        .ok_or_else(|| eyre!("no github.com auth status found"))?;
+    let account = if let Some(user) = gh_user.filter(|user| !user.trim().is_empty()) {
+        accounts
+            .iter()
+            .find(|account| account["login"].as_str() == Some(user))
+            .ok_or_else(|| eyre!("GitHub CLI account `{user}` was not found"))?
+    } else {
+        accounts
+            .iter()
+            .find(|account| account["active"] == true)
+            .ok_or_else(|| eyre!("no active GitHub CLI account found"))?
+    };
+
+    let scopes = account["scopes"]
+        .as_str()
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|scope| !scope.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+
+    Ok(GitHubAuthStatus {
+        login: account["login"].as_str().unwrap_or("unknown").to_string(),
+        active: account["active"].as_bool().unwrap_or(false),
+        scopes,
+    })
 }
 
 fn active_gh_user() -> Result<String> {
@@ -1138,19 +1233,36 @@ fn gh_token_args(gh_user: Option<&str>) -> Vec<&str> {
     args
 }
 
-fn gh_auth_refresh_args<'a>(scopes: &'a [&'a str]) -> Vec<&'a str> {
-    let mut args = vec!["auth", "refresh"];
-    for scope in scopes {
-        args.extend(["-s", scope]);
+fn gh_auth_scope_repair_commands<S: AsRef<str>>(
+    gh_user: Option<&str>,
+    active_user: Option<&str>,
+    scopes: &[S],
+) -> Vec<Vec<String>> {
+    let mut commands = Vec::new();
+    if let Some(user) = gh_user.filter(|user| !user.trim().is_empty())
+        && active_user != Some(user)
+    {
+        commands.push(gh_auth_switch_args(user));
     }
-    args
+    let mut refresh = vec!["auth".to_string(), "refresh".to_string()];
+    for scope in scopes {
+        refresh.extend(["-s".to_string(), scope.as_ref().to_string()]);
+    }
+    commands.push(refresh);
+    commands
 }
 
-fn gh_auth_refresh_command(scopes: &[&str]) -> String {
-    gh_command_display(&gh_auth_refresh_args(scopes))
+fn gh_auth_switch_args(user: &str) -> Vec<String> {
+    vec![
+        "auth".to_string(),
+        "switch".to_string(),
+        "--user".to_string(),
+        user.to_string(),
+    ]
 }
 
-fn gh_command_display(args: &[&str]) -> String {
+fn gh_command_display<S: AsRef<str>>(args: &[S]) -> String {
+    let args = args.iter().map(AsRef::as_ref).collect::<Vec<_>>();
     format!("gh {}", args.join(" "))
 }
 
@@ -1253,6 +1365,189 @@ mod tests {
         assert_eq!(
             gh_token_args(Some("Kade-Powell")),
             vec!["auth", "token", "--user", "Kade-Powell"]
+        );
+    }
+
+    #[test]
+    fn auth_scope_repair_switches_to_configured_inactive_user_before_refreshing() {
+        let scopes = vec!["project".to_string()];
+
+        assert_eq!(
+            gh_auth_scope_repair_commands(Some("Kade-Powell"), Some("other-user"), &scopes),
+            vec![
+                vec!["auth", "switch", "--user", "Kade-Powell"],
+                vec!["auth", "refresh", "-s", "project"],
+            ]
+        );
+    }
+
+    #[test]
+    fn auth_scope_repair_skips_switch_when_configured_user_is_active() {
+        let scopes = vec!["read:project".to_string()];
+
+        assert_eq!(
+            gh_auth_scope_repair_commands(Some("Kade-Powell"), Some("Kade-Powell"), &scopes),
+            vec![vec!["auth", "refresh", "-s", "read:project"]]
+        );
+    }
+
+    #[test]
+    fn project_choices_response_accepts_null_repository_on_graphql_error() {
+        let response: octocrab::GraphqlResponse<RepositoryProjectChoicesResponse> =
+            serde_json::from_str(
+                r#"{
+                    "data": { "repository": null },
+                    "errors": [
+                        {
+                            "type": "NOT_FOUND",
+                            "path": ["repository"],
+                            "locations": [{ "line": 1, "column": 67 }],
+                            "message": "Could not resolve to a Repository with the name 'owner/repo'."
+                        }
+                    ]
+                }"#,
+            )
+            .unwrap();
+
+        assert!(matches!(response, octocrab::GraphqlResponse::Err(_)));
+    }
+
+    #[test]
+    fn project_choices_response_accepts_null_projects_connection() {
+        let response: octocrab::GraphqlResponse<RepositoryProjectChoicesResponse> =
+            serde_json::from_str(
+                r#"{
+                    "data": {
+                        "repository": {
+                            "projectsV2": null
+                        }
+                    }
+                }"#,
+            )
+            .unwrap();
+
+        let octocrab::GraphqlResponse::Ok(response) = response else {
+            panic!("expected successful GraphQL envelope");
+        };
+        assert!(response.data.repository.unwrap().projects_v2.is_none());
+    }
+
+    #[test]
+    fn project_items_response_accepts_non_issue_project_items() {
+        let response: octocrab::GraphqlResponse<ProjectItemsResponse> = serde_json::from_str(
+            r#"{
+                "data": {
+                    "node": {
+                        "title": "Roadmap",
+                        "fields": {
+                            "nodes": [
+                                {},
+                                {
+                                    "id": "status-field",
+                                    "name": "Status",
+                                    "options": [{ "id": "todo", "name": "Todo" }]
+                                }
+                            ]
+                        },
+                        "items": {
+                            "nodes": [
+                                {
+                                    "id": "item-draft",
+                                    "content": {},
+                                    "fieldValueByName": {}
+                                },
+                                {
+                                    "id": "item-issue",
+                                    "content": {
+                                        "number": 42,
+                                        "title": "Fix board",
+                                        "state": "OPEN",
+                                        "comments": { "totalCount": 3 },
+                                        "author": { "login": "octocat" },
+                                        "labels": { "nodes": [{ "name": "bug" }] },
+                                        "assignees": { "nodes": [{ "login": "hubot" }] }
+                                    },
+                                    "fieldValueByName": { "name": "Todo" }
+                                }
+                            ],
+                            "pageInfo": {
+                                "hasNextPage": false,
+                                "endCursor": null
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let octocrab::GraphqlResponse::Ok(response) = response else {
+            panic!("expected successful GraphQL envelope");
+        };
+        let mut project = response.data.node.unwrap();
+        assert!(
+            project.items.nodes[0]
+                .content
+                .take()
+                .and_then(ProjectItemContent::into_issue_summary)
+                .is_none()
+        );
+        assert_eq!(
+            project
+                .items
+                .nodes
+                .remove(1)
+                .content
+                .and_then(ProjectItemContent::into_issue_summary)
+                .unwrap()
+                .number,
+            42
+        );
+    }
+
+    #[test]
+    fn project_columns_follow_status_option_order() {
+        let columns = vec![
+            ProjectColumn {
+                name: "Done".to_string(),
+                issues: Vec::new(),
+            },
+            ProjectColumn {
+                name: "Next Up".to_string(),
+                issues: Vec::new(),
+            },
+            ProjectColumn {
+                name: "Backlog".to_string(),
+                issues: Vec::new(),
+            },
+            ProjectColumn {
+                name: "No status".to_string(),
+                issues: Vec::new(),
+            },
+        ];
+        let status_options = vec![
+            ProjectStatusOption {
+                id: "backlog".to_string(),
+                name: "Backlog".to_string(),
+            },
+            ProjectStatusOption {
+                id: "next-up".to_string(),
+                name: "Next Up".to_string(),
+            },
+            ProjectStatusOption {
+                id: "done".to_string(),
+                name: "Done".to_string(),
+            },
+        ];
+
+        let ordered = order_project_columns(columns, &status_options);
+
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Backlog", "Next Up", "Done", "No status"]
         );
     }
 }

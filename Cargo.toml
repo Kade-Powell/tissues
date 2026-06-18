@@ -1,6 +1,6 @@
 [package]
 name = "tissues"
-version = "0.4.2"
+version = "0.6.0"
 edition = "2024"
 description = "A Rust terminal app for working through GitHub issues in one repository at a time"
 repository = "https://github.com/Kade-Powell/tissues"
